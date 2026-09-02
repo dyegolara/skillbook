@@ -1,0 +1,22 @@
+{
+  "name": "skillbook-skills",
+  "version": "0.1.0",
+  "description": "Dojo Mojo's installable agent skills: practical engineering and ops skills that run in production. Plug-and-play, not vibe coding.",
+  "author": {
+    "name": "dyegolara (Dojo Mojo Casa House)",
+    "url": "https://github.com/dyegolara"
+  },
+  "repository": "https://github.com/dyegolara/skillbook",
+  "license": "MIT",
+  "keywords": [
+    "engineering",
+    "skills",
+    "copilot",
+    "pr-review",
+    "cron",
+    "github"
+  ],
+  "skills": [
+    "./skills/engineering/copilot-review-smart"
+  ]
+}
