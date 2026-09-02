@@ -10,9 +10,15 @@
 |---|---|---|---|
 | `copilot-review-smart` | **in-repo** (`./skills/engineering/copilot-review-smart`) | engineering | Smart Copilot PR-review watchdog: reads review state + full comment transcript, checks merge conflicts first, and lets an LLM decide (rebase / review / fix / notify / wait) instead of pinging `@copilot code review` on a loop. Multi-repo. |
 | `lnurl-auth` | [dyegolara/lnurl-auth-agents](https://github.com/dyegolara/lnurl-auth-agents) (npm `lnurl-auth`) | auth | LNURL-auth (LUD-04) signer — Sign in with Lightning for LLM agents. No wallet, no node, no payment. |
-| `nostr-auth` | [dyegolara/nostr-auth-agents](https://github.com/dyegolara/nostr-auth-agents) | auth | Nostr sign-in (NIP-07) for LLM coding agents — no wallet, no extension, auth-only. |
+| `nostr-auth` | [dyegolara/nostr-auth-agents](https://github.com/dyegolara/nostr-auth-agents) — **temporary GitHub ref** | auth | Nostr sign-in (NIP-07) for LLM coding agents — no wallet, no extension, auth-only. |
 
-The two auth skills are **references only** — they keep their own repos, their own npm packages and their own skills.sh presence. This book points at their published channels (npm / skills.sh), never at their repos directly.
+The two auth skills are **references only** — they keep their own repos, their
+own npm packages and their own skills.sh presence. This book points at their
+published channels (npm / skills.sh), never copies them.
+
+> **`nostr-auth` is temporarily linked from its GitHub repo** until it gets
+> published to npm and skills.sh (pending). The moment it's published, this
+> reference switches to the npm package / skills.sh — tracked by `npm run verify`.
 
 ## Installation
 
@@ -60,11 +66,13 @@ dependency — `npm install` pulls the package (SKILL.md included) straight from
 npm, no files vendored:
 
 ```bash
-npm install          # fetches lnurl-auth from the npm registry
-npm run verify       # checks every reference resolves (npm + skills.sh)
+npm install          # fetches lnurl-auth (npm) + nostr-auth (temp GitHub ref)
+npm run verify       # checks every reference resolves (npm / skills.sh / gh)
 ```
 
-`nostr-auth` is not on the npm registry yet — install it via skills.sh above.
+`nostr-auth` is **not published yet** — until then it's referenced from its
+GitHub repo (temporary). Once it's on npm, the dependency switches to the
+registry version.
 
 </details>
 

@@ -9,7 +9,8 @@
     "verify": "node scripts/verify-references.mjs"
   },
   "dependencies": {
-    "lnurl-auth": "^1.4.1"
+    "lnurl-auth": "^1.4.1",
+    "nostr-auth": "github:dyegolara/nostr-auth-agents#main"
   },
   "keywords": [
     "agent-skills",
