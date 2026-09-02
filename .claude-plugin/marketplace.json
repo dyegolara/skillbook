@@ -4,12 +4,12 @@
     "name": "dyegolara (Dojo Mojo Casa House)",
     "url": "https://github.com/dyegolara"
   },
-  "description": "Dojo Mojo's installable agent skills: practical engineering and ops skills that run in production. Agent Skills format.",
+  "description": "Dojo Mojo's agent skills: own skills plus references to dyegolara's published auth skills (lnurl-auth, nostr-auth). Agent Skills format, no copies.",
   "plugins": [
     {
       "name": "skillbook-skills",
       "source": "./",
-      "description": "Dojo Mojo's agent skills for real engineering and ops (Copilot PR watchdog and more).",
+      "description": "Dojo Mojo's own agent skills (Copilot PR watchdog and more).",
       "category": "engineering",
       "keywords": [
         "engineering",
@@ -18,6 +18,31 @@
         "pr-review",
         "cron",
         "github"
+      ]
+    },
+    {
+      "name": "lnurl-auth",
+      "source": "https://github.com/dyegolara/lnurl-auth-agents",
+      "description": "LNURL-auth (LUD-04) — Sign in with Lightning for LLM agents. No wallet, no node, no payment. (reference)",
+      "category": "auth",
+      "keywords": [
+        "lnurl",
+        "lnurl-auth",
+        "lud-04",
+        "lightning",
+        "auth"
+      ]
+    },
+    {
+      "name": "nostr-auth",
+      "source": "https://github.com/dyegolara/nostr-auth-agents",
+      "description": "Nostr sign-in (NIP-07) for LLM coding agents — no wallet, no extension, auth-only. (reference)",
+      "category": "auth",
+      "keywords": [
+        "nostr",
+        "nostr-auth",
+        "nip-07",
+        "auth"
       ]
     }
   ]

@@ -6,62 +6,79 @@
 
 ## What's inside
 
-| Skill | Category | What it does |
-|---|---|---|
-| [`copilot-review-smart`](./skills/engineering/copilot-review-smart) | engineering | Smart Copilot PR-review watchdog: reads review state + full comment transcript, checks merge conflicts first, and lets an LLM decide (rebase / review / fix / notify / wait) instead of pinging `@copilot code review` on a loop. Multi-repo. |
+| Skill | Source | Category | What it does |
+|---|---|---|---|
+| `copilot-review-smart` | **in-repo** (`./skills/engineering/copilot-review-smart`) | engineering | Smart Copilot PR-review watchdog: reads review state + full comment transcript, checks merge conflicts first, and lets an LLM decide (rebase / review / fix / notify / wait) instead of pinging `@copilot code review` on a loop. Multi-repo. |
+| `lnurl-auth` | [dyegolara/lnurl-auth-agents](https://github.com/dyegolara/lnurl-auth-agents) (npm `lnurl-auth`) | auth | LNURL-auth (LUD-04) signer — Sign in with Lightning for LLM agents. No wallet, no node, no payment. |
+| `nostr-auth` | [dyegolara/nostr-auth-agents](https://github.com/dyegolara/nostr-auth-agents) | auth | Nostr sign-in (NIP-07) for LLM coding agents — no wallet, no extension, auth-only. |
 
-More skills coming — this book grows one page at a time.
+The two auth skills are **references only** — they keep their own repos, their own npm packages and their own skills.sh presence. This book points at them, never copies them.
 
 ## Installation
 
-Two ways in, two philosophies: the **Claude Code plugin** installs the whole set as a managed, read-only bundle that updates when new skills ship; **[skills.sh](https://skills.sh)** copies editable skill files into your project so you can hack on them.
+Two ways in, two philosophies: the **Claude Code plugin** installs the whole set (own + referenced) as managed bundles; **[skills.sh](https://skills.sh)** copies editable skill files into your project so you can hack on them.
 
 ### 1. Get the skills
 
 <details>
 <summary><strong>Claude Code (plugin)</strong></summary>
 
+Add this repo as a marketplace, then install what you need:
+
 ```bash
-claude plugins install skillbook-skills
+/plugin marketplace add dyegolara/skillbook
 ```
 
-Or, from inside a session:
+Then install each plugin from the marketplace:
 
+```bash
+/plugin install skillbook-skills@skillbook          # own skills
+/plugin install lnurl-auth@skillbook                # reference -> dyegolara/lnurl-auth-agents
+/plugin install nostr-auth@skillbook                # reference -> dyegolara/nostr-auth-agents
 ```
-/plugin install skillbook-skills
-```
+
+The referenced plugins resolve from their own repositories (Claude Code fetches
+them by `source` URL), so updates ship from the original repos, not from here.
 
 </details>
 
 <details>
-<summary><strong>Codex, Claude Code, and other agents (editable copy)</strong></summary>
+<summary><strong>skills.sh (editable copy)</strong></summary>
 
 ```bash
 npx skills@latest add dyegolara/skillbook
+npx skills add dyegolara/lnurl-auth-agents --skill lnurl-auth
+npx skills add dyegolara/nostr-auth-agents --skill nostr-auth
 ```
-
-Pick the skills you want and which agents to install them on.
 
 </details>
 
 <details>
-<summary><strong>For tinkerers (manual)</strong></summary>
+<summary><strong>npm (package.json, by reference)</strong></summary>
 
-Copy a skill folder straight into your agent's skills directory, e.g.:
+This repo's own `package.json` declares the published auth skills as dependencies
+(`lnurl-auth` from the npm registry, `nostr-auth` from its GitHub repo), so a
+single `npm install` pulls them — without vendoring any files:
 
 ```bash
-cp -r skills/engineering/copilot-review-smart ~/.hermes/skills/github/
+npm install          # fetches lnurl-auth + nostr-auth packages (SKILL.md included)
+npm run verify       # checks every reference resolves (npm + GitHub)
 ```
 
 </details>
 
 ### 2. Use it
 
-The skill triggers naturally from its description — e.g. "stop spamming @copilot on that PR, it's already clean." For the full watchdog setup (cron, script, state), read the skill's `SKILL.md`.
+Own skills trigger naturally from their descriptions; for the full watchdog
+setup (cron, script, state) read `skills/engineering/copilot-review-smart/SKILL.md`.
+The auth skills document their own MCP server + CLI usage in their repos.
 
 ## Contributing
 
-Skills here are practical tools that run in production (see `copilot-review-smart` — it powers a live multi-repo cron). If a skill helped you or you found a missing step, open an issue or PR.
+Add a skill as a folder under `skills/<category>/<skill>/` with a `SKILL.md`,
+then register it in `.claude-plugin/plugin.json` and the table above. External
+skills join by adding a reference (npm dependency or marketplace plugin) — never
+a copy.
 
 ## License
 
