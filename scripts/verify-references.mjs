@@ -11,8 +11,8 @@ const CHECK = async (url) => {
 
 const refs = [
   ["npm registry", "https://registry.npmjs.org/lnurl-auth"],
-  ["github repo", "https://api.github.com/repos/dyegolara/lnurl-auth-agents"],
-  ["github repo", "https://api.github.com/repos/dyegolara/nostr-auth-agents"],
+  ["skills.sh page", "https://skills.sh/dyegolara/lnurl-auth-agents"],
+  ["skills.sh page", "https://skills.sh/dyegolara/nostr-auth-agents"],
 ];
 
 let failed = false;

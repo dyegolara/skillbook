@@ -2,15 +2,14 @@
   "name": "skillbook",
   "version": "0.1.0",
   "private": true,
-  "description": "Dojo Mojo's skillbook — agent skills by reference (npm/GitHub), no copies. Own skills + pointers to dyegolara's published auth skills.",
+  "description": "Dojo Mojo's skillbook — agent skills by reference (npm / skills.sh), no copies. Own skills + pointers to dyegolara's published auth skills.",
   "type": "module",
   "scripts": {
-    "install:skills": "npm install && npx skills add dyegolara/lnurl-auth-agents --skill lnurl-auth && npx skills add dyegolara/nostr-auth-agents --skill nostr-auth",
+    "skills:install": "npx skills@latest add dyegolara/lnurl-auth-agents --skill lnurl-auth && npx skills@latest add dyegolara/nostr-auth-agents --skill nostr-auth",
     "verify": "node scripts/verify-references.mjs"
   },
   "dependencies": {
-    "lnurl-auth": "^1.4.1",
-    "nostr-auth": "github:dyegolara/nostr-auth-agents#main"
+    "lnurl-auth": "^1.4.1"
   },
   "keywords": [
     "agent-skills",

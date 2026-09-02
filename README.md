@@ -12,43 +12,42 @@
 | `lnurl-auth` | [dyegolara/lnurl-auth-agents](https://github.com/dyegolara/lnurl-auth-agents) (npm `lnurl-auth`) | auth | LNURL-auth (LUD-04) signer — Sign in with Lightning for LLM agents. No wallet, no node, no payment. |
 | `nostr-auth` | [dyegolara/nostr-auth-agents](https://github.com/dyegolara/nostr-auth-agents) | auth | Nostr sign-in (NIP-07) for LLM coding agents — no wallet, no extension, auth-only. |
 
-The two auth skills are **references only** — they keep their own repos, their own npm packages and their own skills.sh presence. This book points at them, never copies them.
+The two auth skills are **references only** — they keep their own repos, their own npm packages and their own skills.sh presence. This book points at their published channels (npm / skills.sh), never at their repos directly.
 
 ## Installation
 
-Two ways in, two philosophies: the **Claude Code plugin** installs the whole set (own + referenced) as managed bundles; **[skills.sh](https://skills.sh)** copies editable skill files into your project so you can hack on them.
+Two ways in, two philosophies: the **Claude Code plugin** installs this book's own skills as a managed bundle; **[skills.sh](https://skills.sh)** / **npm** install the referenced auth skills from their published channels (no repo cloning, no copies).
 
 ### 1. Get the skills
 
 <details>
-<summary><strong>Claude Code (plugin)</strong></summary>
+<summary><strong>Claude Code (plugin) — own skills only</strong></summary>
 
-Add this repo as a marketplace, then install what you need:
+Add this repo as a marketplace, then install the book's own skills:
 
 ```bash
 /plugin marketplace add dyegolara/skillbook
+/plugin install skillbook-skills@skillbook
 ```
 
-Then install each plugin from the marketplace:
-
-```bash
-/plugin install skillbook-skills@skillbook          # own skills
-/plugin install lnurl-auth@skillbook                # reference -> dyegolara/lnurl-auth-agents
-/plugin install nostr-auth@skillbook                # reference -> dyegolara/nostr-auth-agents
-```
-
-The referenced plugins resolve from their own repositories (Claude Code fetches
-them by `source` URL), so updates ship from the original repos, not from here.
+The referenced auth skills (`lnurl-auth`, `nostr-auth`) are NOT in this
+marketplace on purpose — they install from their published channels below.
 
 </details>
 
 <details>
-<summary><strong>skills.sh (editable copy)</strong></summary>
+<summary><strong>skills.sh (editable copy) — own + referenced</strong></summary>
 
 ```bash
-npx skills@latest add dyegolara/skillbook
-npx skills add dyegolara/lnurl-auth-agents --skill lnurl-auth
-npx skills add dyegolara/nostr-auth-agents --skill nostr-auth
+npx skills@latest add dyegolara/skillbook                       # own skills
+npx skills@latest add dyegolara/lnurl-auth-agents --skill lnurl-auth
+npx skills@latest add dyegolara/nostr-auth-agents --skill nostr-auth
+```
+
+Or, from this repo:
+
+```bash
+npm run skills:install    # runs the two `npx skills add` commands above
 ```
 
 </details>
@@ -56,14 +55,16 @@ npx skills add dyegolara/nostr-auth-agents --skill nostr-auth
 <details>
 <summary><strong>npm (package.json, by reference)</strong></summary>
 
-This repo's own `package.json` declares the published auth skills as dependencies
-(`lnurl-auth` from the npm registry, `nostr-auth` from its GitHub repo), so a
-single `npm install` pulls them — without vendoring any files:
+`lnurl-auth` is published to the npm registry, so this repo declares it as a
+dependency — `npm install` pulls the package (SKILL.md included) straight from
+npm, no files vendored:
 
 ```bash
-npm install          # fetches lnurl-auth + nostr-auth packages (SKILL.md included)
-npm run verify       # checks every reference resolves (npm + GitHub)
+npm install          # fetches lnurl-auth from the npm registry
+npm run verify       # checks every reference resolves (npm + skills.sh)
 ```
+
+`nostr-auth` is not on the npm registry yet — install it via skills.sh above.
 
 </details>
 
