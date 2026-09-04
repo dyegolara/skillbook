@@ -119,10 +119,12 @@ after Copilot ignored the request or its merge attempt failed.
   notify the owner ONCE (per sha) to decide manually and retry weekly.
 - **Don't prescribe rebase — Copilot CANNOT rebase** (its environment can't
   force-push; it says so in every ack). Ask it to "resolve the merge conflicts
-  with origin/main (any strategy that works — merge or rebase), preserving the
-  features and decisions of BOTH branches". Merge-from-main achieves the same
-  mergeable state; only history shape differs. The request DETECTOR must
-  accept both wordings ("rebase" / "resolve the merge conflicts").
+  with origin/main" without prescribing strategy. The full message also sets
+  the wisdom policy: preserve BOTH branches' features/decisions (either side
+  may only be dropped if it is part of the new features, i.e. this branch
+  over main), and on doubt consult spec/tickets/docs first, then ask the
+  user. The request DETECTOR must accept both wordings ("rebase" /
+  "resolve the merge conflicts").
 - **Re-ping message should be explicit**: ask Copilot to resolve the conflicts
   AND preserve both sides (a bare "rebase" produced merges that left
   conflicts).
