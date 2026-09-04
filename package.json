@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "lnurl-auth": "^1.4.1",
-    "nostr-auth": "github:dyegolara/nostr-auth-agents#main"
+    "nostr-auth": "^1.0.0"
   },
   "keywords": [
     "agent-skills",

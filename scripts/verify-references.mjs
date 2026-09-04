@@ -1,38 +1,34 @@
 #!/usr/bin/env node
 /**
  * verify-references.mjs — checks that every external skill referenced by this
- * skillbook actually resolves. References only, nothing is downloaded into the
- * repo.
- *
- * Statuses:
- *   OK   — reference resolves on its published channel
- *   WARN — known-pending channel (e.g. nostr-auth not yet on skills.sh/npm)
+ * skillbook actually resolves on its PUBLISHED channel (npm / skills.sh /
+ * ClawHub). References only, nothing is downloaded into the repo.
  */
 const CHECK = async (url) => {
-  const res = await fetch(url, { headers: { "User-Agent": "skillbook-verify" } });
+  const res = await fetch(url, { redirect: "follow" });
   return { status: res.status, ok: res.ok, url };
 };
 
 const refs = [
-  // lnurl-auth: published to npm
-  ["npm registry", "https://registry.npmjs.org/lnurl-auth", "OK"],
-  ["skills.sh page", "https://skills.sh/dyegolara/lnurl-auth-agents", "OK"],
-  // nostr-auth: TEMPORARY github reference until npm/skills.sh publish
-  ["github repo (TEMP)", "https://api.github.com/repos/dyegolara/nostr-auth-agents", "OK"],
-  ["skills.sh page (pending)", "https://skills.sh/dyegolara/nostr-auth-agents", "WARN"],
+  // lnurl-auth: published to npm + skills.sh
+  ["npm registry", "https://registry.npmjs.org/lnurl-auth"],
+  ["skills.sh page", "https://skills.sh/dyegolara/lnurl-auth-agents"],
+  // nostr-auth: published to npm + skills.sh + ClawHub
+  ["npm registry", "https://registry.npmjs.org/nostr-auth"],
+  ["skills.sh page", "https://skills.sh/dyegolara/nostr-auth-agents"],
+  ["ClawHub page", "https://clawhub.ai/skills/skills/nostr-auth"],
 ];
 
 let failed = false;
-for (const [kind, url, expect] of refs) {
+for (const [kind, url] of refs) {
   try {
     const r = await CHECK(url);
-    const ok = r.ok;
-    const label = expect === "WARN" ? (ok ? "OK " : "WARN") : ok ? "OK " : "FAIL";
-    console.log(`[${label}] ${kind.padStart(24)} ${url} -> ${r.status}`);
-    if (!ok && expect === "OK") failed = true;
+    const label = r.ok ? "OK " : "FAIL";
+    console.log(`[${label}] ${kind.padEnd(16)} ${url} -> ${r.status}`);
+    if (!r.ok) failed = true;
   } catch (e) {
-    console.log(`[FAIL] ${kind.padStart(24)} ${url} -> ${e.message}`);
-    if (expect === "OK") failed = true;
+    console.log(`[FAIL] ${kind.padEnd(16)} ${url} -> ${e.message}`);
+    failed = true;
   }
 }
 if (!failed) console.log("\nAll published-channel references OK.");
