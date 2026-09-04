@@ -2,16 +2,18 @@
 name: copilot-review-smart
 description: "Smart Copilot PR-review watchdog (multi-repo) that reads review state + timestamps, checks merge conflicts first, and lets an LLM decide (rebase/review/fix/notify/wait) instead of pinging daily. Use for cron/agent PR monitors that kept spamming '@copilot code review'."
 version: 1.1.0
-author: Hermes Agent (Marcus) — Dojo Mojo Casa House
+author: Hermes Agent (Marcus)
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
     tags: [GitHub, Copilot, PR-monitor, Code-Review, Cron, LLM-decision]
-    related_skills: [github-pr-workflow, github-issues]
+    related_skills: [github-copilot-review-loop, github-pr-workflow, github-issues]
 ---
 
 # Copilot Review — Smart (LLM-decided) watchdog
+
+Canonical source: https://github.com/dyegolara/skillbook (skills/engineering/copilot-review-smart)
 
 ## When to use
 
@@ -100,6 +102,27 @@ An LLM reads the GitHub state and returns one of five actions.
 - `deliver: origin` so the `notify_ready` message reaches the owner's home channel.
 - Today this runs as cron job **Smart PR Watchdog · Copilot loop (multi-repo)**
   (not "PR-monitor" — it watches rebase + review + notify across repos).
+
+## Rebase retry policy (anti-deadlock)
+
+A conflicted PR must never deadlock the loop. The v1.1 anti-duplicate gate
+("a rebase was already requested → WAIT forever") deadlocked 4 real PRs: the
+head sha never changed, so the pending-request condition held eternally even
+after Copilot ignored the request or its merge attempt failed.
+
+- **Copilot's ACK is not a request and not work.** Its replies QUOTE the
+  request (`> @copilot rebase ...`). Strip quote-lines (`>`) and ignore
+  Copilot-authored comments when detecting pending rebase requests — only a
+  human/bot request counts, and Copilot's ack must never renew it.
+- **Retry loop per head sha**: after a rebase request (ours or human's) give
+  Copilot 24h; if still dirty, re-ping — max 3 pings per sha. After that,
+  notify the owner ONCE (per sha) to decide manually and retry weekly.
+- **Re-ping message should be explicit**: ask Copilot to rebase AND resolve
+  conflicts (a bare "rebase" may produce a merge that leaves conflicts).
+- **Transcripts must be PAGINATED** (`per_page=100&page=N`, GitHub returns 30
+  by default). A 32-comment PR silently lost its newest comments — including
+  the bot's own rebase ping from minutes earlier — corrupting the
+  duplicate-detection and retry logic.
 
 ## Pitfalls
 
