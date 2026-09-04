@@ -117,8 +117,15 @@ after Copilot ignored the request or its merge attempt failed.
 - **Retry loop per head sha**: after a rebase request (ours or human's) give
   Copilot 24h; if still dirty, re-ping — max 3 pings per sha. After that,
   notify the owner ONCE (per sha) to decide manually and retry weekly.
-- **Re-ping message should be explicit**: ask Copilot to rebase AND resolve
-  conflicts (a bare "rebase" may produce a merge that leaves conflicts).
+- **Don't prescribe rebase — Copilot CANNOT rebase** (its environment can't
+  force-push; it says so in every ack). Ask it to "resolve the merge conflicts
+  with origin/main (any strategy that works — merge or rebase), preserving the
+  features and decisions of BOTH branches". Merge-from-main achieves the same
+  mergeable state; only history shape differs. The request DETECTOR must
+  accept both wordings ("rebase" / "resolve the merge conflicts").
+- **Re-ping message should be explicit**: ask Copilot to resolve the conflicts
+  AND preserve both sides (a bare "rebase" produced merges that left
+  conflicts).
 - **Transcripts must be PAGINATED** (`per_page=100&page=N`, GitHub returns 30
   by default). A 32-comment PR silently lost its newest comments — including
   the bot's own rebase ping from minutes earlier — corrupting the
