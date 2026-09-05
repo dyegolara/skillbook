@@ -133,6 +133,21 @@ after Copilot ignored the request or its merge attempt failed.
   the bot's own rebase ping from minutes earlier — corrupting the
   duplicate-detection and retry logic.
 
+## WIP / active-work guard (never interrupt an agent)
+
+Draft PRs — and PRs whose title starts with WIP/[WIP]/DNM — must NEVER enter
+the loop. A bot ping on WIP work derails the assigned agent: it drops its
+task to answer the review request and never resumes it (real incident:
+bitsimp#262, a draft got a `@copilot code review` 9 minutes after creation
+and the agent abandoned its assigned feature work). Skip drafts BEFORE any
+LLM call: record `_action: skip_wip` and continue.
+
+Additionally, a branch whose last commit is very recent (< 3h) is likely
+being actively worked on — hold ALL Copilot pings (review/rebase/fix) until
+the branch goes quiet. `notify_ready` is exempt (it never posts to GitHub).
+The decision LLM also receives `agent_still_working` in its context with an
+explicit "prefer WAIT" note.
+
 ## Pitfalls
 
 - **`mergeable`/`mergeable_state` are often null on the LIST endpoint** — GitHub computes mergeability asynchronously. Do a per-PR fetch before treating null as truth. If still null → WAIT, never ping.
