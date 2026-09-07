@@ -1,7 +1,7 @@
 ---
 name: copilot-review-smart
 description: "Smart Copilot PR-review watchdog (multi-repo) that reads review state + timestamps, checks merge conflicts first, and lets an LLM decide (rebase/review/fix/notify/wait) instead of pinging daily. Use for cron/agent PR monitors that kept spamming '@copilot code review'."
-version: 2.0.0
+version: 2.1.0
 author: Hermes Agent (Marcus)
 license: MIT
 platforms: [linux, macos, windows]
@@ -26,15 +26,21 @@ Triggers:
 
 ## Reference implementation
 
-`pr_monitor.py` (next to this file) is the portable reference script: it
-implements the full loop and is env-driven — `PR_MONITOR_REPOS=owner/a,owner/b`,
-`PR_MONITOR_STATE_PATH`, `PR_MONITOR_MODEL`, `DRY_RUN=1`. Test it with:
+`pr_monitor.mjs` (next to this file) is the portable reference script:
+plain ESM JavaScript, no build step, runs on Node >= 18 with an
+authenticated `gh` CLI (see `docs/adr/0002` for the repo's script standard).
+It is env-driven and **the repos to watch are passed as context, never
+defaulted** — an installed skill must not silently watch someone else's
+repos:
 
 ```bash
-DRY_RUN=1 PR_MONITOR_REPOS="your-org/your-repo" python3 pr_monitor.py
+DRY_RUN=1 PR_MONITOR_REPOS="your-org/your-repo" node pr_monitor.mjs
 ```
 
-Canonical deployed copy (Hermes cron, same code): `~/.hermes/scripts/pr_monitor.py`.
+Other env: `PR_MONITOR_STATE_PATH` (default `~/.cache/pr-monitor/state.json`),
+`PR_MONITOR_MODEL` (OpenRouter model), `OPENROUTER_API_KEY` (env or
+`~/.pr-monitor.env` / `~/.hermes/.env`), `DRY_RUN=1` (print would-be
+comments, never post, never persist state).
 
 ## Decision flow (deterministic gates first, LLM last)
 
@@ -114,14 +120,17 @@ newest non-Copilot conflict-resolution request on this head sha:
   `max(author.date)`).
 
 LLM: OpenRouter `chat/completions`, temperature 0, `response_format:
-json_object`, five-action prompt in Spanish reasoning (see `call_llm` in the
-script). Key from `PR_MONITOR` env (`~/.hermes/.env` supported, masked).
+json_object`, four-action prompt (`request_rebase` is deterministic — the
+LLM never picks it; Spanish reasoning, see `callLlm` in the script). Key
+from `OPENROUTER_API_KEY` (env, `~/.pr-monitor.env`, or `~/.hermes/.env`).
 
-## Cron setup (Hermes)
+## Cron setup
 
-- Hourly, `no_agent: true`, `script: pr_monitor.py`, `deliver: origin` —
-  stdout is delivered verbatim and empty stdout = silent.
-- Deployed as **Smart PR Watchdog · Copilot loop (multi-repo)**.
+- Hourly is fine — the signature cache makes idle ticks cheap. Point the
+  cron at `node pr_monitor.mjs` with `PR_MONITOR_REPOS` set; stdout must be
+  delivered verbatim and empty stdout = silent.
+- Hermes example: `no_agent: true`, `deliver: origin`, deployed as
+  **Smart PR Watchdog · Copilot loop (multi-repo)**.
 
 ## Pitfalls
 
@@ -145,6 +154,13 @@ script). Key from `PR_MONITOR` env (`~/.hermes/.env` supported, masked).
 - **A human may have already asked for the rebase** — the bot once duplicated
   a human's request 34 seconds after it was posted. Read the transcript
   before pinging.
+- **The REST API never exposes review-thread resolution state** — there is no
+  `resolved` field on `pulls/{n}/comments`. Count every top-level Copilot
+  inline comment as unaddressed and let the decision LLM read the transcript
+  to judge whether the feedback was really handled. (The Python v2.0.0
+  "checked" a `resolved` field that never exists — always-true bug.)
+- **A recurring LLM/API outage must not spam the owner** — notify once per
+  head sha, then stay quiet until state changes and the decision retries.
 - **Token economy**: the LLM call is the only expensive step — keep it behind
   the signature cache so idle ticks hit GitHub APIs only.
 - **Never touch a PR's DB/prod or post manually while testing** — use
