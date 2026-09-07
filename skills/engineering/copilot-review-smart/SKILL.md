@@ -130,7 +130,18 @@ from `OPENROUTER_API_KEY` (env, `~/.pr-monitor.env`, or `~/.hermes/.env`).
   cron at `node pr_monitor.mjs` with `PR_MONITOR_REPOS` set; stdout must be
   delivered verbatim and empty stdout = silent.
 - Hermes example: `no_agent: true`, `deliver: origin`, deployed as
-  **Smart PR Watchdog · Copilot loop (multi-repo)**.
+  - Deployed cron: **Smart PR Loop** (`3f51bedf15cd`, hourly, no_agent,
+    deliver origin). It runs **`pr_monitor.sh`** — a wrapper that exports
+    `PR_MONITOR_REPOS="dyegolara/monitor,dyegolara/bitsimp"` and the legacy
+    state path, then `exec node pr_monitor.mjs`. The wrapper exists because the
+    Hermes cron runner executes non-`.sh` scripts with Python (a bare `.mjs`
+    script would never run as Node).
+  - Migration history (2026-09-07, skillbook PR #1): python → .mjs. State path
+    kept at the legacy location to preserve throttle/seen-ready bookkeeping
+    (the .mjs default `~/.cache/pr-monitor/state.json` is for fresh installs).
+  - REST API does NOT expose review-thread resolution state — every top-level
+    Copilot inline comment counts as unaddressed; the decision LLM judges from
+    transcripts. LLM/API failures notify the owner once per head sha.
 
 ## Pitfalls
 
