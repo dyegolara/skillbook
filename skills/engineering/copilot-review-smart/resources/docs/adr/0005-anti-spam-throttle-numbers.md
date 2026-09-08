@@ -10,7 +10,8 @@ Keep these constants hard-coded:
 
 | Constant | Value | Origin |
 |---|---:|---|
-| `PING_MIN_INTERVAL_HOURS` | 12h | Prevent same-sha ping loops. |
+| `PING_MIN_INTERVAL_HOURS` | 12h | Prevent same-sha ping loops for review/fix requests. |
+| `REBASE_PING_MIN_INTERVAL_HOURS` | 6h | Keep conflict-resolution retries aligned with the 6h rebase retry window. |
 | `COOLDOWN_AFTER_REVIEW_HOURS` | 6h | Give Copilot time to post follow-up before re-pinging. |
 | `REBASE_RETRY_HOURS` | 6h | Deadlock incident with frozen conflicted PRs; shorten escalation path while active-work guard prevents in-flight spam. |
 | `REBASE_MAX_PINGS` | 3 | Bounded retries before owner escalation on a head sha. |

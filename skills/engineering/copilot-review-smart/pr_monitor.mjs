@@ -58,6 +58,7 @@ const COOLDOWN_AFTER_REVIEW_HOURS = 6;
 // if the PR is STILL dirty, re-ping — up to REBASE_MAX_PINGS per head sha.
 // Exhausted => notify the owner once (per sha) and retry weekly.
 const REBASE_RETRY_HOURS = 6;
+const REBASE_PING_MIN_INTERVAL_HOURS = 6;
 const REBASE_MAX_PINGS = 3;
 const REBASE_STALE_RETRY_HOURS = 24 * 7;
 
@@ -358,11 +359,11 @@ async function callLlm(decisionCtx) {
 // throttle / state guards
 // ---------------------------------------------------------------------------
 
-function throttleOkSameSha(st, nowMs, headSha) {
+function throttleOkSameSha(st, nowMs, headSha, minIntervalHours = PING_MIN_INTERVAL_HOURS) {
   if (st.last_ping_sha !== headSha) return true; // new commits -> fresh ping allowed
   const last = toMs(st.last_ping_ts);
   if (last === null) return true;
-  return nowMs - last >= H(PING_MIN_INTERVAL_HOURS);
+  return nowMs - last >= H(minIntervalHours);
 }
 
 function tooSoonAfterReview(ctx, nowMs) {
@@ -511,7 +512,7 @@ async function main() {
 
       // --- REQUEST_REBASE: conflicts block everything else. No
       // review-cooldown gate here: a review on a conflicted PR is useless
-      // anyway (the 12h same-sha throttle still applies).
+      // anyway (conflict pings have their own 6h same-sha throttle).
       if (action === "request_rebase") {
         if (agentWorking) {
           st._sig = sig;
@@ -519,7 +520,7 @@ async function main() {
           st._reason =
             `Last commit is newer than ${ACTIVE_WORK_QUIET_HOURS}h: an agent is still ` +
             "working on this branch; do not interrupt with pings.";
-        } else if (throttleOkSameSha(st, nowMs, headSha)) {
+        } else if (throttleOkSameSha(st, nowMs, headSha, REBASE_PING_MIN_INTERVAL_HOURS)) {
           await requestRebase(repo, num);
           githubActionsTaken++;
           st.last_ping_ts = new Date(nowMs).toISOString();

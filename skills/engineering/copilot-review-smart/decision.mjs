@@ -190,7 +190,7 @@ export async function decideWithLlm({
       st.llm_fail_notified_sha = ctx.headSha;
       notifications.push(
         `⚠️ ${ctx.repo}#${ctx.num}: could not decide with LLM (${e.message || e}). ` +
-          "Will retry on the next run."
+          "Will retry when PR state changes."
       );
     }
     return {

@@ -109,7 +109,8 @@ sequenceDiagram
   state + unresolved count + approved flag + mergeable + transcript digest.
   Unchanged ⇒ cached decision, no LLM call (idle tick ≈ 2.7s). Any new
   comment invalidates it.
-- **Throttles**: 12h same-sha ping interval; 6h cooldown after the newest
+- **Throttles**: 12h same-sha ping interval for review/fix requests; 6h
+  same-sha interval for conflict-resolution pings; 6h cooldown after the newest
   Copilot review; 6h rebase-retry window; 3 rebase pings per sha, then owner
   escalation + weekly retry.
 - **`seen_ready` shas**: `notify_ready` fires once per head sha.

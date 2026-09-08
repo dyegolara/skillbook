@@ -100,10 +100,11 @@ newest non-Copilot conflict-resolution request on this head sha:
   state + unresolved-count + approved-flag + mergeable + transcript digest).
   Unchanged ⇒ reuse the cached decision, no LLM call (idle tick ≈ 2.7s).
   ANY new comment invalidates it (transcript digest).
-- **Throttles**: 12h same-sha ping interval; 6h cooldown after the newest
+- **Throttles**: 12h same-sha ping interval for review/fix requests; 6h
+  same-sha interval for conflict-resolution pings; 6h cooldown after the newest
   Copilot review; 6h rebase-retry window; 3 rebase pings per sha, then owner
   escalation + weekly retry (origins and rationale in
-  `docs/adr/0005-anti-spam-throttle-numbers.md`).
+  `resources/docs/adr/0005-anti-spam-throttle-numbers.md`).
 - **`seen_ready` shas**: `notify_ready` fires ONCE per head sha — never
   re-message the owner.
 - **Silent output**: nothing to report ⇒ print NOTHING (in `no_agent` cron
@@ -126,9 +127,9 @@ LLM never picks it; English reasoning, see `callLlm` in the script). Key
 from `OPENROUTER_API_KEY` (env, `~/.pr-monitor.env`, or `~/.hermes/.env`).
 
 Decision architecture and policy intent are documented in ADRs:
-- `docs/adr/0003-llm-decision-maker-behind-deterministic-gates.md`
-- `docs/adr/0004-transcript-truth-over-thread-resolution-state.md`
-- `docs/adr/0005-anti-spam-throttle-numbers.md`
+- `resources/docs/adr/0003-llm-decision-maker-behind-deterministic-gates.md`
+- `resources/docs/adr/0004-transcript-truth-over-thread-resolution-state.md`
+- `resources/docs/adr/0005-anti-spam-throttle-numbers.md`
 
 Decision seam:
 - `decision.mjs` exposes a pure deterministic gate function and an LLM boundary
