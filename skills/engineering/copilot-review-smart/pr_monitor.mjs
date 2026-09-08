@@ -404,7 +404,7 @@ export async function runMonitorOnce({
   // Collect open PRs from every watched repo. A failure on one repo must
   // not kill the whole run.
   const prsByRepo = {};
-  for (const repo of REPOS) {
+  for (const repo of repos) {
     try {
       const prs = await runGhFn([`repos/${repo}/pulls?state=open`]);
       if (Array.isArray(prs)) prsByRepo[repo] = prs;
@@ -490,7 +490,7 @@ export async function runMonitorOnce({
         rebaseMaxPings: REBASE_MAX_PINGS,
         rebaseStaleRetryHours: REBASE_STALE_RETRY_HOURS,
         llmContext: decisionCtx,
-        llmDecider: callLlm,
+        llmDecider,
       });
       Object.assign(st, decided.stateEntry);
       notifications.push(...decided.notifications);
@@ -616,7 +616,9 @@ async function main() {
   if (out.output) console.log(out.output);
 }
 
-main().catch((e) => {
-  console.error(`⚠️ pr_monitor crashed: ${e.stack || e}`);
-  process.exit(1);
-});
+if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {
+  main().catch((e) => {
+    console.error(`⚠️ pr_monitor crashed: ${e.stack || e}`);
+    process.exit(1);
+  });
+}
