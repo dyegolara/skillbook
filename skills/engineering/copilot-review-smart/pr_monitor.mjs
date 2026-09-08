@@ -61,6 +61,11 @@ const REBASE_STALE_RETRY_HOURS = 24 * 7;
 // hold ALL Copilot pings until the branch goes quiet. (notify_ready is
 // exempt — it never touches GitHub.)
 const ACTIVE_WORK_QUIET_HOURS = 3;
+const REVIEW_FIX_MAX_PINGS = 3;
+const STATE_LOCK_PATH = `${STATE_PATH}.lock`;
+const STATE_LOCK_TIMEOUT_MS = 30_000;
+const STATE_LOCK_RETRY_MS = 200;
+const STATE_LOCK_STALE_MS = 10 * 60_000;
 
 const H = (h) => h * 3600_000;
 const JSON_REPORT_ENV_VALUES = new Set(["1", "true", "json", "jsonl"]);
@@ -204,6 +209,50 @@ function saveState(state) {
   fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
 }
 
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+async function acquireStateLock({
+  lockPath = STATE_LOCK_PATH,
+  timeoutMs = STATE_LOCK_TIMEOUT_MS,
+  retryMs = STATE_LOCK_RETRY_MS,
+  staleMs = STATE_LOCK_STALE_MS,
+} = {}) {
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  const start = Date.now();
+  while (true) {
+    try {
+      const fd = fs.openSync(lockPath, "wx");
+      fs.writeFileSync(fd, `${process.pid}\n`);
+      return { fd, lockPath };
+    } catch (e) {
+      if (e?.code !== "EEXIST") throw e;
+      try {
+        const stat = fs.statSync(lockPath);
+        if (Date.now() - stat.mtimeMs > staleMs) {
+          fs.rmSync(lockPath, { force: true });
+          continue;
+        }
+      } catch {
+        // lock disappeared between checks; retry
+      }
+      if (Date.now() - start >= timeoutMs) {
+        throw new Error(`Timed out acquiring state lock: ${lockPath}`);
+      }
+      await sleep(retryMs);
+    }
+  }
+}
+
+function releaseStateLock(lock) {
+  if (!lock) return;
+  try {
+    fs.closeSync(lock.fd);
+  } catch {
+    // already closed
+  }
+  fs.rmSync(lock.lockPath, { force: true });
+}
+
 async function postComment(repo, num, body, { dryRun = DRY_RUN, runGhFn = runGh, dryRunLogs = null } = {}) {
   if (dryRun) {
     if (Array.isArray(dryRunLogs)) dryRunLogs.push(`[DRY-RUN] ${repo}#${num}: ${body}`);
@@ -281,6 +330,7 @@ async function collectPrState(pr, num, repo) {
     author: r.user?.login || "?",
     ts: r.submitted_at,
     state: r.state || null,
+    commit_id: r.commit_id || null,
     body: r.body || "",
   }));
 
@@ -465,6 +515,13 @@ function classifyTerminalState({ ctx, action, reason, stateEntry }) {
   if (action === "notify_ready") return { done: true, terminal: "done", skipped: false };
   if (action === "llm_failed") return { done: true, terminal: "needs-human", skipped: false };
   if (
+    action === "wait" &&
+    stateEntry.review_fix_exhausted_sha === ctx.headSha &&
+    /retry budget exhausted/i.test(reason || "")
+  ) {
+    return { done: true, terminal: "needs-human", skipped: false };
+  }
+  if (
     ctx.hasConflicts &&
     action === "wait" &&
     stateEntry.stuck_notified_sha === ctx.headSha &&
@@ -476,18 +533,19 @@ function classifyTerminalState({ ctx, action, reason, stateEntry }) {
   return { done: false, terminal: null, skipped: false };
 }
 
-function buildOverallReport({ reports, targetPr }) {
+function buildOverallReport({ reports, targetPr, scopeFetchFailures = 0 }) {
   const actionableReports = reports.filter((report) => !report.skipped);
   return {
     type: "overall",
     scope: targetPr ? "single-pr" : "repo",
     repo: targetPr?.repo || null,
     pr: targetPr?.num || null,
-    done: actionableReports.every((report) => report.done),
+    done: scopeFetchFailures === 0 && actionableReports.every((report) => report.done),
     actionable_prs: actionableReports.length,
     terminal_prs: actionableReports.filter((report) => report.done).length,
     needs_human_prs: actionableReports.filter((report) => report.terminal === "needs-human").length,
     skipped_prs: reports.filter((report) => report.skipped).length,
+    scope_fetch_failures: scopeFetchFailures,
   };
 }
 
@@ -531,16 +589,24 @@ export async function runMonitorOnce({
   const dryRunLogs = [];
   const reports = [];
   let githubActionsTaken = 0;
+  let scopeFetchFailures = 0;
 
   // Collect open PRs from every watched repo. A failure on one repo must
   // not kill the whole run.
   const prsByRepo = {};
   if (targetPr) {
-    const pr = await runGhFn([`repos/${targetPr.repo}/pulls/${targetPr.num}`]);
-    if (pr && typeof pr === "object" && pr.state === "open") {
-      prsByRepo[targetPr.repo] = [pr];
-    } else {
-      prsByRepo[targetPr.repo] = [];
+    try {
+      const pr = await runGhFn([`repos/${targetPr.repo}/pulls/${targetPr.num}`]);
+      if (pr && typeof pr === "object" && pr.state === "open") {
+        prsByRepo[targetPr.repo] = [pr];
+      } else {
+        prsByRepo[targetPr.repo] = [];
+      }
+    } catch (e) {
+      scopeFetchFailures++;
+      console.error(
+        `⚠️ Could not fetch PR ${targetPr.repo}#${targetPr.num}: ${String(e).slice(0, 200)}`
+      );
     }
   } else {
     for (const repo of effectiveRepos) {
@@ -548,6 +614,7 @@ export async function runMonitorOnce({
         const prs = await runGhFn([`repos/${repo}/pulls?state=open`]);
         if (Array.isArray(prs)) prsByRepo[repo] = prs;
       } catch (e) {
+        scopeFetchFailures++;
         console.error(`⚠️ Could not list PRs for ${repo}: ${String(e).slice(0, 200)}`);
       }
     }
@@ -702,8 +769,10 @@ export async function runMonitorOnce({
           st._reason = finalReason;
         } else if (throttleOkSameSha(st, nowMs, headSha, REBASE_PING_MIN_INTERVAL_HOURS)) {
           await requestRebase(repo, num, { dryRun, runGhFn, dryRunLogs });
-          githubActionsTaken++;
-          githubActionPosted = true;
+          if (!dryRun) {
+            githubActionsTaken++;
+            githubActionPosted = true;
+          }
           st.last_ping_ts = new Date(nowMs).toISOString();
           st.last_ping_sha = headSha;
           // Count rebase pings per head sha (drives the retry policy).
@@ -742,20 +811,42 @@ export async function runMonitorOnce({
 
       // --- REQUEST_FIX / REQUEST_REVIEW (same ping guards).
       if (action === "request_fix" || action === "request_review") {
+        const reviewFixPings = st.review_fix_pings_sha === headSha
+          ? Number(st.review_fix_pings) || 0
+          : 0;
         const pingOk =
           !agentWorking &&
           throttleOkSameSha(st, nowMs, headSha) &&
           !tooSoonAfterReview(ctx, nowMs);
-        if (pingOk) {
+        if (reviewFixPings >= REVIEW_FIX_MAX_PINGS) {
+          finalAction = "wait";
+          finalReason =
+            `Review/fix retry budget exhausted (${reviewFixPings} pings on this sha): ` +
+            "owner escalated; stop retrying until new commits land.";
+          st.review_fix_exhausted_sha = headSha;
+          if (st.review_fix_stuck_notified_sha !== headSha) {
+            st.review_fix_stuck_notified_sha = headSha;
+            notifications.push(
+              `🔴 PR #${num} has ${reviewFixPings} unanswered Copilot review/fix requests on ` +
+                `this head: **${ctx.title}**\nDecide next step manually.\n` +
+                `→ http://github.com/${repo}/pull/${num}`
+            );
+          }
+        } else if (pingOk) {
           if (action === "request_fix") {
             await requestFix(repo, num, ctx.commentUrls, { dryRun, runGhFn, dryRunLogs });
           } else {
             await requestReview(repo, num, { dryRun, runGhFn, dryRunLogs });
           }
-          githubActionsTaken++;
-          githubActionPosted = true;
+          if (!dryRun) {
+            githubActionsTaken++;
+            githubActionPosted = true;
+          }
           st.last_ping_ts = new Date(nowMs).toISOString();
           st.last_ping_sha = headSha;
+          st.review_fix_pings_sha = headSha;
+          st.review_fix_pings = reviewFixPings + 1;
+          delete st.review_fix_exhausted_sha;
         } else if (agentWorking) {
           finalAction = "wait";
           finalReason =
@@ -807,7 +898,7 @@ export async function runMonitorOnce({
   nextState.seen_ready_shas = [...seenReady].sort();
   const outputParts = [...dryRunLogs];
   if (notifications.length) outputParts.push(notifications.join("\n\n"));
-  const overallReport = buildOverallReport({ reports, targetPr });
+  const overallReport = buildOverallReport({ reports, targetPr, scopeFetchFailures });
   if (emitJsonReport) {
     outputParts.push(...reports.map((report) => JSON.stringify(report)));
     outputParts.push(JSON.stringify(overallReport));
@@ -832,23 +923,29 @@ async function main() {
     process.exit(1);
   }
 
-  const state = loadState();
-  const out = await runMonitorOnce({
-    nowMs: Date.now(),
-    repos,
-    targetPr,
-    state,
-    dryRun: DRY_RUN,
-    emitJsonReport,
-  });
+  let lock = null;
+  try {
+    if (!DRY_RUN) lock = await acquireStateLock();
+    const state = loadState();
+    const out = await runMonitorOnce({
+      nowMs: Date.now(),
+      repos,
+      targetPr,
+      state,
+      dryRun: DRY_RUN,
+      emitJsonReport,
+    });
 
-  // Never persist in dry-run — a dry run must not poison the real
-  // throttle/cache bookkeeping.
-  if (!DRY_RUN) saveState(out.state);
+    // Never persist in dry-run — a dry run must not poison the real
+    // throttle/cache bookkeeping.
+    if (!DRY_RUN) saveState(out.state);
 
-  // Output: only emit human-facing notifications (empty otherwise ->
-  // no_agent cron stays silent so we don't spam the owner).
-  if (out.output) console.log(out.output);
+    // Output: only emit human-facing notifications (empty otherwise ->
+    // no_agent cron stays silent so we don't spam the owner).
+    if (out.output) console.log(out.output);
+  } finally {
+    releaseStateLock(lock);
+  }
 }
 
 if (process.argv[1] && new URL(import.meta.url).pathname === process.argv[1]) {

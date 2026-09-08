@@ -43,7 +43,7 @@ function makeCtx({
   };
 }
 
-test("LLM failure notifies once per sha, retries on state change, and re-notifies on new sha", async () => {
+test("LLM failure retries before terminalizing and resets retries on new sha", async () => {
   const contexts = [
     makeCtx(),
     makeCtx(),
@@ -78,8 +78,7 @@ test("LLM failure notifies once per sha, retries on state change, and re-notifie
     collectPrStateFn,
     llmDecider,
   });
-  assert.equal(tick1.notifications.length, 1);
-  assert.match(tick1.output, /could not decide with LLM/i);
+  assert.equal(tick1.notifications.length, 0);
 
   const tick2 = await runMonitorOnce({
     repos: [REPO],
@@ -101,7 +100,8 @@ test("LLM failure notifies once per sha, retries on state change, and re-notifie
     collectPrStateFn,
     llmDecider,
   });
-  assert.equal(tick3.notifications.length, 0);
+  assert.equal(tick3.notifications.length, 1);
+  assert.match(tick3.output, /could not decide with LLM after 3 attempts/i);
 
   const tick4 = await runMonitorOnce({
     repos: [REPO],
@@ -112,8 +112,8 @@ test("LLM failure notifies once per sha, retries on state change, and re-notifie
     collectPrStateFn,
     llmDecider,
   });
-  assert.equal(tick4.notifications.length, 1);
-  assert.equal(llmCalls, 3);
+  assert.equal(tick4.notifications.length, 0);
+  assert.equal(llmCalls, 4);
   assert.equal(posts.length, 0);
 });
 
@@ -276,6 +276,65 @@ test("agent-facing JSON report marks notify_ready as terminal done", async () =>
   assert.equal(jsonLines[1].done, true);
 });
 
+test("agent-facing JSON report marks review/fix retry exhaustion as needs-human", async () => {
+  const out = await runMonitorOnce({
+    repos: [REPO],
+    state: {
+      [`${REPO}#7`]: {
+        review_fix_pings_sha: "stuck-review",
+        review_fix_pings: 3,
+      },
+    },
+    nowMs: Date.parse("2026-09-08T00:00:00.000Z"),
+    dryRun: false,
+    emitJsonReport: true,
+    runGhFn: async (args) => {
+      if (args[0] === `repos/${REPO}/pulls?state=open`) return [makePr("stuck-review")];
+      if (args.includes("POST")) throw new Error("should not post when budget is exhausted");
+      return [];
+    },
+    collectPrStateFn: async () => makeCtx({ headSha: "stuck-review" }),
+    decideFn: async ({ stateEntry }) => ({
+      handled: true,
+      action: "request_review",
+      reason: "still waiting for Copilot",
+      reused: false,
+      stateEntry,
+      notifications: [],
+    }),
+  });
+
+  const [prLine, overallLine] = out.output
+    .split("\n")
+    .filter((line) => line.startsWith("{"))
+    .map((line) => JSON.parse(line));
+  assert.equal(prLine.terminal, "needs-human");
+  assert.equal(prLine.done, true);
+  assert.equal(overallLine.done, true);
+});
+
+test("overall report stays non-terminal when repo listing fails", async () => {
+  const out = await runMonitorOnce({
+    repos: [REPO],
+    state: {},
+    nowMs: Date.parse("2026-09-08T00:00:00.000Z"),
+    dryRun: true,
+    emitJsonReport: true,
+    runGhFn: async () => {
+      throw new Error("simulated listing failure");
+    },
+  });
+
+  const overallLine = out.output
+    .split("\n")
+    .filter((line) => line.startsWith("{"))
+    .map((line) => JSON.parse(line))
+    .at(-1);
+  assert.equal(overallLine.type, "overall");
+  assert.equal(overallLine.done, false);
+  assert.equal(overallLine.scope_fetch_failures, 1);
+});
+
 test("LLM context includes formal review transcript for All-clear decisions", async () => {
   let seenReviewTranscript = null;
   await runMonitorOnce({
@@ -295,6 +354,7 @@ test("LLM context includes formal review transcript for All-clear decisions", as
             author: "reviewer",
             ts: "2026-09-08T00:00:00.000Z",
             state: "COMMENTED",
+            commit_id: "abc123review",
             body: "Looks good to me, nothing else to add.",
           },
         ],
@@ -317,6 +377,7 @@ test("LLM context includes formal review transcript for All-clear decisions", as
       author: "reviewer",
       ts: "2026-09-08T00:00:00.000Z",
       state: "COMMENTED",
+      commit_id: "abc123review",
       body: "Looks good to me, nothing else to add.",
     },
   ]);

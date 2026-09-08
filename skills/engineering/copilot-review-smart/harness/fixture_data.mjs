@@ -1,6 +1,6 @@
 const REPO = "dyegolara/skillbook";
 const BASE_TS = "2026-09-08T00:00:00.000Z";
-const OLD_TS = "2026-09-07T00:00:00.000Z";
+const OLD_TS = new Date(Date.now() - 24 * 3600_000).toISOString();
 
 function pr({
   num,

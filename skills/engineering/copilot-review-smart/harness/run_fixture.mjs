@@ -67,6 +67,9 @@ async function runFixtureTick(name, {
   fs.mkdirSync(logDir, { recursive: true });
   const env = {
     ...process.env,
+    PR_MONITOR_REPOS: "",
+    PR_MONITOR_PR: "",
+    PR_MONITOR_REPORT: "",
     DRY_RUN: scenario.dryRun ? "1" : "0",
     PR_MONITOR_STATE_PATH: statePath,
     PR_MONITOR_FIXTURE_SCENARIO: name,
