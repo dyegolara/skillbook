@@ -1,7 +1,7 @@
 ---
 name: copilot-review-smart
 description: "Smart Copilot PR-review watchdog (multi-repo) that reads review state + timestamps, checks merge conflicts first, and lets an LLM decide (rebase/review/fix/notify/wait) instead of pinging daily. Use for cron/agent PR monitors that kept spamming '@copilot code review'."
-version: 2.1.0
+version: 2.2.0
 author: Hermes Agent (Marcus)
 license: MIT
 platforms: [linux, macos, windows]
@@ -58,9 +58,9 @@ Rebase policy (for `dirty` PRs, evaluated BEFORE the LLM):
 ```
 newest non-Copilot conflict-resolution request on this head sha:
   none                        → request_rebase (ask Copilot to resolve conflicts)
-  < 24h old                   → wait (give Copilot its window)
-  >= 24h, pings < 3           → request_rebase again (retry)
-  >= 24h, pings >= 3          → notify owner ONCE per sha; retry weekly
+  < 6h old                    → wait (give Copilot its window)
+  >= 6h, pings < 3            → request_rebase again (retry)
+  >= 6h, pings >= 3           → notify owner ONCE per sha; retry weekly
 ```
 
 ### Actions and their messages
@@ -101,8 +101,9 @@ newest non-Copilot conflict-resolution request on this head sha:
   Unchanged ⇒ reuse the cached decision, no LLM call (idle tick ≈ 2.7s).
   ANY new comment invalidates it (transcript digest).
 - **Throttles**: 12h same-sha ping interval; 6h cooldown after the newest
-  Copilot review; 24h rebase-retry window; 3 rebase pings per sha, then owner
-  escalation + weekly retry.
+  Copilot review; 6h rebase-retry window; 3 rebase pings per sha, then owner
+  escalation + weekly retry (origins and rationale in
+  `docs/adr/0005-anti-spam-throttle-numbers.md`).
 - **`seen_ready` shas**: `notify_ready` fires ONCE per head sha — never
   re-message the owner.
 - **Silent output**: nothing to report ⇒ print NOTHING (in `no_agent` cron
@@ -121,8 +122,13 @@ newest non-Copilot conflict-resolution request on this head sha:
 
 LLM: OpenRouter `chat/completions`, temperature 0, `response_format:
 json_object`, four-action prompt (`request_rebase` is deterministic — the
-LLM never picks it; Spanish reasoning, see `callLlm` in the script). Key
+LLM never picks it; English reasoning, see `callLlm` in the script). Key
 from `OPENROUTER_API_KEY` (env, `~/.pr-monitor.env`, or `~/.hermes/.env`).
+
+Decision architecture and policy intent are documented in ADRs:
+- `docs/adr/0003-llm-decision-maker-behind-deterministic-gates.md`
+- `docs/adr/0004-transcript-truth-over-thread-resolution-state.md`
+- `docs/adr/0005-anti-spam-throttle-numbers.md`
 
 ## Cron setup
 
@@ -153,7 +159,7 @@ from `OPENROUTER_API_KEY` (env, `~/.pr-monitor.env`, or `~/.hermes/.env`).
   green-check never fire. Prefer timestamp comparisons + a decision LLM.
 - **The anti-duplicate gate can deadlock**: "a rebase was already requested →
   wait forever" froze 4 real PRs when Copilot ignored the request (head sha
-  never moves). The retry loop (24h window, max 3 pings, owner escalation)
+  never moves). The retry loop (6h window, max 3 pings, owner escalation)
   exists for exactly this.
 - **Unpaginated transcripts silently lose the newest comments** (GitHub
   returns 30 by default). A 32-comment PR lost the bot's OWN rebase ping from
