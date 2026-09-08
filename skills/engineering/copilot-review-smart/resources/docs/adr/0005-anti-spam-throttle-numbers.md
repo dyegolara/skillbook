@@ -17,7 +17,7 @@ Keep these constants hard-coded:
 | `REBASE_MAX_PINGS` | 3 | Bounded retries before owner escalation on a head sha. |
 | `REBASE_STALE_RETRY_HOURS` | 168h | Weekly retry after escalation so truly stuck PRs are revisited without daily noise. |
 | `ACTIVE_WORK_QUIET_HOURS` | 3h | Incident (`bitsimp#262`): pings derailed active agent work; hold pings for recent commits. |
-| Transcript pagination window | 40+40 items | Incident where default 30-item pages hid newest comments and broke duplicate detection. |
+| Transcript retrieval | Full paginated fetch | Incident where default 30-item pages hid newest comments and broke duplicate detection. |
 
 ## Consequences
 

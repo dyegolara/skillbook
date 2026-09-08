@@ -40,7 +40,7 @@ flowchart TD
     D3 -- no --> E
     D -- no --> E{"Signature unchanged?"}
     E -- yes --> CACHED["Reuse cached decision<br/>(no LLM call)"]
-    E -- no --> F["Read full comment transcript<br/>(last 40 per author, paginated)<br/>strip Copilot quote-acks"]
+    E -- no --> F["Read full comment transcript<br/>(all pages, any author)<br/>strip Copilot quote-acks"]
     F --> G["Decision LLM (OpenRouter)<br/>temperature 0, JSON output"]
     G --> H{"Decision"}
     H -- request_review --> R1["Post: @copilot code review"]

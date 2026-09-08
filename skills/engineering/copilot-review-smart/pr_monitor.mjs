@@ -86,13 +86,13 @@ async function runGh(args) {
   }
 }
 
-/** Fetch a listing endpoint with per_page=100, following up to maxPages.
- * Long-lived PRs (>30 comments) would otherwise silently lose the newest
- * transcript entries — the exact comments the bot must read. */
-async function ghPaginated(pathname, maxPages = 3) {
+/** Fetch a listing endpoint with per_page=100, following pages until empty.
+ * Long-lived PRs (>30 comments) would otherwise silently lose transcript
+ * entries — the exact comments the bot must read. */
+async function ghPaginated(pathname) {
   const items = [];
   const sep = pathname.includes("?") ? "&" : "?";
-  for (let page = 1; page <= maxPages; page++) {
+  for (let page = 1; ; page++) {
     const batch = await runGh([`${pathname}${sep}per_page=100&page=${page}`]);
     if (!Array.isArray(batch) || batch.length === 0) break;
     items.push(...batch);
@@ -225,16 +225,16 @@ async function collectPrState(pr, num, repo) {
   const lastCopilotCommentTs = maxTs(copilotIcomments.map((c) => c.created_at));
 
   // FULL transcript (ANY author) — the human context the bot must read
-  // before acting. Newest 40 issue + 40 inline, bodies truncated.
-  const issueTranscript = icomments.slice(-40).map((c) => ({
+  // before acting.
+  const issueTranscript = icomments.map((c) => ({
     author: c.user?.login || "?",
     ts: c.created_at,
-    body: (c.body || "").slice(0, 400),
+    body: c.body || "",
   }));
-  const inlineTranscript = rcomments.slice(-40).map((c) => ({
+  const inlineTranscript = rcomments.map((c) => ({
     author: c.user?.login || "?",
     ts: c.created_at,
-    body: (c.body || "").slice(0, 300),
+    body: c.body || "",
   }));
 
   // Commits on the PR head branch (oldest-first — take the newest).

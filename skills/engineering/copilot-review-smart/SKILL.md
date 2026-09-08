@@ -86,7 +86,7 @@ newest non-Copilot conflict-resolution request on this head sha:
   policy above. "behind"/"blocked"/"unstable" are NOT conflicts. If
   mergeability is null → per-PR fetch; still null → wait.
 - **Transcript-first**: before deciding, read the FULL comment transcript (any
-  author, human/Copilot/bots, last 40 each, paginated). Never re-ask what a
+  author, human/Copilot/bots, all pages). Never re-ask what a
   human already asked.
 - **Copilot's ack is not a request and not work**: its replies QUOTE the
   request (`> @copilot …`). Strip quote-lines and ignore Copilot-authored
