@@ -344,6 +344,102 @@ test("overall report stays non-terminal when repo listing fails", async () => {
   assert.equal(overallLine.scope_fetch_failures, 1);
 });
 
+test("single-PR scope stays non-terminal when inline transcript fetch fails", async () => {
+  let decided = false;
+  const out = await runMonitorOnce({
+    state: {},
+    nowMs: Date.parse("2026-09-08T00:00:00.000Z"),
+    dryRun: true,
+    emitJsonReport: true,
+    targetPr: { repo: REPO, num: 42 },
+    runGhFn: async (args) => {
+      if (args[0] === `repos/${REPO}/pulls/42`) {
+        return {
+          number: 42,
+          state: "open",
+          draft: false,
+          title: "Inline failure PR",
+          head: { sha: "inline-fail" },
+        };
+      }
+      if (args[0] === `repos/${REPO}/pulls/42/reviews?per_page=100&page=1`) return [];
+      if (args[0] === `repos/${REPO}/pulls/42/comments?per_page=100&page=1`) {
+        throw new Error("simulated inline transcript failure");
+      }
+      if (
+        args[0] === `repos/${REPO}/issues/42/comments?per_page=100&page=1` ||
+        args[0] === `repos/${REPO}/pulls/42/commits?per_page=100&page=1`
+      ) {
+        return [];
+      }
+      throw new Error(`unexpected gh call: ${args[0]}`);
+    },
+    decideFn: async () => {
+      decided = true;
+      throw new Error("should not decide from partial transcript");
+    },
+  });
+
+  const [prLine, overallLine] = out.output
+    .split("\n")
+    .filter((line) => line.startsWith("{"))
+    .map((line) => JSON.parse(line));
+  assert.equal(decided, false);
+  assert.equal(prLine.action, "wait");
+  assert.equal(prLine.done, false);
+  assert.match(prLine.reason, /could not fetch inline review comments/i);
+  assert.equal(overallLine.done, false);
+  assert.equal(overallLine.scope_fetch_failures, 1);
+});
+
+test("single-PR scope stays non-terminal when issue transcript fetch fails", async () => {
+  let decided = false;
+  const out = await runMonitorOnce({
+    state: {},
+    nowMs: Date.parse("2026-09-08T00:00:00.000Z"),
+    dryRun: true,
+    emitJsonReport: true,
+    targetPr: { repo: REPO, num: 42 },
+    runGhFn: async (args) => {
+      if (args[0] === `repos/${REPO}/pulls/42`) {
+        return {
+          number: 42,
+          state: "open",
+          draft: false,
+          title: "Issue failure PR",
+          head: { sha: "issue-fail" },
+        };
+      }
+      if (
+        args[0] === `repos/${REPO}/pulls/42/reviews?per_page=100&page=1` ||
+        args[0] === `repos/${REPO}/pulls/42/comments?per_page=100&page=1` ||
+        args[0] === `repos/${REPO}/pulls/42/commits?per_page=100&page=1`
+      ) {
+        return [];
+      }
+      if (args[0] === `repos/${REPO}/issues/42/comments?per_page=100&page=1`) {
+        throw new Error("simulated issue transcript failure");
+      }
+      throw new Error(`unexpected gh call: ${args[0]}`);
+    },
+    decideFn: async () => {
+      decided = true;
+      throw new Error("should not decide from partial transcript");
+    },
+  });
+
+  const [prLine, overallLine] = out.output
+    .split("\n")
+    .filter((line) => line.startsWith("{"))
+    .map((line) => JSON.parse(line));
+  assert.equal(decided, false);
+  assert.equal(prLine.action, "wait");
+  assert.equal(prLine.done, false);
+  assert.match(prLine.reason, /could not fetch issue comments/i);
+  assert.equal(overallLine.done, false);
+  assert.equal(overallLine.scope_fetch_failures, 1);
+});
+
 test("LLM context includes formal review transcript for All-clear decisions", async () => {
   let seenReviewTranscript = null;
   await runMonitorOnce({

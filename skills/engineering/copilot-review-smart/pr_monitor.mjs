@@ -419,6 +419,13 @@ function isCopilot(item) {
   return login.toLowerCase().includes(COPILOT_SUBSTR);
 }
 
+class PrStateFetchError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "PrStateFetchError";
+  }
+}
+
 // ---------------------------------------------------------------------------
 // GitHub state collector
 // ---------------------------------------------------------------------------
@@ -450,7 +457,11 @@ async function collectPrState(pr, num, repo, { runGhFn = runGh } = {}) {
   // LLM reads the transcripts and decides if the feedback was really
   // handled. (The Python version "checked" a `resolved` field that never
   // exists in this payload — always-true bug, fixed here by being honest.)
-  const rcomments = await ghPaginatedWith(runGhFn, `repos/${repo}/pulls/${num}/comments`).catch(() => []);
+  const rcomments = await ghPaginatedWith(runGhFn, `repos/${repo}/pulls/${num}/comments`).catch((error) => {
+    throw new PrStateFetchError(
+      `Could not fetch inline review comments for ${repo}#${num}: ${String(error).slice(0, 200)}`
+    );
+  });
   const copilotRcomments = rcomments.filter(isCopilot);
   const latestInlineTs = maxTs(copilotRcomments.map((c) => c.created_at));
   const nInlineUnresolved = copilotRcomments.filter(
@@ -460,7 +471,11 @@ async function collectPrState(pr, num, repo, { runGhFn = runGh } = {}) {
 
   // Issue-level comments (the transcript where we posted "@copilot code
   // review" and Copilot replied). Only Copilot's replies carry its verdict.
-  const icomments = await ghPaginatedWith(runGhFn, `repos/${repo}/issues/${num}/comments`).catch(() => []);
+  const icomments = await ghPaginatedWith(runGhFn, `repos/${repo}/issues/${num}/comments`).catch((error) => {
+    throw new PrStateFetchError(
+      `Could not fetch issue comments for ${repo}#${num}: ${String(error).slice(0, 200)}`
+    );
+  });
   const copilotIcomments = icomments.filter(isCopilot);
   const lastCopilotComment = copilotIcomments.at(-1)?.body || "";
   const lastCopilotCommentTs = maxTs(copilotIcomments.map((c) => c.created_at));
@@ -766,7 +781,28 @@ export async function runMonitorOnce({
       const num = pr.number;
       const skey = `${repo}#${num}`;
       const st = { ...(nextState[skey] || {}) };
-      const ctx = await collectPrStateFn(pr, num, repo, { runGhFn });
+      let ctx;
+      try {
+        ctx = await collectPrStateFn(pr, num, repo, { runGhFn });
+      } catch (error) {
+        if (!(error instanceof PrStateFetchError)) throw error;
+        scopeFetchFailures++;
+        console.error(`⚠️ ${error.message}`);
+        reports.push({
+          type: "pr",
+          repo,
+          pr: num,
+          head_sha: pr.head?.sha || null,
+          action: "wait",
+          reason: error.message,
+          reused_cached_decision: false,
+          github_action_posted: false,
+          done: false,
+          terminal: null,
+          skipped: false,
+        });
+        continue;
+      }
       const headSha = ctx.headSha;
       const reviewTranscript = Array.isArray(ctx.reviewTranscript) ? ctx.reviewTranscript : [];
       const reviewDigest = buildReviewDigest(reviewTranscript);
