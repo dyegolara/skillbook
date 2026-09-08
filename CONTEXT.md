@@ -69,13 +69,26 @@ _Avoid_: cache key (it is a cache *of* a decision, keyed by state).
 
 **Notify-ready**:
 The one action that never touches GitHub: the loop tells the owner a PR is
-ready for human review. Fires at most once per head sha.
+ready for human review. Fired by an All-clear; at most once per head sha.
 _Avoid_: approval (Copilot posting `APPROVED` is a review state, not this).
+
+**All-clear**:
+The LLM's judgement, from the PR transcript, that the reviewer (Copilot or
+a human) left no unaddressed comments on the current head. The signal that
+triggers Notify-ready and ends a loop.
+_Avoid_: approval, done (done is the loop's terminal state, this is the signal).
 
 **Stuck PR**:
 A conflicted PR that exhausted its conflict-resolution pings (3 per head
 sha); the loop escalates to the owner once and retries weekly.
 _Avoid_: dead PR, blocked PR (blocked is a GitHub `mergeable_state`).
+
+**Needs-human**:
+A terminal state of a loop: the bot can do nothing more on the PR —
+Copilot repeatedly ignored its pings (e.g. out of credits) or could not
+resolve the conflicts. The loop escalates to the owner once and stops.
+_Avoid_: stuck PR (stuck describes the PR, this is the loop's state),
+blocked (a GitHub `mergeable_state`).
 
 **Escalation**:
 A single owner notification that the loop cannot safely advance on its own for
