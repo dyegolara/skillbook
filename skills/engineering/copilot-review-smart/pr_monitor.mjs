@@ -26,6 +26,7 @@
  */
 
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import fs from "node:fs";
 import os from "node:os";
@@ -66,6 +67,7 @@ const STATE_LOCK_PATH = `${STATE_PATH}.lock`;
 const STATE_LOCK_TIMEOUT_MS = 30_000;
 const STATE_LOCK_RETRY_MS = 200;
 const STATE_LOCK_STALE_MS = 10 * 60_000;
+const STATE_LOCK_HEARTBEAT_MS = 60_000;
 
 const H = (h) => h * 3600_000;
 const JSON_REPORT_ENV_VALUES = new Set(["1", "true", "json", "jsonl"]);
@@ -168,10 +170,14 @@ async function runGh(args) {
  * Long-lived PRs (>30 comments) would otherwise silently lose transcript
  * entries — the exact comments the bot must read. */
 async function ghPaginated(pathname) {
+  return ghPaginatedWith(runGh, pathname);
+}
+
+async function ghPaginatedWith(runGhFn, pathname) {
   const items = [];
   const sep = pathname.includes("?") ? "&" : "?";
   for (let page = 1; ; page++) {
-    const batch = await runGh([`${pathname}${sep}per_page=100&page=${page}`]);
+    const batch = await runGhFn([`${pathname}${sep}per_page=100&page=${page}`]);
     if (!Array.isArray(batch) || batch.length === 0) break;
     items.push(...batch);
     if (batch.length < 100) break;
@@ -211,6 +217,57 @@ function saveState(state) {
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+function parseLockOwner(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return null;
+  try {
+    const parsed = JSON.parse(text);
+    if (Number.isInteger(parsed?.pid) && typeof parsed?.token === "string" && parsed.token) {
+      return { pid: parsed.pid, token: parsed.token };
+    }
+  } catch {
+    // fall through for legacy pid-only locks
+  }
+  const pid = Number(text.split(/\s+/, 1)[0]);
+  return Number.isInteger(pid) && pid > 0 ? { pid, token: null } : null;
+}
+
+function readLockRecord(lockPath) {
+  try {
+    const raw = fs.readFileSync(lockPath, "utf8");
+    return { raw, owner: parseLockOwner(raw) };
+  } catch {
+    return { raw: null, owner: null };
+  }
+}
+
+function sameLockOwner(a, b) {
+  return Boolean(a && b && a.pid === b.pid && a.token === b.token);
+}
+
+function isPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return e?.code !== "ESRCH";
+  }
+}
+
+function startLockHeartbeat(fd, intervalMs = STATE_LOCK_HEARTBEAT_MS) {
+  const timer = setInterval(() => {
+    try {
+      const now = new Date();
+      fs.futimesSync(fd, now, now);
+    } catch {
+      // lock already released or replaced
+    }
+  }, intervalMs);
+  timer.unref?.();
+  return timer;
+}
+
 async function acquireStateLock({
   lockPath = STATE_LOCK_PATH,
   timeoutMs = STATE_LOCK_TIMEOUT_MS,
@@ -222,15 +279,28 @@ async function acquireStateLock({
   while (true) {
     try {
       const fd = fs.openSync(lockPath, "wx");
-      fs.writeFileSync(fd, `${process.pid}\n`);
-      return { fd, lockPath };
+      const owner = { pid: process.pid, token: randomUUID() };
+      fs.writeFileSync(fd, JSON.stringify(owner));
+      fs.fsyncSync(fd);
+      return {
+        fd,
+        lockPath,
+        owner,
+        heartbeat: startLockHeartbeat(fd),
+      };
     } catch (e) {
       if (e?.code !== "EEXIST") throw e;
       try {
         const stat = fs.statSync(lockPath);
         if (Date.now() - stat.mtimeMs > staleMs) {
-          fs.rmSync(lockPath, { force: true });
-          continue;
+          const current = readLockRecord(lockPath);
+          if (!isPidAlive(current.owner?.pid)) {
+            const latest = readLockRecord(lockPath);
+            if (current.raw === latest.raw) {
+              fs.rmSync(lockPath, { force: true });
+              continue;
+            }
+          }
         }
       } catch {
         // lock disappeared between checks; retry
@@ -246,11 +316,23 @@ async function acquireStateLock({
 function releaseStateLock(lock) {
   if (!lock) return;
   try {
+    clearInterval(lock.heartbeat);
+  } catch {
+    // timer already cleared
+  }
+  try {
+    const current = readLockRecord(lock.lockPath).owner;
+    if (sameLockOwner(current, lock.owner)) {
+      fs.rmSync(lock.lockPath, { force: true });
+    }
+  } catch {
+    // lock already removed
+  }
+  try {
     fs.closeSync(lock.fd);
   } catch {
     // already closed
   }
-  fs.rmSync(lock.lockPath, { force: true });
 }
 
 async function postComment(repo, num, body, { dryRun = DRY_RUN, runGhFn = runGh, dryRunLogs = null } = {}) {
@@ -306,6 +388,32 @@ function maxTs(tsList) {
   return vals.length ? Math.max(...vals) : null;
 }
 
+function digestItems(items, projector) {
+  return JSON.stringify((items || []).map(projector));
+}
+
+function buildReviewDigest(reviewTranscript) {
+  return digestItems(reviewTranscript, (item) => [
+    item?.author || "",
+    item?.state || "",
+    item?.commit_id || "",
+    item?.ts || "",
+    item?.body || "",
+  ]);
+}
+
+function buildCommentDigest(transcript) {
+  return digestItems(transcript, (item) => [
+    item?.author || "",
+    item?.ts || "",
+    item?.body || "",
+  ]);
+}
+
+function uniqueUrls(urls) {
+  return [...new Set((urls || []).filter(Boolean))];
+}
+
 function isCopilot(item) {
   const login = item?.user?.login || "";
   return login.toLowerCase().includes(COPILOT_SUBSTR);
@@ -315,12 +423,12 @@ function isCopilot(item) {
 // GitHub state collector
 // ---------------------------------------------------------------------------
 
-async function collectPrState(pr, num, repo) {
+async function collectPrState(pr, num, repo, { runGhFn = runGh } = {}) {
   const headSha = pr.head?.sha || null;
   const title = pr.title || "";
 
   // Copilot reviews (the formal pull_request reviews).
-  const reviews = await ghPaginated(`repos/${repo}/pulls/${num}/reviews`).catch(() => []);
+  const reviews = await ghPaginatedWith(runGhFn, `repos/${repo}/pulls/${num}/reviews`).catch(() => []);
   const copilotReviews = reviews.filter(isCopilot);
   const approved = copilotReviews.some((r) => r.state === "APPROVED");
   const commented = copilotReviews.some((r) => r.state === "COMMENTED");
@@ -333,6 +441,8 @@ async function collectPrState(pr, num, repo) {
     commit_id: r.commit_id || null,
     body: r.body || "",
   }));
+  const reviewUrls = reviews
+  .map((r) => r.html_url || (r.id ? `http://github.com/${repo}/pull/${num}#pullrequestreview-${r.id}` : null));
 
   // Inline review comments left by Copilot (the actual feedback content).
   // NOTE: the REST API does NOT expose thread resolution state, so every
@@ -340,20 +450,21 @@ async function collectPrState(pr, num, repo) {
   // LLM reads the transcripts and decides if the feedback was really
   // handled. (The Python version "checked" a `resolved` field that never
   // exists in this payload — always-true bug, fixed here by being honest.)
-  const rcomments = await ghPaginated(`repos/${repo}/pulls/${num}/comments`).catch(() => []);
+  const rcomments = await ghPaginatedWith(runGhFn, `repos/${repo}/pulls/${num}/comments`).catch(() => []);
   const copilotRcomments = rcomments.filter(isCopilot);
   const latestInlineTs = maxTs(copilotRcomments.map((c) => c.created_at));
   const nInlineUnresolved = copilotRcomments.filter(
     (c) => c.in_reply_to_id == null && c.diff_hunk
   ).length;
-  const commentUrls = copilotRcomments.map((c) => c.html_url).filter(Boolean);
+  const inlineUrls = rcomments.map((c) => c.html_url);
 
   // Issue-level comments (the transcript where we posted "@copilot code
   // review" and Copilot replied). Only Copilot's replies carry its verdict.
-  const icomments = await ghPaginated(`repos/${repo}/issues/${num}/comments`).catch(() => []);
+  const icomments = await ghPaginatedWith(runGhFn, `repos/${repo}/issues/${num}/comments`).catch(() => []);
   const copilotIcomments = icomments.filter(isCopilot);
   const lastCopilotComment = copilotIcomments.at(-1)?.body || "";
   const lastCopilotCommentTs = maxTs(copilotIcomments.map((c) => c.created_at));
+  const issueUrls = icomments.map((c) => c.html_url);
 
   // FULL transcript (ANY author) — the human context the bot must read
   // before acting.
@@ -367,9 +478,10 @@ async function collectPrState(pr, num, repo) {
     ts: c.created_at,
     body: c.body || "",
   }));
+  const commentUrls = uniqueUrls([...reviewUrls, ...inlineUrls, ...issueUrls]);
 
   // Commits on the PR head branch (oldest-first — take the newest).
-  const commits = await ghPaginated(`repos/${repo}/pulls/${num}/commits`).catch(() => []);
+  const commits = await ghPaginatedWith(runGhFn, `repos/${repo}/pulls/${num}/commits`).catch(() => []);
   const lastCommitTs = maxTs(commits.map((c) => c.commit?.author?.date));
 
   // Merge-ability vs main: the HARD prerequisite before any review.
@@ -379,7 +491,7 @@ async function collectPrState(pr, num, repo) {
   let mergeable = pr.mergeable ?? null;
   let mergeableState = pr.mergeable_state ?? null;
   if (mergeable === null && mergeableState === null) {
-    const full = await runGh([`repos/${repo}/pulls/${num}`]).catch(() => null);
+    const full = await runGhFn([`repos/${repo}/pulls/${num}`]).catch(() => null);
     if (full && typeof full === "object") {
       mergeable = full.mergeable ?? null;
       mergeableState = full.mergeable_state ?? null;
@@ -549,6 +661,30 @@ function buildOverallReport({ reports, targetPr, scopeFetchFailures = 0 }) {
   };
 }
 
+function buildTerminalPrReport({
+  repo,
+  pr,
+  action = "wait",
+  reason,
+  headSha = pr?.head?.sha || null,
+  terminal = "done",
+  skipped = false,
+}) {
+  return {
+    type: "pr",
+    repo,
+    pr: pr?.number ?? null,
+    head_sha: headSha,
+    action,
+    reason,
+    reused_cached_decision: false,
+    github_action_posted: false,
+    done: true,
+    terminal,
+    skipped,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
@@ -600,6 +736,11 @@ export async function runMonitorOnce({
       if (pr && typeof pr === "object" && pr.state === "open") {
         prsByRepo[targetPr.repo] = [pr];
       } else {
+        reports.push(buildTerminalPrReport({
+          repo: targetPr.repo,
+          pr,
+          reason: `Requested PR is not open (${pr?.merged ? "merged" : pr?.state || "closed"}); monitoring is complete.`,
+        }));
         prsByRepo[targetPr.repo] = [];
       }
     } catch (e) {
@@ -611,7 +752,7 @@ export async function runMonitorOnce({
   } else {
     for (const repo of effectiveRepos) {
       try {
-        const prs = await runGhFn([`repos/${repo}/pulls?state=open`]);
+        const prs = await ghPaginatedWith(runGhFn, `repos/${repo}/pulls?state=open`);
         if (Array.isArray(prs)) prsByRepo[repo] = prs;
       } catch (e) {
         scopeFetchFailures++;
@@ -625,9 +766,18 @@ export async function runMonitorOnce({
       const num = pr.number;
       const skey = `${repo}#${num}`;
       const st = { ...(nextState[skey] || {}) };
-      const ctx = await collectPrStateFn(pr, num, repo);
+      const ctx = await collectPrStateFn(pr, num, repo, { runGhFn });
       const headSha = ctx.headSha;
       const reviewTranscript = Array.isArray(ctx.reviewTranscript) ? ctx.reviewTranscript : [];
+      const reviewDigest = buildReviewDigest(reviewTranscript);
+      const issueDigest = buildCommentDigest(ctx.issueTranscript);
+      const inlineDigest = buildCommentDigest(ctx.inlineTranscript);
+      const reviewFixResponseSig = [
+        reviewDigest,
+        inlineDigest,
+        ctx.lastCopilotCommentTs || "",
+        ctx.lastCopilotComment || "",
+      ].join("|");
 
       const agentWorking = agentStillWorking(ctx, nowMs);
       const decisionCtx = {
@@ -677,20 +827,15 @@ export async function runMonitorOnce({
         headSha || "",
         ctx.latestReviewTs || "",
         ctx.latestReviewState || "",
-        reviewTranscript.length,
-        reviewTranscript.at(-1)?.ts || "",
         ctx.latestInlineTs || "",
         ctx.lastCopilotCommentTs || "",
         ctx.nInlineUnresolved,
         ctx.approved,
         ctx.mergeable,
         ctx.mergeableState,
-        // Transcript digest: any NEW comment (any author) must invalidate
-        // the cached decision — the bot reads context first.
-        ctx.issueTranscript.length,
-        ctx.issueTranscript.at(-1)?.ts || "",
-        ctx.inlineTranscript.length,
-        ctx.inlineTranscript.at(-1)?.ts || "",
+        reviewDigest,
+        issueDigest,
+        inlineDigest,
       ].join("|");
       const decided = await decideFn({
         ctx: { ...ctx, repo, num },
@@ -705,8 +850,28 @@ export async function runMonitorOnce({
       });
       Object.assign(st, decided.stateEntry);
       notifications.push(...decided.notifications);
-      const action = decided.action;
-      const reason = decided.reason;
+      let action = decided.action;
+      let reason = decided.reason;
+      const pendingReviewFixAction =
+        st.review_fix_pending_sha === headSha &&
+        ["request_review", "request_fix"].includes(st.review_fix_pending_action)
+          ? st.review_fix_pending_action
+          : null;
+      const pendingRetryDue =
+        action === "wait" &&
+        pendingReviewFixAction &&
+        st.review_fix_pending_response_sig === reviewFixResponseSig &&
+        !agentWorking &&
+        throttleOkSameSha(st, nowMs, headSha) &&
+        !tooSoonAfterReview(ctx, nowMs);
+      if (pendingRetryDue) {
+        action = pendingReviewFixAction;
+        reason =
+          `Pending ${pendingReviewFixAction.replace("request_", "")} request is older than ` +
+          `${PING_MIN_INTERVAL_HOURS}h with no new review feedback; retrying.`;
+        st._action = action;
+        st._reason = reason;
+      }
       let finalAction = action;
       let finalReason = reason;
       let githubActionPosted = false;
@@ -730,6 +895,11 @@ export async function runMonitorOnce({
 
       // --- NOTIFY_READY: do NOT touch GitHub, just message the owner.
       if (action === "notify_ready") {
+        delete st.review_fix_pending_sha;
+        delete st.review_fix_pending_action;
+        delete st.review_fix_pending_response_sig;
+        delete st.review_fix_exhausted_sha;
+        delete st.review_fix_exhausted_action;
         const readyKey = `${repo}:${headSha}`;
         if (!seenReady.has(readyKey)) {
           seenReady.add(readyKey);
@@ -811,7 +981,8 @@ export async function runMonitorOnce({
 
       // --- REQUEST_FIX / REQUEST_REVIEW (same ping guards).
       if (action === "request_fix" || action === "request_review") {
-        const reviewFixPings = st.review_fix_pings_sha === headSha
+        const reviewFixPings = st.review_fix_pings_sha === headSha &&
+          st.review_fix_pings_action === action
           ? Number(st.review_fix_pings) || 0
           : 0;
         const pingOk =
@@ -824,6 +995,10 @@ export async function runMonitorOnce({
             `Review/fix retry budget exhausted (${reviewFixPings} pings on this sha): ` +
             "owner escalated; stop retrying until new commits land.";
           st.review_fix_exhausted_sha = headSha;
+          st.review_fix_exhausted_action = action;
+          st.review_fix_pending_sha = headSha;
+          st.review_fix_pending_action = action;
+          st.review_fix_pending_response_sig = reviewFixResponseSig;
           if (st.review_fix_stuck_notified_sha !== headSha) {
             st.review_fix_stuck_notified_sha = headSha;
             notifications.push(
@@ -845,8 +1020,13 @@ export async function runMonitorOnce({
           st.last_ping_ts = new Date(nowMs).toISOString();
           st.last_ping_sha = headSha;
           st.review_fix_pings_sha = headSha;
+          st.review_fix_pings_action = action;
           st.review_fix_pings = reviewFixPings + 1;
+          st.review_fix_pending_sha = headSha;
+          st.review_fix_pending_action = action;
+          st.review_fix_pending_response_sig = reviewFixResponseSig;
           delete st.review_fix_exhausted_sha;
+          delete st.review_fix_exhausted_action;
         } else if (agentWorking) {
           finalAction = "wait";
           finalReason =

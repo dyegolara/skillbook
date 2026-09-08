@@ -96,22 +96,42 @@ function makeSignature({
   issueTranscript = [],
   inlineTranscript = [],
 }) {
+  const reviewDigest = JSON.stringify(
+    reviewTranscript.map((item) => [
+      item?.author || "",
+      item?.state || "",
+      item?.commit_id || "",
+      item?.ts || "",
+      item?.body || "",
+    ])
+  );
+  const issueDigest = JSON.stringify(
+    issueTranscript.map((item) => [
+      item?.author || "",
+      item?.ts || "",
+      item?.body || "",
+    ])
+  );
+  const inlineDigest = JSON.stringify(
+    inlineTranscript.map((item) => [
+      item?.author || "",
+      item?.ts || "",
+      item?.body || "",
+    ])
+  );
   return [
     headSha || "",
     latestReviewTs || "",
     latestReviewState || "",
-    reviewTranscript.length,
-    reviewTranscript.at(-1)?.ts || "",
     latestInlineTs || "",
     lastCopilotCommentTs || "",
     nInlineUnresolved,
     approved,
     mergeable,
     mergeableState,
-    issueTranscript.length,
-    issueTranscript.at(-1)?.ts || "",
-    inlineTranscript.length,
-    inlineTranscript.at(-1)?.ts || "",
+    reviewDigest,
+    issueDigest,
+    inlineDigest,
   ].join("|");
 }
 
@@ -262,7 +282,7 @@ const notifyOnceBundle = buildPrBundle({
 function repoTick(prBundles) {
   return Object.assign(
     {
-      [`repos/${REPO}/pulls?state=open`]: prBundles.map((bundle) => bundle.pr),
+      [`repos/${REPO}/pulls?state=open&per_page=100&page=1`]: prBundles.map((bundle) => bundle.pr),
     },
     ...prBundles.map((bundle) => bundle.endpoints)
   );
