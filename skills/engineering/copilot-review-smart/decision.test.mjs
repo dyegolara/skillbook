@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { decideDeterministic } from "./decision.mjs";
+import { decideDeterministic, decideWithLlm, normalizeLlmDecision } from "./decision.mjs";
 
 const BASE_NOW = Date.parse("2026-09-08T00:00:00.000Z");
 
@@ -28,6 +28,12 @@ function call(partial) {
 
 test("draft/WIP PR skips loop", () => {
   const out = call({ ctx: { draft: true } });
+  assert.equal(out.handled, true);
+  assert.equal(out.action, "skip_wip");
+});
+
+test("WIP-titled PR skips loop", () => {
+  const out = call({ ctx: { title: "[WIP] still cooking" } });
   assert.equal(out.handled, true);
   assert.equal(out.action, "skip_wip");
 });
@@ -147,4 +153,103 @@ test("new signal invalidates cache and requires LLM path", () => {
     },
   });
   assert.equal(out.handled, false);
+});
+
+test("LLM failure notifies owner once per head sha and retries on state change", async () => {
+  let calls = 0;
+  const llmDecider = async () => {
+    calls++;
+    throw new Error("network down");
+  };
+  const ctx = {
+    repo: "dyegolara/skillbook",
+    num: 3,
+    title: "Test PR",
+    draft: false,
+    headSha: "abc123",
+    hasConflicts: false,
+    mergeUnknown: false,
+    issueTranscript: [],
+  };
+
+  const first = await decideWithLlm({
+    ctx,
+    stateEntry: {},
+    nowMs: BASE_NOW,
+    sig: "sig-1",
+    rebaseRetryHours: 6,
+    rebaseMaxPings: 3,
+    rebaseStaleRetryHours: 24 * 7,
+    llmContext: { any: "ctx" },
+    llmDecider,
+  });
+  assert.equal(first.action, "llm_failed");
+  assert.equal(first.notifications.length, 1);
+
+  const second = await decideWithLlm({
+    ctx,
+    stateEntry: first.stateEntry,
+    nowMs: BASE_NOW + 60_000,
+    sig: "sig-2", // changed signal should trigger retry
+    rebaseRetryHours: 6,
+    rebaseMaxPings: 3,
+    rebaseStaleRetryHours: 24 * 7,
+    llmContext: { any: "ctx" },
+    llmDecider,
+  });
+  assert.equal(second.action, "llm_failed");
+  assert.equal(second.notifications.length, 0); // no spam on same sha
+  assert.equal(calls, 2);
+});
+
+test("LLM failure notifies again on new head sha", async () => {
+  const llmDecider = async () => {
+    throw new Error("network down");
+  };
+  const first = await decideWithLlm({
+    ctx: {
+      repo: "dyegolara/skillbook",
+      num: 3,
+      title: "Test PR",
+      draft: false,
+      headSha: "abc123",
+      hasConflicts: false,
+      mergeUnknown: false,
+      issueTranscript: [],
+    },
+    stateEntry: {},
+    nowMs: BASE_NOW,
+    sig: "sig-1",
+    rebaseRetryHours: 6,
+    rebaseMaxPings: 3,
+    rebaseStaleRetryHours: 24 * 7,
+    llmContext: {},
+    llmDecider,
+  });
+  const second = await decideWithLlm({
+    ctx: {
+      repo: "dyegolara/skillbook",
+      num: 3,
+      title: "Test PR",
+      draft: false,
+      headSha: "def456",
+      hasConflicts: false,
+      mergeUnknown: false,
+      issueTranscript: [],
+    },
+    stateEntry: first.stateEntry,
+    nowMs: BASE_NOW + 60_000,
+    sig: "sig-2",
+    rebaseRetryHours: 6,
+    rebaseMaxPings: 3,
+    rebaseStaleRetryHours: 24 * 7,
+    llmContext: {},
+    llmDecider,
+  });
+  assert.equal(second.notifications.length, 1);
+});
+
+test("normalizeLlmDecision blocks request_rebase from LLM", () => {
+  const out = normalizeLlmDecision({ action: "request_rebase", reason: "x" });
+  assert.equal(out.action, "wait");
 });
