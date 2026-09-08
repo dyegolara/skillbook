@@ -22,7 +22,7 @@ import { promisify } from "node:util";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { decideDeterministic } from "./decision.mjs";
+import { decideWithLlm } from "./decision.mjs";
 
 const execFileP = promisify(execFile);
 
@@ -471,9 +471,7 @@ async function main() {
         ctx.inlineTranscript.length,
         ctx.inlineTranscript.at(-1)?.ts || "",
       ].join("|");
-      let action;
-      let reason;
-      const deterministic = decideDeterministic({
+      const decided = await decideWithLlm({
         ctx: { ...ctx, repo, num },
         stateEntry: st,
         nowMs,
@@ -481,58 +479,19 @@ async function main() {
         rebaseRetryHours: REBASE_RETRY_HOURS,
         rebaseMaxPings: REBASE_MAX_PINGS,
         rebaseStaleRetryHours: REBASE_STALE_RETRY_HOURS,
+        llmContext: decisionCtx,
+        llmDecider: callLlm,
       });
-      Object.assign(st, deterministic.stateEntry);
-      notifications.push(...deterministic.notifications);
+      Object.assign(st, decided.stateEntry);
+      notifications.push(...decided.notifications);
+      const action = decided.action;
+      const reason = decided.reason;
 
-      if (deterministic.handled) {
-        action = deterministic.action;
-        reason = deterministic.reason;
-        if (action === "skip_wip") {
-          st.last_head_sha = headSha;
-          state[skey] = st;
-          continue;
-        }
-      } else {
-        // Decide (fresh). On LLM failure: record the failure on the state so
-        // we retry on any state change, but notify the owner ONCE per head
-        // sha — a recurring outage must not spam the cron every tick.
-        let decision;
-        try {
-          decision = await callLlm(decisionCtx);
-        } catch (e) {
-          st._sig = sig;
-          st._action = "llm_failed";
-          st._reason = `Could not decide with LLM (${e.message || e})`;
-          if (st.llm_fail_notified_sha !== headSha) {
-            st.llm_fail_notified_sha = headSha;
-            notifications.push(
-              `⚠️ ${repo}#${num}: could not decide with LLM (${e.message || e}). ` +
-                "Will retry on the next run."
-            );
-          }
-          st.last_head_sha = headSha;
-          state[skey] = st;
-          continue;
-        }
-        const llmAction = (decision.action || "").trim().toLowerCase();
-        if (llmAction === "request_rebase") {
-          action = "wait";
-          reason =
-            "LLM returned request_rebase, but rebase requests are deterministic at the conflict gate; waiting.";
-        } else if (["request_review", "request_fix", "notify_ready", "wait"].includes(llmAction)) {
-          action = llmAction;
-          reason = decision.reason || action;
-        } else {
-          action = "wait";
-          reason = `LLM returned unknown action (${llmAction || "empty"}); waiting.`;
-        }
+      if (action === "skip_wip" || action === "llm_failed") {
+        st.last_head_sha = headSha;
+        state[skey] = st;
+        continue;
       }
-
-      // Persist signature + decision so the next run can reuse it.
-      st._sig = sig;
-      st._action = action;
-      if (reason) st._reason = reason;
 
       // --- NOTIFY_READY: do NOT touch GitHub, just message the owner.
       if (action === "notify_ready") {

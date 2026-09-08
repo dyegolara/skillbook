@@ -136,4 +136,85 @@ export function decideDeterministic({
   };
 }
 
-export { isRebaseRequest, newestRebaseRequestTsMs };
+function normalizeLlmDecision(decision) {
+  const llmAction = (decision?.action || "").trim().toLowerCase();
+  if (llmAction === "request_rebase") {
+    return {
+      action: "wait",
+      reason:
+        "LLM returned request_rebase, but rebase requests are deterministic at the conflict gate; waiting.",
+    };
+  }
+  if (["request_review", "request_fix", "notify_ready", "wait"].includes(llmAction)) {
+    return { action: llmAction, reason: decision?.reason || llmAction };
+  }
+  return {
+    action: "wait",
+    reason: `LLM returned unknown action (${llmAction || "empty"}); waiting.`,
+  };
+}
+
+export async function decideWithLlm({
+  ctx,
+  stateEntry = {},
+  nowMs,
+  sig,
+  rebaseRetryHours,
+  rebaseMaxPings,
+  rebaseStaleRetryHours,
+  llmContext,
+  llmDecider,
+}) {
+  const deterministic = decideDeterministic({
+    ctx,
+    stateEntry,
+    nowMs,
+    sig,
+    rebaseRetryHours,
+    rebaseMaxPings,
+    rebaseStaleRetryHours,
+  });
+  if (deterministic.handled) return deterministic;
+
+  const st = { ...deterministic.stateEntry };
+  const notifications = [...deterministic.notifications];
+
+  let decision;
+  try {
+    decision = await llmDecider(llmContext);
+  } catch (e) {
+    st._sig = sig;
+    st._action = "llm_failed";
+    st._reason = `Could not decide with LLM (${e.message || e})`;
+    if (st.llm_fail_notified_sha !== ctx.headSha) {
+      st.llm_fail_notified_sha = ctx.headSha;
+      notifications.push(
+        `⚠️ ${ctx.repo}#${ctx.num}: could not decide with LLM (${e.message || e}). ` +
+          "Will retry on the next run."
+      );
+    }
+    return {
+      handled: true,
+      action: "llm_failed",
+      reason: st._reason,
+      reused: false,
+      stateEntry: st,
+      notifications,
+    };
+  }
+
+  const { action, reason } = normalizeLlmDecision(decision);
+  st._sig = sig;
+  st._action = action;
+  if (reason) st._reason = reason;
+  return {
+    handled: true,
+    action,
+    reason,
+    reused: false,
+    stateEntry: st,
+    notifications,
+  };
+}
+
+export { isRebaseRequest, newestRebaseRequestTsMs, normalizeLlmDecision };
