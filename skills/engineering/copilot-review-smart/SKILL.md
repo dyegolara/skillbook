@@ -60,6 +60,21 @@ Contract:
 - `DRY_RUN=1` still prints would-be comments, but never posts to GitHub and never
   persists state.
 
+Implementation status:
+
+- [x] single-PR scope
+- [x] agent-facing JSON tick report
+- [x] transcript-based All-clear / Notify-ready
+- [x] needs-human terminal reporting
+- [x] fixture harness runner for one-shot and loop scenarios
+
+Harness command:
+
+```bash
+npm run harness:copilot-review-smart -- all-clear-human
+npm run harness:copilot-review-smart -- loop-single-pr-to-done --loop
+```
+
 Loop recipe (caller-owned; the script never sleeps):
 
 1. Run one tick.

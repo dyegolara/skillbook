@@ -7,7 +7,8 @@
   "scripts": {
     "skills:install": "npx skills@latest add dyegolara/lnurl-auth-agents --skill lnurl-auth && npx skills@latest add dyegolara/nostr-auth-agents --skill nostr-auth",
     "verify": "node scripts/verify-references.mjs",
-    "test:copilot-review-smart": "node --test skills/engineering/copilot-review-smart/decision.test.mjs skills/engineering/copilot-review-smart/pr_monitor.test.mjs"
+    "test:copilot-review-smart": "node --test skills/engineering/copilot-review-smart/decision.test.mjs skills/engineering/copilot-review-smart/pr_monitor.test.mjs skills/engineering/copilot-review-smart/harness.test.mjs",
+    "harness:copilot-review-smart": "node skills/engineering/copilot-review-smart/harness/run_fixture.mjs"
   },
   "dependencies": {
     "lnurl-auth": "^1.4.1",

@@ -27,6 +27,17 @@ DRY_RUN=1 node pr_monitor.mjs --pr your-org/your-repo#123 --json-report
 Other env: `PR_MONITOR_STATE_PATH`, `PR_MONITOR_MODEL`, `OPENROUTER_API_KEY`,
 `PR_MONITOR_PR`, `PR_MONITOR_REPORT=jsonl`.
 
+Fixture harness:
+
+```bash
+npm run harness:copilot-review-smart -- first-tick-wait
+npm run harness:copilot-review-smart -- loop-repo-live-scope --loop
+```
+
+The harness runs the real `pr_monitor.mjs` process with a fake `gh` on `PATH`,
+frozen LLM responses, and a temporary state file so one-shot and loop behavior
+stay deterministic and network-free.
+
 ## 1. Main decision flow (per open PR)
 
 Deterministic gates first, LLM last — the LLM call is the only expensive step,
