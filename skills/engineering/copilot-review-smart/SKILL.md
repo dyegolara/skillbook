@@ -1,7 +1,7 @@
 ---
 name: copilot-review-smart
 description: "Smart Copilot PR-review watchdog (multi-repo) that reads review state + timestamps, checks merge conflicts first, and lets an LLM decide (rebase/review/fix/notify/wait) instead of pinging daily. Use for cron/agent PR monitors that kept spamming '@copilot code review'."
-version: 2.1.0
+version: 2.2.0
 author: Hermes Agent (Marcus)
 license: MIT
 platforms: [linux, macos, windows]
@@ -58,9 +58,9 @@ Rebase policy (for `dirty` PRs, evaluated BEFORE the LLM):
 ```
 newest non-Copilot conflict-resolution request on this head sha:
   none                        → request_rebase (ask Copilot to resolve conflicts)
-  < 24h old                   → wait (give Copilot its window)
-  >= 24h, pings < 3           → request_rebase again (retry)
-  >= 24h, pings >= 3          → notify owner ONCE per sha; retry weekly
+  < 6h old                    → wait (give Copilot its window)
+  >= 6h, pings < 3            → request_rebase again (retry)
+  >= 6h, pings >= 3           → notify owner ONCE per sha; retry weekly
 ```
 
 ### Actions and their messages
@@ -86,7 +86,7 @@ newest non-Copilot conflict-resolution request on this head sha:
   policy above. "behind"/"blocked"/"unstable" are NOT conflicts. If
   mergeability is null → per-PR fetch; still null → wait.
 - **Transcript-first**: before deciding, read the FULL comment transcript (any
-  author, human/Copilot/bots, last 40 each, paginated). Never re-ask what a
+  author, human/Copilot/bots, all pages). Never re-ask what a
   human already asked.
 - **Copilot's ack is not a request and not work**: its replies QUOTE the
   request (`> @copilot …`). Strip quote-lines and ignore Copilot-authored
@@ -100,9 +100,11 @@ newest non-Copilot conflict-resolution request on this head sha:
   state + unresolved-count + approved-flag + mergeable + transcript digest).
   Unchanged ⇒ reuse the cached decision, no LLM call (idle tick ≈ 2.7s).
   ANY new comment invalidates it (transcript digest).
-- **Throttles**: 12h same-sha ping interval; 6h cooldown after the newest
-  Copilot review; 24h rebase-retry window; 3 rebase pings per sha, then owner
-  escalation + weekly retry.
+- **Throttles**: 12h same-sha ping interval for review/fix requests; 6h
+  same-sha interval for conflict-resolution pings; 6h cooldown after the newest
+  Copilot review; 6h rebase-retry window; 3 rebase pings per sha, then owner
+  escalation + weekly retry (origins and rationale in
+  `resources/docs/adr/0005-anti-spam-throttle-numbers.md`).
 - **`seen_ready` shas**: `notify_ready` fires ONCE per head sha — never
   re-message the owner.
 - **Silent output**: nothing to report ⇒ print NOTHING (in `no_agent` cron
@@ -121,8 +123,18 @@ newest non-Copilot conflict-resolution request on this head sha:
 
 LLM: OpenRouter `chat/completions`, temperature 0, `response_format:
 json_object`, four-action prompt (`request_rebase` is deterministic — the
-LLM never picks it; Spanish reasoning, see `callLlm` in the script). Key
+LLM never picks it; English reasoning, see `callLlm` in the script). Key
 from `OPENROUTER_API_KEY` (env, `~/.pr-monitor.env`, or `~/.hermes/.env`).
+
+Decision architecture and policy intent are documented in ADRs:
+- `resources/docs/adr/0003-llm-decision-maker-behind-deterministic-gates.md`
+- `resources/docs/adr/0004-transcript-truth-over-thread-resolution-state.md`
+- `resources/docs/adr/0005-anti-spam-throttle-numbers.md`
+
+Decision seam:
+- `decision.mjs` exposes a pure deterministic gate function and an LLM boundary
+  with injectable dependency, so gate behavior is testable without network and
+  LLM failure/escalation paths can be validated with stubs.
 
 ## Cron setup
 
@@ -153,7 +165,7 @@ from `OPENROUTER_API_KEY` (env, `~/.pr-monitor.env`, or `~/.hermes/.env`).
   green-check never fire. Prefer timestamp comparisons + a decision LLM.
 - **The anti-duplicate gate can deadlock**: "a rebase was already requested →
   wait forever" froze 4 real PRs when Copilot ignored the request (head sha
-  never moves). The retry loop (24h window, max 3 pings, owner escalation)
+  never moves). The retry loop (6h window, max 3 pings, owner escalation)
   exists for exactly this.
 - **Unpaginated transcripts silently lose the newest comments** (GitHub
   returns 30 by default). A 32-comment PR lost the bot's OWN rebase ping from

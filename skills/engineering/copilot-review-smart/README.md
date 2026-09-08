@@ -24,6 +24,9 @@ Other env: `PR_MONITOR_STATE_PATH`, `PR_MONITOR_MODEL`, `OPENROUTER_API_KEY`.
 Deterministic gates first, LLM last — the LLM call is the only expensive step,
 so idle ticks hit GitHub APIs only.
 
+Implementation seam: deterministic gates and the LLM boundary live in
+`decision.mjs`, where the LLM dependency is injectable for network-free tests.
+
 ```mermaid
 flowchart TD
     A["Fetch open PRs<br/>(repos/{r}/pulls?state=open)"] --> B{"Draft or WIP-titled?"}
@@ -37,7 +40,7 @@ flowchart TD
     D3 -- no --> E
     D -- no --> E{"Signature unchanged?"}
     E -- yes --> CACHED["Reuse cached decision<br/>(no LLM call)"]
-    E -- no --> F["Read full comment transcript<br/>(last 40 per author, paginated)<br/>strip Copilot quote-acks"]
+    E -- no --> F["Read full comment transcript<br/>(all pages, any author)<br/>strip Copilot quote-acks"]
     F --> G["Decision LLM (OpenRouter)<br/>temperature 0, JSON output"]
     G --> H{"Decision"}
     H -- request_review --> R1["Post: @copilot code review"]
@@ -54,9 +57,9 @@ Evaluated **before** the LLM; the LLM never picks `request_rebase`.
 flowchart TD
     A["PR is conflicted<br/>(mergeable_state == dirty)"] --> B{"Newest non-Copilot<br/>conflict-resolution request<br/>on this head sha?"}
     B -- "none" --> C["request_rebase:<br/>@copilot resolve the merge<br/>conflicts between this branch<br/>and origin/main"]
-    B -- "< 24h old" --> D["wait — give Copilot<br/>its window"]
-    B -- ">= 24h, pings < 3" --> E["request_rebase again<br/>(retry)"]
-    B -- ">= 24h, pings >= 3" --> F["Notify owner ONCE per sha;<br/>retry weekly"]
+    B -- "< 6h old" --> D["wait — give Copilot<br/>its window"]
+    B -- ">= 6h, pings < 3" --> E["request_rebase again<br/>(retry)"]
+    B -- ">= 6h, pings >= 3" --> F["Notify owner ONCE per sha;<br/>retry weekly"]
 ```
 
 ## 3. Sequence: one tick of the loop
@@ -106,8 +109,9 @@ sequenceDiagram
   state + unresolved count + approved flag + mergeable + transcript digest.
   Unchanged ⇒ cached decision, no LLM call (idle tick ≈ 2.7s). Any new
   comment invalidates it.
-- **Throttles**: 12h same-sha ping interval; 6h cooldown after the newest
-  Copilot review; 24h rebase-retry window; 3 rebase pings per sha, then owner
+- **Throttles**: 12h same-sha ping interval for review/fix requests; 6h
+  same-sha interval for conflict-resolution pings; 6h cooldown after the newest
+  Copilot review; 6h rebase-retry window; 3 rebase pings per sha, then owner
   escalation + weekly retry.
 - **`seen_ready` shas**: `notify_ready` fires once per head sha.
 - **Transcript-first**: never re-ask what a human already asked; Copilot acks

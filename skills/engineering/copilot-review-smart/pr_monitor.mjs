@@ -22,6 +22,7 @@ import { promisify } from "node:util";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { decideWithLlm } from "./decision.mjs";
 
 const execFileP = promisify(execFile);
 
@@ -56,14 +57,10 @@ const COOLDOWN_AFTER_REVIEW_HOURS = 6;
 // request (ours or the human's), wait REBASE_RETRY_HOURS for branch movement;
 // if the PR is STILL dirty, re-ping — up to REBASE_MAX_PINGS per head sha.
 // Exhausted => notify the owner once (per sha) and retry weekly.
-const REBASE_RETRY_HOURS = 24;
+const REBASE_RETRY_HOURS = 6;
+const REBASE_PING_MIN_INTERVAL_HOURS = 6;
 const REBASE_MAX_PINGS = 3;
 const REBASE_STALE_RETRY_HOURS = 24 * 7;
-
-// Never apply the loop to WIP work: draft PRs (and WIP-titled ones) are being
-// actively worked on — a bot ping derails the assigned agent (it drops its
-// task to answer us and doesn't resume). Skip them entirely.
-const WIP_TITLE_RE = /^\s*\[?(wip|draft|dnm|do not merge|work in progress)\b/i;
 
 // A very recent last commit means an agent is (probably) still pushing work:
 // hold ALL Copilot pings until the branch goes quiet. (notify_ready is
@@ -89,13 +86,13 @@ async function runGh(args) {
   }
 }
 
-/** Fetch a listing endpoint with per_page=100, following up to maxPages.
- * Long-lived PRs (>30 comments) would otherwise silently lose the newest
- * transcript entries — the exact comments the bot must read. */
-async function ghPaginated(pathname, maxPages = 3) {
+/** Fetch a listing endpoint with per_page=100, following pages until empty.
+ * Long-lived PRs (>30 comments) would otherwise silently lose transcript
+ * entries — the exact comments the bot must read. */
+async function ghPaginated(pathname) {
   const items = [];
   const sep = pathname.includes("?") ? "&" : "?";
-  for (let page = 1; page <= maxPages; page++) {
+  for (let page = 1; ; page++) {
     const batch = await runGh([`${pathname}${sep}per_page=100&page=${page}`]);
     if (!Array.isArray(batch) || batch.length === 0) break;
     items.push(...batch);
@@ -228,16 +225,16 @@ async function collectPrState(pr, num, repo) {
   const lastCopilotCommentTs = maxTs(copilotIcomments.map((c) => c.created_at));
 
   // FULL transcript (ANY author) — the human context the bot must read
-  // before acting. Newest 40 issue + 40 inline, bodies truncated.
-  const issueTranscript = icomments.slice(-40).map((c) => ({
+  // before acting.
+  const issueTranscript = icomments.map((c) => ({
     author: c.user?.login || "?",
     ts: c.created_at,
-    body: (c.body || "").slice(0, 400),
+    body: c.body || "",
   }));
-  const inlineTranscript = rcomments.slice(-40).map((c) => ({
+  const inlineTranscript = rcomments.map((c) => ({
     author: c.user?.login || "?",
     ts: c.created_at,
-    body: (c.body || "").slice(0, 300),
+    body: c.body || "",
   }));
 
   // Commits on the PR head branch (oldest-first — take the newest).
@@ -323,7 +320,7 @@ async function callLlm(decisionCtx) {
     "the newest Copilot review/comment already covers the current head sha " +
     "and reported no issues. If merge_unknown is true, pick WAIT.\n" +
     'JSON shape: {"action": "request_review|request_fix|notify_ready|wait", ' +
-    '"reason": "short justification in Spanish"}';
+    '"reason": "short justification in English"}';
 
   let res;
   try {
@@ -362,11 +359,11 @@ async function callLlm(decisionCtx) {
 // throttle / state guards
 // ---------------------------------------------------------------------------
 
-function throttleOkSameSha(st, nowMs, headSha) {
+function throttleOkSameSha(st, nowMs, headSha, minIntervalHours = PING_MIN_INTERVAL_HOURS) {
   if (st.last_ping_sha !== headSha) return true; // new commits -> fresh ping allowed
   const last = toMs(st.last_ping_ts);
   if (last === null) return true;
-  return nowMs - last >= H(PING_MIN_INTERVAL_HOURS);
+  return nowMs - last >= H(minIntervalHours);
 }
 
 function tooSoonAfterReview(ctx, nowMs) {
@@ -380,36 +377,6 @@ function agentStillWorking(ctx, nowMs) {
   const dt = toMs(ctx.lastCommitTs);
   if (dt === null) return false;
   return nowMs - dt < H(ACTIVE_WORK_QUIET_HOURS);
-}
-
-/** Does this comment ASK Copilot to resolve merge conflicts (by rebase OR
- * merge)? Quote-lines (starting with '>') are stripped: Copilot's replies
- * quote requests back, and an ack must never count as a new request. */
-function isRebaseRequest(body) {
-  const stripped = (body || "")
-    .split("\n")
-    .filter((ln) => !ln.trim().startsWith(">"))
-    .join("\n");
-  const b = stripped.toLowerCase();
-  const asksResolution =
-    b.includes("rebase") ||
-    b.includes("merge conflict") ||
-    (b.includes("resolv") && b.includes("conflict"));
-  return asksResolution;
-}
-
-/** Timestamp (ms) of the newest conflict-resolution request by a NON-Copilot
- * author (the human or this bot). Copilot's replies only quote/ack requests
- * — they must never count as pending requests themselves. */
-function newestRebaseRequestTsMs(issueTranscript) {
-  let best = null;
-  for (const c of issueTranscript || []) {
-    if ((c.author || "").toLowerCase().includes(COPILOT_SUBSTR)) continue;
-    if (!isRebaseRequest(c.body)) continue;
-    const ts = toMs(c.ts);
-    if (ts !== null && (best === null || ts > best)) best = ts;
-  }
-  return best;
 }
 
 // ---------------------------------------------------------------------------
@@ -433,7 +400,7 @@ async function main() {
       const prs = await runGh([`repos/${repo}/pulls?state=open`]);
       if (Array.isArray(prs)) prsByRepo[repo] = prs;
     } catch (e) {
-      console.error(`⚠️ No pude listar los PRs de ${repo}: ${String(e).slice(0, 200)}`);
+      console.error(`⚠️ Could not list PRs for ${repo}: ${String(e).slice(0, 200)}`);
     }
   }
 
@@ -505,112 +472,27 @@ async function main() {
         ctx.inlineTranscript.length,
         ctx.inlineTranscript.at(-1)?.ts || "",
       ].join("|");
-      const cachedSig = st._sig;
-      const cachedAction = st._action;
+      const decided = await decideWithLlm({
+        ctx: { ...ctx, repo, num },
+        stateEntry: st,
+        nowMs,
+        sig,
+        rebaseRetryHours: REBASE_RETRY_HOURS,
+        rebaseMaxPings: REBASE_MAX_PINGS,
+        rebaseStaleRetryHours: REBASE_STALE_RETRY_HOURS,
+        llmContext: decisionCtx,
+        llmDecider: callLlm,
+      });
+      Object.assign(st, decided.stateEntry);
+      notifications.push(...decided.notifications);
+      const action = decided.action;
+      const reason = decided.reason;
 
-      // --- Hard gates (deterministic, evaluated BEFORE the LLM):
-      // 0) WIP/draft => skip the PR entirely (a ping derails the agent).
-      // 1) Merge conflicts with main => rebase-retry policy, never review.
-      // 2) Mergeability unknown => GitHub hasn't computed it yet; wait.
-      let action;
-      let reason;
-      let reused = false;
-
-      if (ctx.draft || WIP_TITLE_RE.test(ctx.title || "")) {
-        st._sig = sig;
-        st._action = "skip_wip";
-        st._reason =
-          "PR en draft/WIP: otro agente está trabajando en él; el loop no aplica " +
-          "(no ping, no review) hasta que esté listo.";
+      if (action === "skip_wip" || action === "llm_failed") {
         st.last_head_sha = headSha;
         state[skey] = st;
         continue;
-      } else if (ctx.hasConflicts) {
-        const reqTsMs = newestRebaseRequestTsMs(ctx.issueTranscript);
-        let rebasePings = Number(st.rebase_pings) || 0;
-        if (st.rebase_pings_sha !== headSha) rebasePings = 0; // new head => fresh budget
-        if (reqTsMs === null) {
-          // Nobody has asked for a rebase on this branch state -> ask now.
-          action = "request_rebase";
-          reason =
-            "El PR tiene conflictos con main y nadie ha pedido rebase todavía: pedir " +
-            "rebase sobre origin/main antes de cualquier review.";
-        } else if (nowMs - reqTsMs < H(REBASE_RETRY_HOURS)) {
-          // A fresh request is in flight; give Copilot its window.
-          action = "wait";
-          reason =
-            `Rebase pedido hace menos de ${REBASE_RETRY_HOURS}h y sin commits nuevos: ` +
-            "esperar a que Copilot lo ejecute antes de re-pedir.";
-        } else if (rebasePings >= REBASE_MAX_PINGS) {
-          const lastPingMs = toMs(st.last_ping_ts);
-          const weeklyDue = lastPingMs !== null && nowMs - lastPingMs >= H(REBASE_STALE_RETRY_HOURS);
-          if (weeklyDue) {
-            // Weekly retry cycle: reset budget, ping again.
-            rebasePings = 0;
-            st.rebase_pings = 0;
-            action = "request_rebase";
-            reason =
-              "Reintento semanal: el PR sigue con conflictos tras agotar los re-pings " +
-              "de rebase; pedir de nuevo a Copilot.";
-          } else {
-            action = "wait";
-            reason =
-              `Rebase agotado (${rebasePings} pings en este sha) y el PR sigue con ` +
-              "conflictos: escalado al dueño; reintento semanal.";
-            if (st.stuck_notified_sha !== headSha) {
-              st.stuck_notified_sha = headSha;
-              notifications.push(
-                `🔴 PR #${num} lleva ${rebasePings} pedidos de rebase a Copilot y SIGUE con ` +
-                  `conflictos: **${ctx.title}**\n` +
-                  "Decide: merge manual, rebase a mano o cerrarlo.\n" +
-                  `→ http://github.com/${repo}/pull/${num}`
-              );
-            }
-          }
-        } else {
-          // Retry window expired (still dirty) and budget remains.
-          action = "request_rebase";
-          reason =
-            `El PR SIGUE con conflictos tras el rebase anterior (${rebasePings} ping(s) ` +
-            "en este sha): re-pedir a Copilot rebase sobre origin/main resolviendo los conflictos.";
-        }
-      } else if (ctx.mergeUnknown) {
-        action = "wait";
-        reason = "GitHub aún no calcula la mergeability del PR; esperar al próximo tick.";
-      } else if (cachedSig === sig && cachedAction) {
-        action = cachedAction;
-        reason = st._reason || action;
-        reused = true;
-      } else {
-        // Decide (fresh). On LLM failure: record the failure on the state so
-        // we retry on any state change, but notify the owner ONCE per head
-        // sha — a recurring outage must not spam the cron every tick.
-        let decision;
-        try {
-          decision = await callLlm(decisionCtx);
-        } catch (e) {
-          st._sig = sig;
-          st._action = "llm_failed";
-          st._reason = `No pude decidir con el LLM (${e.message || e})`;
-          if (st.llm_fail_notified_sha !== headSha) {
-            st.llm_fail_notified_sha = headSha;
-            notifications.push(
-              `⚠️ ${repo}#${num}: no pude decidir con el LLM (${e.message || e}). ` +
-                "Lo reviso la próxima ejecución."
-            );
-          }
-          st.last_head_sha = headSha;
-          state[skey] = st;
-          continue;
-        }
-        action = (decision.action || "").trim().toLowerCase();
-        reason = decision.reason || action;
       }
-
-      // Persist signature + decision so the next run can reuse it.
-      st._sig = sig;
-      st._action = action;
-      if (reason) st._reason = reason;
 
       // --- NOTIFY_READY: do NOT touch GitHub, just message the owner.
       if (action === "notify_ready") {
@@ -618,8 +500,8 @@ async function main() {
         if (!seenReady.has(readyKey)) {
           seenReady.add(readyKey);
           notifications.push(
-            `🟢 PR #${num} está LISTO para tu revisión: **${ctx.title}**\n` +
-              `\`${(headSha || "").slice(0, 8)}\` · Copilot ya confirmó que está limpio (${reason}).\n` +
+            `🟢 PR #${num} is READY for your review: **${ctx.title}**\n` +
+              `\`${(headSha || "").slice(0, 8)}\` · Copilot already confirmed it is clean (${reason}).\n` +
               `→ http://github.com/${repo}/pull/${num}`
           );
         }
@@ -630,15 +512,15 @@ async function main() {
 
       // --- REQUEST_REBASE: conflicts block everything else. No
       // review-cooldown gate here: a review on a conflicted PR is useless
-      // anyway (the 12h same-sha throttle still applies).
+      // anyway (conflict pings have their own 6h same-sha throttle).
       if (action === "request_rebase") {
         if (agentWorking) {
           st._sig = sig;
           st._action = "wait";
           st._reason =
-            `Último commit hace menos de ${ACTIVE_WORK_QUIET_HOURS}h: un agente sigue ` +
-            "trabajando en la rama; no interrumpir con pings.";
-        } else if (throttleOkSameSha(st, nowMs, headSha)) {
+            `Last commit is newer than ${ACTIVE_WORK_QUIET_HOURS}h: an agent is still ` +
+            "working on this branch; do not interrupt with pings.";
+        } else if (throttleOkSameSha(st, nowMs, headSha, REBASE_PING_MIN_INTERVAL_HOURS)) {
           await requestRebase(repo, num);
           githubActionsTaken++;
           st.last_ping_ts = new Date(nowMs).toISOString();
@@ -651,8 +533,8 @@ async function main() {
             st.rebase_pings = (Number(st.rebase_pings) || 0) + 1;
           }
           notifications.push(
-            `🔀 PR #${num} tiene conflictos con main: le pedí a Copilot resolver los ` +
-              "conflictos con origin/main. Cuando lo resuelva, el loop continúa con el code review.\n" +
+            `🔀 PR #${num} has conflicts with main: asked Copilot to resolve conflicts ` +
+              "with origin/main. When resolved, the loop will continue with code review.\n" +
               `→ http://github.com/${repo}/pull/${num}`
           );
         }
