@@ -24,6 +24,9 @@ Other env: `PR_MONITOR_STATE_PATH`, `PR_MONITOR_MODEL`, `OPENROUTER_API_KEY`.
 Deterministic gates first, LLM last — the LLM call is the only expensive step,
 so idle ticks hit GitHub APIs only.
 
+Implementation seam: deterministic gates and the LLM boundary live in
+`decision.mjs`, where the LLM dependency is injectable for network-free tests.
+
 ```mermaid
 flowchart TD
     A["Fetch open PRs<br/>(repos/{r}/pulls?state=open)"] --> B{"Draft or WIP-titled?"}

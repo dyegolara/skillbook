@@ -130,6 +130,11 @@ Decision architecture and policy intent are documented in ADRs:
 - `docs/adr/0004-transcript-truth-over-thread-resolution-state.md`
 - `docs/adr/0005-anti-spam-throttle-numbers.md`
 
+Decision seam:
+- `decision.mjs` exposes a pure deterministic gate function and an LLM boundary
+  with injectable dependency, so gate behavior is testable without network and
+  LLM failure/escalation paths can be validated with stubs.
+
 ## Cron setup
 
 - Hourly is fine — the signature cache makes idle ticks cheap. Point the
