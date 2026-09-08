@@ -42,6 +42,41 @@ Other env: `PR_MONITOR_STATE_PATH` (default `~/.cache/pr-monitor/state.json`),
 `~/.pr-monitor.env` / `~/.hermes/.env`), `DRY_RUN=1` (print would-be
 comments, never post, never persist state).
 
+## Invocation API
+
+Shipped now:
+
+- **One-shot repo scope**: `node pr_monitor.mjs --repo owner/repo --json-report`
+- **One-shot single-PR scope**: `node pr_monitor.mjs --pr owner/repo#123 --json-report`
+- **Env equivalents**: `PR_MONITOR_REPOS`, `PR_MONITOR_PR`, `PR_MONITOR_REPORT=jsonl`
+- **PR ref formats**: `owner/repo#123` or `https://github.com/owner/repo/pull/123`
+
+Contract:
+
+- One invocation = **exactly one tick** of the watchdog.
+- Repo scope and single-PR scope are **mutually exclusive**; missing scope fails fast.
+- `--json-report` / `PR_MONITOR_REPORT=jsonl` emits **one JSON line per PR** plus
+  **one overall JSON line** at the end for machine-readable loop control.
+- `DRY_RUN=1` still prints would-be comments, but never posts to GitHub and never
+  persists state.
+
+Loop recipe (caller-owned; the script never sleeps):
+
+1. Run one tick.
+2. Read the final overall JSON line.
+3. If `done: true`, tell the owner the scope reached either **All-clear** or
+   **needs-human**, then stop.
+4. Otherwise sleep the cadence (default **1 hour**, never below **15 minutes**)
+   and run the next tick.
+
+Terminal meanings in the JSON report:
+
+- `terminal: "done"` → All-clear observed; Notify-ready path.
+- `terminal: "needs-human"` → the loop cannot safely advance on its own for this
+  head sha (for example conflict retries exhausted, or recurring LLM failure).
+- `terminal: "skipped"` → draft/WIP PR skipped entirely and excluded from loop
+  completion.
+
 ## Decision flow (deterministic gates first, LLM last)
 
 ```
@@ -70,7 +105,7 @@ newest non-Copilot conflict-resolution request on this head sha:
 | `request_rebase` | dirty PR (HARD gate, deterministic) | `@copilot resolve the merge conflicts between this branch and origin/main. Be wise with the strategy: …` (see script — wisdom policy: preserve BOTH branches, drop only what belongs to the new features; on doubt consult spec/tickets/docs, then ask the user) |
 | `request_review` | new commits unseen by Copilot (LLM) | `@copilot code review` |
 | `request_fix` | unaddressed review comments (LLM) | `@copilot work on the issues mentioned in these comments <urls>` |
-| `notify_ready` | Copilot confirmed current head clean (LLM) | owner notification only — NEVER pings GitHub |
+| `notify_ready` | review transcript reached an All-clear on the current head (LLM) | owner notification only — NEVER pings GitHub |
 | `wait` | not enough info / too soon (LLM or gates) | silence |
 
 ## Guardrails (the anti-spam core)
@@ -108,7 +143,7 @@ newest non-Copilot conflict-resolution request on this head sha:
 - **`seen_ready` shas**: `notify_ready` fires ONCE per head sha — never
   re-message the owner.
 - **Silent output**: nothing to report ⇒ print NOTHING (in `no_agent` cron
-  mode, empty stdout = silent).
+  mode, empty stdout = silent). Agent-facing runs opt into JSON lines; cron does not.
 
 ## GitHub endpoints the script reads (paginated, per_page=100&page=N)
 

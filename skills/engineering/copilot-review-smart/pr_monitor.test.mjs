@@ -16,6 +16,7 @@ function makePr(headSha = "abc123") {
 function makeCtx({
   headSha = "abc123",
   issueTranscript = [],
+  reviewTranscript = [],
 } = {}) {
   return {
     num: 7,
@@ -26,6 +27,7 @@ function makeCtx({
     commented: false,
     latestReviewState: null,
     latestReviewTs: null,
+    reviewTranscript,
     nInlineUnresolved: 0,
     latestInlineTs: null,
     commentUrls: [],
@@ -182,4 +184,140 @@ test("nothing-to-report path is fully silent (empty output)", async () => {
   });
 
   assert.equal(out.output, "");
+});
+
+test("single-PR scope fetches only that PR and emits JSON lines in agent mode", async () => {
+  const ghCalls = [];
+  const out = await runMonitorOnce({
+    state: {},
+    nowMs: Date.parse("2026-09-08T00:00:00.000Z"),
+    dryRun: true,
+    targetPr: { repo: REPO, num: 42 },
+    emitJsonReport: true,
+    runGhFn: async (args) => {
+      ghCalls.push(args[0]);
+      if (args[0] === `repos/${REPO}/pulls/42`) {
+        return {
+          number: 42,
+          state: "open",
+          draft: false,
+          title: "Single PR scope",
+          head: { sha: "scope123" },
+        };
+      }
+      throw new Error(`unexpected gh call: ${args[0]}`);
+    },
+    collectPrStateFn: async (pr, num, repo) => ({
+      ...makeCtx({ headSha: pr.head.sha }),
+      num,
+      title: pr.title,
+    }),
+    decideFn: async ({ stateEntry }) => ({
+      handled: true,
+      action: "wait",
+      reason: "nothing to do right now",
+      reused: false,
+      stateEntry,
+      notifications: [],
+    }),
+  });
+
+  assert.deepEqual(ghCalls, [`repos/${REPO}/pulls/42`]);
+  const lines = out.output.trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(lines.length, 2);
+  assert.deepEqual(lines[0], {
+    type: "pr",
+    repo: REPO,
+    pr: 42,
+    head_sha: "scope123",
+    action: "wait",
+    reason: "nothing to do right now",
+    reused_cached_decision: false,
+    github_action_posted: false,
+    done: false,
+    terminal: null,
+    skipped: false,
+  });
+  assert.equal(lines[1].type, "overall");
+  assert.equal(lines[1].scope, "single-pr");
+  assert.equal(lines[1].repo, REPO);
+  assert.equal(lines[1].pr, 42);
+  assert.equal(lines[1].done, false);
+});
+
+test("agent-facing JSON report marks notify_ready as terminal done", async () => {
+  const out = await runMonitorOnce({
+    repos: [REPO],
+    state: {},
+    nowMs: Date.parse("2026-09-08T00:00:00.000Z"),
+    dryRun: true,
+    emitJsonReport: true,
+    runGhFn: async (args) => {
+      if (args[0] === `repos/${REPO}/pulls?state=open`) return [makePr("ready123")];
+      return [];
+    },
+    collectPrStateFn: async () => makeCtx({ headSha: "ready123" }),
+    decideFn: async ({ stateEntry }) => ({
+      handled: true,
+      action: "notify_ready",
+      reason: "human reviewer left no further requests on this head",
+      reused: false,
+      stateEntry,
+      notifications: [],
+    }),
+  });
+
+  const jsonLines = out.output
+    .split("\n")
+    .filter((line) => line.startsWith("{"))
+    .map((line) => JSON.parse(line));
+  assert.equal(jsonLines[0].terminal, "done");
+  assert.equal(jsonLines[0].done, true);
+  assert.equal(jsonLines[1].done, true);
+});
+
+test("LLM context includes formal review transcript for All-clear decisions", async () => {
+  let seenReviewTranscript = null;
+  await runMonitorOnce({
+    repos: [REPO],
+    state: {},
+    nowMs: Date.parse("2026-09-08T00:00:00.000Z"),
+    dryRun: true,
+    runGhFn: async (args) => {
+      if (args[0] === `repos/${REPO}/pulls?state=open`) return [makePr("review123")];
+      return [];
+    },
+    collectPrStateFn: async () =>
+      makeCtx({
+        headSha: "review123",
+        reviewTranscript: [
+          {
+            author: "reviewer",
+            ts: "2026-09-08T00:00:00.000Z",
+            state: "COMMENTED",
+            body: "Looks good to me, nothing else to add.",
+          },
+        ],
+      }),
+    decideFn: async ({ llmContext, stateEntry }) => {
+      seenReviewTranscript = llmContext.review_transcript;
+      return {
+        handled: true,
+        action: "wait",
+        reason: "captured context",
+        reused: false,
+        stateEntry,
+        notifications: [],
+      };
+    },
+  });
+
+  assert.deepEqual(seenReviewTranscript, [
+    {
+      author: "reviewer",
+      ts: "2026-09-08T00:00:00.000Z",
+      state: "COMMENTED",
+      body: "Looks good to me, nothing else to add.",
+    },
+  ]);
 });

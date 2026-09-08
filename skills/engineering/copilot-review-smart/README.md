@@ -17,7 +17,15 @@ what the loop does.
 DRY_RUN=1 PR_MONITOR_REPOS="your-org/your-repo" node pr_monitor.mjs
 ```
 
-Other env: `PR_MONITOR_STATE_PATH`, `PR_MONITOR_MODEL`, `OPENROUTER_API_KEY`.
+Agent-facing one-shots can also use CLI scope flags plus JSON reporting:
+
+```bash
+DRY_RUN=1 node pr_monitor.mjs --repo your-org/your-repo --json-report
+DRY_RUN=1 node pr_monitor.mjs --pr your-org/your-repo#123 --json-report
+```
+
+Other env: `PR_MONITOR_STATE_PATH`, `PR_MONITOR_MODEL`, `OPENROUTER_API_KEY`,
+`PR_MONITOR_PR`, `PR_MONITOR_REPORT=jsonl`.
 
 ## 1. Main decision flow (per open PR)
 
@@ -116,7 +124,8 @@ sequenceDiagram
 - **`seen_ready` shas**: `notify_ready` fires once per head sha.
 - **Transcript-first**: never re-ask what a human already asked; Copilot acks
   (quote-replies) never count as new requests or progress.
-- **Silent output**: nothing to report ⇒ print nothing.
+- **Silent output**: nothing to report ⇒ print nothing in cron mode. Agent-facing
+  runs opt into one JSON line per PR plus one overall line.
 
 See [`SKILL.md`](./SKILL.md) for pitfalls, cron setup, and the full action
 table.

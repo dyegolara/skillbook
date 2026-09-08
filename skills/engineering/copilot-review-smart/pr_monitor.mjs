@@ -11,10 +11,18 @@
  *
  * Env config:
  *   PR_MONITOR_REPOS       (required) "owner/repo1,owner/repo2"
+ *   PR_MONITOR_PR          (optional) single PR scope: "owner/repo#123"
  *   PR_MONITOR_STATE_PATH  state file (default ~/.cache/pr-monitor/state.json)
+ *   PR_MONITOR_REPORT      "jsonl" / "1" => emit agent-facing JSON lines
  *   PR_MONITOR_MODEL       OpenRouter model for the decision LLM
  *   OPENROUTER_API_KEY     (or in ~/.hermes/.env / ~/.pr-monitor.env)
  *   DRY_RUN=1              print would-be comments; never post, never persist
+ *
+ * CLI flags:
+ *   --repo owner/repo      repo scope (repeatable)
+ *   --repos a/b,c/d        repo scope (comma-separated)
+ *   --pr owner/repo#123    single PR scope (or GitHub PR URL)
+ *   --json-report          emit one JSON line per PR plus one overall line
  */
 
 import { execFile } from "node:child_process";
@@ -25,13 +33,6 @@ import path from "node:path";
 import { decideWithLlm } from "./decision.mjs";
 
 const execFileP = promisify(execFile);
-
-// Watched repos. REQUIRED: an installed skill must never default to watching
-// someone else's repos — the agent passes its repos as context.
-const REPOS = (process.env.PR_MONITOR_REPOS || "")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
 
 const STATE_PATH = process.env.PR_MONITOR_STATE_PATH ||
   path.join(os.homedir(), ".cache", "pr-monitor", "state.json");
@@ -62,10 +63,88 @@ const REBASE_STALE_RETRY_HOURS = 24 * 7;
 const ACTIVE_WORK_QUIET_HOURS = 3;
 
 const H = (h) => h * 3600_000;
+const JSON_REPORT_ENV_VALUES = new Set(["1", "true", "json", "jsonl"]);
 
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
+
+function splitRepos(value) {
+  return String(value || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function parsePrRef(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+  const normalized = raw.replace(/^https?:\/\/github\.com\//i, "");
+  const match = normalized.match(/^([^/\s]+\/[^/\s]+)#(\d+)$/) ||
+    normalized.match(/^([^/\s]+\/[^/\s]+)\/pull\/(\d+)$/);
+  if (!match) {
+    throw new Error(
+      `Invalid PR scope "${raw}". Use owner/repo#123 or https://github.com/owner/repo/pull/123`
+    );
+  }
+  return { repo: match[1], num: Number(match[2]) };
+}
+
+function parseCliArgs(argv = []) {
+  const repoArgs = [];
+  let targetPr = null;
+  let emitJsonReport = null;
+
+  function nextValue(flag, index) {
+    const value = argv[index + 1];
+    if (!value || value.startsWith("--")) throw new Error(`${flag} requires a value`);
+    return value;
+  }
+
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--repo") {
+      repoArgs.push(nextValue(arg, i));
+      i++;
+    } else if (arg === "--repos") {
+      repoArgs.push(...splitRepos(nextValue(arg, i)));
+      i++;
+    } else if (arg === "--pr") {
+      targetPr = parsePrRef(nextValue(arg, i));
+      i++;
+    } else if (arg === "--json-report") {
+      emitJsonReport = true;
+    } else {
+      throw new Error(`Unknown argument: ${arg}`);
+    }
+  }
+
+  return {
+    repos: repoArgs.length ? repoArgs : null,
+    targetPr,
+    emitJsonReport,
+  };
+}
+
+function resolveInvocation(argv = process.argv.slice(2)) {
+  const cli = parseCliArgs(argv);
+  const envRepos = splitRepos(process.env.PR_MONITOR_REPOS || "");
+  const envPr = parsePrRef(process.env.PR_MONITOR_PR || "");
+  const envEmitJsonReport = JSON_REPORT_ENV_VALUES.has(
+    String(process.env.PR_MONITOR_REPORT || "").trim().toLowerCase()
+  );
+  const repos = cli.repos ?? envRepos;
+  const targetPr = cli.targetPr ?? envPr;
+  const emitJsonReport = cli.emitJsonReport ?? envEmitJsonReport;
+
+  if (repos.length > 0 && targetPr) {
+    throw new Error(
+      "Choose exactly one scope: repo(s) via --repo/--repos/PR_MONITOR_REPOS or a single PR via --pr/PR_MONITOR_PR."
+    );
+  }
+
+  return { repos, targetPr, emitJsonReport };
+}
 
 async function runGh(args) {
   try {
@@ -198,6 +277,12 @@ async function collectPrState(pr, num, repo) {
   const commented = copilotReviews.some((r) => r.state === "COMMENTED");
   const latestReviewTs = maxTs(copilotReviews.map((r) => r.submitted_at));
   const latestReviewState = copilotReviews.at(-1)?.state || null;
+  const reviewTranscript = reviews.map((r) => ({
+    author: r.user?.login || "?",
+    ts: r.submitted_at,
+    state: r.state || null,
+    body: r.body || "",
+  }));
 
   // Inline review comments left by Copilot (the actual feedback content).
   // NOTE: the REST API does NOT expose thread resolution state, so every
@@ -262,6 +347,7 @@ async function collectPrState(pr, num, repo) {
     commented,
     latestReviewState,
     latestReviewTs,
+    reviewTranscript,
     nInlineUnresolved,
     latestInlineTs,
     commentUrls,
@@ -289,32 +375,32 @@ async function callLlm(decisionCtx) {
 
   const system =
     "You are a senior engineer's PR-watchdog. Given the state of a GitHub " +
-    "pull request and the FULL comment transcript (any author: human, " +
-    "Copilot, bots), decide what the bot should do. You output JSON only.\n\n" +
-    "CONTEXT FIRST: read the whole issue_transcript and inline_transcript " +
-    "before deciding. Respect what has already been asked — if a human or " +
+    "pull request and the FULL transcript (reviews, issue comments, inline " +
+    "comments; any author: human, Copilot, bots), decide what the bot should " +
+    "do. You output JSON only.\n\n" +
+    "CONTEXT FIRST: read the whole review_transcript, issue_transcript and " +
+    "inline_transcript before deciding. Respect what has already been asked — if a human or " +
     "Copilot already requested a rebase/review on the current head and it " +
     "is still pending, do NOT ask again; WAIT. Never duplicate requests.\n\n" +
     "Rules:\n" +
     "- REQUEST_REVIEW: Copilot has NOT reviewed the current head sha yet, OR " +
     "there are new commits after the last review that the reviewer hasn't " +
     "seen. We ping '@copilot code review'.\n" +
-    "- REQUEST_FIX: Copilot left actionable review comments on the current " +
-    "head that are still unaddressed AND are newer than the last commit " +
-    "(i.e. Copilot is waiting for the author to fix). Ping '@copilot work " +
-    "on the issues...'.\n" +
-    "- NOTIFY_READY: Copilot has already confirmed the current head sha is " +
-    "clean (e.g. its latest comment/review says all tests pass / no issues " +
-    "/ approved), AND no new commits or new review comments have appeared " +
-    "since. Do NOT ping Copilot again — instead tell the human owner the " +
-    "PR is ready for their review.\n" +
+    "- REQUEST_FIX: the transcript shows actionable review comments on the " +
+    "current head that are still unaddressed AND are newer than the last " +
+    "commit (i.e. the author still owes changes). Ping '@copilot work on the " +
+    "issues...'.\n" +
+    "- NOTIFY_READY: the transcript on the current head shows an All-clear: a " +
+    "reviewer (human or Copilot) has no unaddressed comments left to address. " +
+    "A formal APPROVED state is NOT required. Do NOT ping Copilot again — " +
+    "instead tell the human owner the PR is ready for their review.\n" +
     "- WAIT: not enough info, or too soon after the last action — wait for " +
     "the next cron tick. Also pick WAIT if agent_still_working is true: " +
     "pings interrupt active work.\n\n" +
-    "Prefer NOTIFY_READY whenever the latest Copilot feedback on the current " +
-    "head sha indicates a clean bill of health. Never REQUEST_REVIEW when " +
-    "the newest Copilot review/comment already covers the current head sha " +
-    "and reported no issues. If merge_unknown is true, pick WAIT.\n" +
+    "Prefer NOTIFY_READY whenever the latest reviewer signal on the current " +
+    "head indicates a clean bill of health or no further requests. Never " +
+    "REQUEST_REVIEW when the newest reviewer feedback already covers the " +
+    "current head sha and reported no issues. If merge_unknown is true, pick WAIT.\n" +
     'JSON shape: {"action": "request_review|request_fix|notify_ready|wait", ' +
     '"reason": "short justification in English"}';
 
@@ -375,6 +461,36 @@ function agentStillWorking(ctx, nowMs) {
   return nowMs - dt < H(ACTIVE_WORK_QUIET_HOURS);
 }
 
+function classifyTerminalState({ ctx, action, reason, stateEntry }) {
+  if (action === "notify_ready") return { done: true, terminal: "done", skipped: false };
+  if (action === "llm_failed") return { done: true, terminal: "needs-human", skipped: false };
+  if (
+    ctx.hasConflicts &&
+    action === "wait" &&
+    stateEntry.stuck_notified_sha === ctx.headSha &&
+    /retry budget exhausted/i.test(reason || "")
+  ) {
+    return { done: true, terminal: "needs-human", skipped: false };
+  }
+  if (action === "skip_wip") return { done: true, terminal: "skipped", skipped: true };
+  return { done: false, terminal: null, skipped: false };
+}
+
+function buildOverallReport({ reports, targetPr }) {
+  const actionableReports = reports.filter((report) => !report.skipped);
+  return {
+    type: "overall",
+    scope: targetPr ? "single-pr" : "repo",
+    repo: targetPr?.repo || null,
+    pr: targetPr?.num || null,
+    done: actionableReports.every((report) => report.done),
+    actionable_prs: actionableReports.length,
+    terminal_prs: actionableReports.filter((report) => report.done).length,
+    needs_human_prs: actionableReports.filter((report) => report.terminal === "needs-human").length,
+    skipped_prs: reports.filter((report) => report.skipped).length,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
@@ -382,15 +498,29 @@ function agentStillWorking(ctx, nowMs) {
 export async function runMonitorOnce({
   nowMs = Date.now(),
   repos,
+  targetPr = null,
   state = {},
   collectPrStateFn = collectPrState,
   decideFn = decideWithLlm,
   llmDecider = callLlm,
   runGhFn = runGh,
   dryRun = DRY_RUN,
+  emitJsonReport = false,
 } = {}) {
-  if (!Array.isArray(repos) || repos.length === 0) {
-    return { state, notifications: [], githubActionsTaken: 0, output: "" };
+  const effectiveRepos = Array.isArray(repos)
+    ? repos
+    : targetPr?.repo
+      ? [targetPr.repo]
+      : [];
+  if (effectiveRepos.length === 0 && !targetPr) {
+    return {
+      state,
+      notifications: [],
+      githubActionsTaken: 0,
+      reports: [],
+      overallReport: buildOverallReport({ reports: [], targetPr: null }),
+      output: "",
+    };
   }
 
   const nextState = { ...state };
@@ -399,17 +529,27 @@ export async function runMonitorOnce({
 
   const notifications = [];
   const dryRunLogs = [];
+  const reports = [];
   let githubActionsTaken = 0;
 
   // Collect open PRs from every watched repo. A failure on one repo must
   // not kill the whole run.
   const prsByRepo = {};
-  for (const repo of repos) {
-    try {
-      const prs = await runGhFn([`repos/${repo}/pulls?state=open`]);
-      if (Array.isArray(prs)) prsByRepo[repo] = prs;
-    } catch (e) {
-      console.error(`⚠️ Could not list PRs for ${repo}: ${String(e).slice(0, 200)}`);
+  if (targetPr) {
+    const pr = await runGhFn([`repos/${targetPr.repo}/pulls/${targetPr.num}`]);
+    if (pr && typeof pr === "object" && pr.state === "open") {
+      prsByRepo[targetPr.repo] = [pr];
+    } else {
+      prsByRepo[targetPr.repo] = [];
+    }
+  } else {
+    for (const repo of effectiveRepos) {
+      try {
+        const prs = await runGhFn([`repos/${repo}/pulls?state=open`]);
+        if (Array.isArray(prs)) prsByRepo[repo] = prs;
+      } catch (e) {
+        console.error(`⚠️ Could not list PRs for ${repo}: ${String(e).slice(0, 200)}`);
+      }
     }
   }
 
@@ -420,6 +560,7 @@ export async function runMonitorOnce({
       const st = { ...(nextState[skey] || {}) };
       const ctx = await collectPrStateFn(pr, num, repo);
       const headSha = ctx.headSha;
+      const reviewTranscript = Array.isArray(ctx.reviewTranscript) ? ctx.reviewTranscript : [];
 
       const agentWorking = agentStillWorking(ctx, nowMs);
       const decisionCtx = {
@@ -434,6 +575,7 @@ export async function runMonitorOnce({
           latest_submitted_at: ctx.latestReviewTs ? new Date(ctx.latestReviewTs).toISOString() : null,
           approved_any: ctx.approved,
         },
+        review_transcript: reviewTranscript,
         copilot_inline_feedback: {
           count_unresolved: ctx.nInlineUnresolved,
           latest_at: ctx.latestInlineTs ? new Date(ctx.latestInlineTs).toISOString() : null,
@@ -468,6 +610,8 @@ export async function runMonitorOnce({
         headSha || "",
         ctx.latestReviewTs || "",
         ctx.latestReviewState || "",
+        reviewTranscript.length,
+        reviewTranscript.at(-1)?.ts || "",
         ctx.latestInlineTs || "",
         ctx.lastCopilotCommentTs || "",
         ctx.nInlineUnresolved,
@@ -496,10 +640,24 @@ export async function runMonitorOnce({
       notifications.push(...decided.notifications);
       const action = decided.action;
       const reason = decided.reason;
+      let finalAction = action;
+      let finalReason = reason;
+      let githubActionPosted = false;
 
       if (action === "skip_wip" || action === "llm_failed") {
         st.last_head_sha = headSha;
         nextState[skey] = st;
+        reports.push({
+          type: "pr",
+          repo,
+          pr: num,
+          head_sha: headSha,
+          action: finalAction,
+          reason: finalReason,
+          reused_cached_decision: decided.reused,
+          github_action_posted: githubActionPosted,
+          ...classifyTerminalState({ ctx, action: finalAction, reason: finalReason, stateEntry: st }),
+        });
         continue;
       }
 
@@ -510,12 +668,23 @@ export async function runMonitorOnce({
           seenReady.add(readyKey);
           notifications.push(
             `🟢 PR #${num} is READY for your review: **${ctx.title}**\n` +
-              `\`${(headSha || "").slice(0, 8)}\` · Copilot already confirmed it is clean (${reason}).\n` +
+              `\`${(headSha || "").slice(0, 8)}\` · The review transcript reached an All-clear (${reason}).\n` +
               `→ http://github.com/${repo}/pull/${num}`
           );
         }
         st.last_head_sha = headSha;
         nextState[skey] = st;
+        reports.push({
+          type: "pr",
+          repo,
+          pr: num,
+          head_sha: headSha,
+          action: finalAction,
+          reason: finalReason,
+          reused_cached_decision: decided.reused,
+          github_action_posted: githubActionPosted,
+          ...classifyTerminalState({ ctx, action: finalAction, reason: finalReason, stateEntry: st }),
+        });
         continue;
       }
 
@@ -524,14 +693,17 @@ export async function runMonitorOnce({
       // anyway (conflict pings have their own 6h same-sha throttle).
       if (action === "request_rebase") {
         if (agentWorking) {
-          st._sig = sig;
-          st._action = "wait";
-          st._reason =
+          finalAction = "wait";
+          finalReason =
             `Last commit is newer than ${ACTIVE_WORK_QUIET_HOURS}h: an agent is still ` +
             "working on this branch; do not interrupt with pings.";
+          st._sig = sig;
+          st._action = finalAction;
+          st._reason = finalReason;
         } else if (throttleOkSameSha(st, nowMs, headSha, REBASE_PING_MIN_INTERVAL_HOURS)) {
           await requestRebase(repo, num, { dryRun, runGhFn, dryRunLogs });
           githubActionsTaken++;
+          githubActionPosted = true;
           st.last_ping_ts = new Date(nowMs).toISOString();
           st.last_ping_sha = headSha;
           // Count rebase pings per head sha (drives the retry policy).
@@ -546,9 +718,25 @@ export async function runMonitorOnce({
               "with origin/main. When resolved, the loop will continue with code review.\n" +
               `→ http://github.com/${repo}/pull/${num}`
           );
+        } else {
+          finalAction = "wait";
+          finalReason =
+            `A conflict-resolution ping was already sent for this head sha in the last ` +
+            `${REBASE_PING_MIN_INTERVAL_HOURS}h; wait before retrying.`;
         }
         st.last_head_sha = headSha;
         nextState[skey] = st;
+        reports.push({
+          type: "pr",
+          repo,
+          pr: num,
+          head_sha: headSha,
+          action: finalAction,
+          reason: finalReason,
+          reused_cached_decision: decided.reused,
+          github_action_posted: githubActionPosted,
+          ...classifyTerminalState({ ctx, action: finalAction, reason: finalReason, stateEntry: st }),
+        });
         continue;
       }
 
@@ -565,36 +753,81 @@ export async function runMonitorOnce({
             await requestReview(repo, num, { dryRun, runGhFn, dryRunLogs });
           }
           githubActionsTaken++;
+          githubActionPosted = true;
           st.last_ping_ts = new Date(nowMs).toISOString();
           st.last_ping_sha = headSha;
+        } else if (agentWorking) {
+          finalAction = "wait";
+          finalReason =
+            `Last commit is newer than ${ACTIVE_WORK_QUIET_HOURS}h: an agent is still ` +
+            "working on this branch; do not interrupt with pings.";
+        } else if (!throttleOkSameSha(st, nowMs, headSha)) {
+          finalAction = "wait";
+          finalReason =
+            `A ${action.replace("request_", "")} ping was already sent for this head sha in the ` +
+            `last ${PING_MIN_INTERVAL_HOURS}h; wait before retrying.`;
+        } else if (tooSoonAfterReview(ctx, nowMs)) {
+          finalAction = "wait";
+          finalReason =
+            `The newest Copilot review is still within the ${COOLDOWN_AFTER_REVIEW_HOURS}h cooldown; wait.`;
         }
         st.last_head_sha = headSha;
         nextState[skey] = st;
+        reports.push({
+          type: "pr",
+          repo,
+          pr: num,
+          head_sha: headSha,
+          action: finalAction,
+          reason: finalReason,
+          reused_cached_decision: decided.reused,
+          github_action_posted: githubActionPosted,
+          ...classifyTerminalState({ ctx, action: finalAction, reason: finalReason, stateEntry: st }),
+        });
         continue;
       }
 
       // --- WAIT / unknown action: no action.
       st.last_head_sha = headSha;
       nextState[skey] = st;
+      reports.push({
+        type: "pr",
+        repo,
+        pr: num,
+        head_sha: headSha,
+        action: finalAction,
+        reason: finalReason,
+        reused_cached_decision: decided.reused,
+        github_action_posted: githubActionPosted,
+        ...classifyTerminalState({ ctx, action: finalAction, reason: finalReason, stateEntry: st }),
+      });
     }
   }
 
   nextState.seen_ready_shas = [...seenReady].sort();
   const outputParts = [...dryRunLogs];
   if (notifications.length) outputParts.push(notifications.join("\n\n"));
+  const overallReport = buildOverallReport({ reports, targetPr });
+  if (emitJsonReport) {
+    outputParts.push(...reports.map((report) => JSON.stringify(report)));
+    outputParts.push(JSON.stringify(overallReport));
+  }
 
   return {
     state: nextState,
     notifications,
     githubActionsTaken,
+    reports,
+    overallReport,
     output: outputParts.join("\n"),
   };
 }
 
 async function main() {
-  if (REPOS.length === 0) {
+  const { repos, targetPr, emitJsonReport } = resolveInvocation();
+  if (repos.length === 0 && !targetPr) {
     console.error(
-      "PR_MONITOR_REPOS is required: PR_MONITOR_REPOS=\"owner/repo1,owner/repo2\" node pr_monitor.mjs"
+      "Scope is required: pass --repo/--repos or --pr, or set PR_MONITOR_REPOS / PR_MONITOR_PR."
     );
     process.exit(1);
   }
@@ -602,9 +835,11 @@ async function main() {
   const state = loadState();
   const out = await runMonitorOnce({
     nowMs: Date.now(),
-    repos: REPOS,
+    repos,
+    targetPr,
     state,
     dryRun: DRY_RUN,
+    emitJsonReport,
   });
 
   // Never persist in dry-run — a dry run must not poison the real
