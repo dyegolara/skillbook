@@ -32,12 +32,6 @@ const REPOS = (process.env.PR_MONITOR_REPOS || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
-if (REPOS.length === 0) {
-  console.error(
-    "PR_MONITOR_REPOS is required: PR_MONITOR_REPOS=\"owner/repo1,owner/repo2\" node pr_monitor.mjs"
-  );
-  process.exit(1);
-}
 
 const STATE_PATH = process.env.PR_MONITOR_STATE_PATH ||
   path.join(os.homedir(), ".cache", "pr-monitor", "state.json");
@@ -131,24 +125,25 @@ function saveState(state) {
   fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
 }
 
-async function postComment(repo, num, body) {
-  if (DRY_RUN) {
-    console.log(`[DRY-RUN] ${repo}#${num}: ${body}`);
+async function postComment(repo, num, body, { dryRun = DRY_RUN, runGhFn = runGh, dryRunLogs = null } = {}) {
+  if (dryRun) {
+    if (Array.isArray(dryRunLogs)) dryRunLogs.push(`[DRY-RUN] ${repo}#${num}: ${body}`);
     return;
   }
-  await runGh([`repos/${repo}/issues/${num}/comments`, "-f", `body=${body}`, "-X", "POST"]);
+  await runGhFn([`repos/${repo}/issues/${num}/comments`, "-f", `body=${body}`, "-X", "POST"]);
 }
 
-async function requestReview(repo, num) {
-  await postComment(repo, num, "@copilot code review");
+async function requestReview(repo, num, opts = {}) {
+  await postComment(repo, num, "@copilot code review", opts);
 }
 
-async function requestFix(repo, num, commentUrls) {
-  if (!commentUrls.length) return requestReview(repo, num);
+async function requestFix(repo, num, commentUrls, opts = {}) {
+  if (!commentUrls.length) return requestReview(repo, num, opts);
   await postComment(
     repo,
     num,
-    `@copilot work on the issues mentioned in these comments ${commentUrls.join(" ")}`
+    `@copilot work on the issues mentioned in these comments ${commentUrls.join(" ")}`,
+    opts
   );
 }
 
@@ -156,7 +151,7 @@ async function requestFix(repo, num, commentUrls) {
  * prescribe rebase: Copilot's environment cannot force-push, so it
  * integrates main via merge. What we demand is that the conflicts get
  * RESOLVED, wisely, preserving both branches' work. */
-async function requestRebase(repo, num) {
+async function requestRebase(repo, num, opts = {}) {
   await postComment(
     repo,
     num,
@@ -167,7 +162,8 @@ async function requestRebase(repo, num) {
       "branch over main). If you are not confident on a change or have a " +
       "question about a decision, consult the spec, tickets and " +
       "documentation to see if there could be any answer, if not, ask the " +
-      "user."
+      "user.",
+    opts
   );
 }
 
@@ -383,13 +379,26 @@ function agentStillWorking(ctx, nowMs) {
 // main
 // ---------------------------------------------------------------------------
 
-async function main() {
-  const nowMs = Date.now();
-  const state = loadState();
+export async function runMonitorOnce({
+  nowMs = Date.now(),
+  repos,
+  state = {},
+  collectPrStateFn = collectPrState,
+  decideFn = decideWithLlm,
+  llmDecider = callLlm,
+  runGhFn = runGh,
+  dryRun = DRY_RUN,
+} = {}) {
+  if (!Array.isArray(repos) || repos.length === 0) {
+    return { state, notifications: [], githubActionsTaken: 0, output: "" };
+  }
+
+  const nextState = { ...state };
   // Per-repo head shas already reported "ready" (key "repo:sha") -> notify once.
-  const seenReady = new Set(state.seen_ready_shas || []);
+  const seenReady = new Set(nextState.seen_ready_shas || []);
 
   const notifications = [];
+  const dryRunLogs = [];
   let githubActionsTaken = 0;
 
   // Collect open PRs from every watched repo. A failure on one repo must
@@ -397,7 +406,7 @@ async function main() {
   const prsByRepo = {};
   for (const repo of REPOS) {
     try {
-      const prs = await runGh([`repos/${repo}/pulls?state=open`]);
+      const prs = await runGhFn([`repos/${repo}/pulls?state=open`]);
       if (Array.isArray(prs)) prsByRepo[repo] = prs;
     } catch (e) {
       console.error(`⚠️ Could not list PRs for ${repo}: ${String(e).slice(0, 200)}`);
@@ -408,8 +417,8 @@ async function main() {
     for (const pr of prs) {
       const num = pr.number;
       const skey = `${repo}#${num}`;
-      const st = state[skey] || {};
-      const ctx = await collectPrState(pr, num, repo);
+      const st = { ...(nextState[skey] || {}) };
+      const ctx = await collectPrStateFn(pr, num, repo);
       const headSha = ctx.headSha;
 
       const agentWorking = agentStillWorking(ctx, nowMs);
@@ -472,7 +481,7 @@ async function main() {
         ctx.inlineTranscript.length,
         ctx.inlineTranscript.at(-1)?.ts || "",
       ].join("|");
-      const decided = await decideWithLlm({
+      const decided = await decideFn({
         ctx: { ...ctx, repo, num },
         stateEntry: st,
         nowMs,
@@ -490,7 +499,7 @@ async function main() {
 
       if (action === "skip_wip" || action === "llm_failed") {
         st.last_head_sha = headSha;
-        state[skey] = st;
+        nextState[skey] = st;
         continue;
       }
 
@@ -506,7 +515,7 @@ async function main() {
           );
         }
         st.last_head_sha = headSha;
-        state[skey] = st;
+        nextState[skey] = st;
         continue;
       }
 
@@ -521,7 +530,7 @@ async function main() {
             `Last commit is newer than ${ACTIVE_WORK_QUIET_HOURS}h: an agent is still ` +
             "working on this branch; do not interrupt with pings.";
         } else if (throttleOkSameSha(st, nowMs, headSha, REBASE_PING_MIN_INTERVAL_HOURS)) {
-          await requestRebase(repo, num);
+          await requestRebase(repo, num, { dryRun, runGhFn, dryRunLogs });
           githubActionsTaken++;
           st.last_ping_ts = new Date(nowMs).toISOString();
           st.last_ping_sha = headSha;
@@ -539,7 +548,7 @@ async function main() {
           );
         }
         st.last_head_sha = headSha;
-        state[skey] = st;
+        nextState[skey] = st;
         continue;
       }
 
@@ -550,31 +559,61 @@ async function main() {
           throttleOkSameSha(st, nowMs, headSha) &&
           !tooSoonAfterReview(ctx, nowMs);
         if (pingOk) {
-          if (action === "request_fix") await requestFix(repo, num, ctx.commentUrls);
-          else await requestReview(repo, num);
+          if (action === "request_fix") {
+            await requestFix(repo, num, ctx.commentUrls, { dryRun, runGhFn, dryRunLogs });
+          } else {
+            await requestReview(repo, num, { dryRun, runGhFn, dryRunLogs });
+          }
           githubActionsTaken++;
           st.last_ping_ts = new Date(nowMs).toISOString();
           st.last_ping_sha = headSha;
         }
         st.last_head_sha = headSha;
-        state[skey] = st;
+        nextState[skey] = st;
         continue;
       }
 
       // --- WAIT / unknown action: no action.
       st.last_head_sha = headSha;
-      state[skey] = st;
+      nextState[skey] = st;
     }
   }
 
-  state.seen_ready_shas = [...seenReady].sort();
+  nextState.seen_ready_shas = [...seenReady].sort();
+  const outputParts = [...dryRunLogs];
+  if (notifications.length) outputParts.push(notifications.join("\n\n"));
+
+  return {
+    state: nextState,
+    notifications,
+    githubActionsTaken,
+    output: outputParts.join("\n"),
+  };
+}
+
+async function main() {
+  if (REPOS.length === 0) {
+    console.error(
+      "PR_MONITOR_REPOS is required: PR_MONITOR_REPOS=\"owner/repo1,owner/repo2\" node pr_monitor.mjs"
+    );
+    process.exit(1);
+  }
+
+  const state = loadState();
+  const out = await runMonitorOnce({
+    nowMs: Date.now(),
+    repos: REPOS,
+    state,
+    dryRun: DRY_RUN,
+  });
+
   // Never persist in dry-run — a dry run must not poison the real
   // throttle/cache bookkeeping.
-  if (!DRY_RUN) saveState(state);
+  if (!DRY_RUN) saveState(out.state);
 
   // Output: only emit human-facing notifications (empty otherwise ->
   // no_agent cron stays silent so we don't spam the owner).
-  if (notifications.length) console.log(notifications.join("\n\n"));
+  if (out.output) console.log(out.output);
 }
 
 main().catch((e) => {
