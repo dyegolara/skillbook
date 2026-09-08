@@ -1,6 +1,7 @@
 const COPILOT_SUBSTR = "copilot";
 const WIP_TITLE_RE = /^\s*\[?(wip|draft|dnm|do not merge|work in progress)\b/i;
 const H = (h) => h * 3600_000;
+const LLM_MAX_FAILURES_PER_HEAD = 3;
 
 function toMs(ts) {
   if (!ts) return null;
@@ -183,14 +184,37 @@ export async function decideWithLlm({
   try {
     decision = await llmDecider(llmContext);
   } catch (e) {
+    const failures = st.llm_failures_sha === ctx.headSha
+      ? (Number(st.llm_failures) || 0) + 1
+      : 1;
+    st.llm_failures_sha = ctx.headSha;
+    st.llm_failures = failures;
+
+    if (failures < LLM_MAX_FAILURES_PER_HEAD) {
+      delete st._sig;
+      delete st._action;
+      st._reason =
+        `Could not decide with LLM (${e.message || e}); retrying ` +
+        `(${failures}/${LLM_MAX_FAILURES_PER_HEAD}).`;
+      return {
+        handled: true,
+        action: "wait",
+        reason: st._reason,
+        reused: false,
+        stateEntry: st,
+        notifications,
+      };
+    }
+
     st._sig = sig;
     st._action = "llm_failed";
-    st._reason = `Could not decide with LLM (${e.message || e})`;
+    st._reason =
+      `Could not decide with LLM after ${failures} attempts on this head (${e.message || e})`;
     if (st.llm_fail_notified_sha !== ctx.headSha) {
       st.llm_fail_notified_sha = ctx.headSha;
       notifications.push(
-        `⚠️ ${ctx.repo}#${ctx.num}: could not decide with LLM (${e.message || e}). ` +
-          "Will retry when PR state changes."
+        `⚠️ ${ctx.repo}#${ctx.num}: could not decide with LLM after ${failures} attempts ` +
+          `on this head (${e.message || e}). Please inspect manually.`
       );
     }
     return {
@@ -204,6 +228,8 @@ export async function decideWithLlm({
   }
 
   const { action, reason } = normalizeLlmDecision(decision);
+  st.llm_failures_sha = ctx.headSha;
+  st.llm_failures = 0;
   st._sig = sig;
   st._action = action;
   if (reason) st._reason = reason;
