@@ -2,12 +2,20 @@
   "name": "skillbook",
   "version": "0.1.0",
   "private": true,
-  "description": "Dojo Mojo's skillbook — agent skills by reference (npm / skills.sh), no copies. Own skills + pointers to dyegolara's published auth skills.",
+  "description": "Dojo Mojo's skillbook — agent skills: own skills, the ported pstack pack, and pointers to dyegolara's published auth skills.",
   "type": "module",
   "scripts": {
     "skills:install": "npx skills@latest add dyegolara/lnurl-auth-agents --skill lnurl-auth && npx skills@latest add dyegolara/nostr-auth-agents --skill nostr-auth",
-    "verify": "node scripts/verify-references.mjs",
+    "verify:publishing": "node scripts/verify-publishing.mjs",
+    "verify:upstream": "node skills/pstack/_upstream/verify-upstream.mjs",
+    "verify:pstack": "node scripts/verify-pstack.mjs",
+    "verify": "npm run verify:publishing && npm run verify:upstream -- --report-only && npm run verify:pstack",
     "test:copilot-review-smart": "node --test skills/engineering/copilot-review-smart/decision.test.mjs skills/engineering/copilot-review-smart/pr_monitor.test.mjs skills/engineering/copilot-review-smart/harness.test.mjs",
+    "test:scripts": "node --test scripts/verify-pstack.test.mjs scripts/verify-upstream.test.mjs",
+    "install:pstack": "npm --prefix skills/pstack/poteto-mode/scripts install --no-audit --no-fund",
+    "test:pstack": "npm run install:pstack && npm --prefix skills/pstack/poteto-mode/scripts test",
+    "typecheck:pstack": "npm run install:pstack && npm --prefix skills/pstack/poteto-mode/scripts run typecheck",
+    "test": "npm run test:copilot-review-smart && npm run test:scripts && npm run test:pstack",
     "harness:copilot-review-smart": "node skills/engineering/copilot-review-smart/harness/run_fixture.mjs"
   },
   "dependencies": {
@@ -20,7 +28,8 @@
     "lnurl-auth",
     "nostr-auth",
     "copilot",
-    "github"
+    "github",
+    "pstack"
   ],
   "license": "MIT"
 }

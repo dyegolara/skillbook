@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * verify-references.mjs — checks that every external skill referenced by this
+ * verify-publishing.mjs — checks that every external skill referenced by this
  * skillbook actually resolves on its PUBLISHED channel (npm / skills.sh /
  * ClawHub). References only, nothing is downloaded into the repo.
  */

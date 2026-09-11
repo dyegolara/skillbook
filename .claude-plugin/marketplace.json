@@ -4,12 +4,12 @@
     "name": "dyegolara (Dojo Mojo Casa House)",
     "url": "https://github.com/dyegolara"
   },
-  "description": "Dojo Mojo's agent skills (own skills only in this marketplace). The lnurl-auth and nostr-auth skills are referenced from their npm packages / skills.sh — see the README.",
+  "description": "Dojo Mojo's agent skills: own skills and the ported pstack pack (47 harness-agnostic engineering skills). The lnurl-auth and nostr-auth skills are referenced from their npm packages / skills.sh — see the README.",
   "plugins": [
     {
       "name": "skillbook-skills",
       "source": "./",
-      "description": "Dojo Mojo's own agent skills (Copilot PR watchdog and more).",
+      "description": "Dojo Mojo's agent skills: the Copilot PR watchdog, the ported pstack pack, and more.",
       "category": "engineering",
       "keywords": [
         "engineering",
@@ -17,7 +17,8 @@
         "copilot",
         "pr-review",
         "cron",
-        "github"
+        "github",
+        "pstack"
       ]
     }
   ]

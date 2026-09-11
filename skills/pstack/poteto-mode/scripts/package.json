@@ -1,0 +1,17 @@
+{
+  "name": "@skillbook/pstack-tools",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "bun test orch watch-pr",
+    "typecheck": "tsc --project tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "commander": "14.0.0"
+  },
+  "devDependencies": {
+    "bun": "1.4.2",
+    "bun-types": "latest",
+    "typescript": "latest"
+  }
+}
