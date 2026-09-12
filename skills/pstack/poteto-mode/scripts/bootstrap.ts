@@ -36,8 +36,8 @@ function isLivePid(pid: number): boolean {
 }
 function clearStaleInstallLock(): boolean {
   try {
-    const content = readFileSync(installLockPath, "utf8").trim();
-    const match = /^pid:(\d+)$/.exec(content);
+    const content = readFileSync(installLockPath, "utf8");
+    const match = /^pid:(\d+)$/m.exec(content);
     if (match === null) return false;
     const pid = Number(match[1]);
     if (!Number.isInteger(pid) || pid <= 0 || isLivePid(pid)) return false;
@@ -49,11 +49,13 @@ function clearStaleInstallLock(): boolean {
 }
 function withInstallLock<T>(run: () => T): T {
   const startedAt = Date.now();
+  const ownerToken = `${process.pid}:${Date.now()}:${Math.random()}`;
+  const ownerRecord = `pid:${process.pid}\ntoken:${ownerToken}\n`;
   let lockFd: number | null = null;
   while (lockFd === null) {
     try {
       lockFd = openSync(installLockPath, "wx");
-      writeSync(lockFd, `pid:${process.pid}\n`);
+      writeSync(lockFd, ownerRecord);
     } catch (error) {
       if (
         !(error instanceof Error && "code" in error && error.code === "EEXIST")
@@ -71,7 +73,10 @@ function withInstallLock<T>(run: () => T): T {
     return run();
   } finally {
     closeSync(lockFd);
-    unlinkSync(installLockPath);
+    try {
+      if (readFileSync(installLockPath, "utf8") === ownerRecord)
+        unlinkSync(installLockPath);
+    } catch {}
   }
 }
 
