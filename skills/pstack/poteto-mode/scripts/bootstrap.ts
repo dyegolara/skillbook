@@ -29,6 +29,14 @@ function hasCurrentInstallKey(installKey: string): boolean {
   return recorded === installKey || recorded === `prod:${installKey}` || recorded === `full:${installKey}`;
 }
 
+function recordedInstallMode(): "prod" | "full" | null {
+  if (!existsSync(installKeyPath)) return null;
+  const recorded = readFileSync(installKeyPath, "utf8").trim();
+  if (recorded.startsWith("full:")) return "full";
+  if (recorded !== "") return "prod";
+  return null;
+}
+
 export function writeInstallKey(mode: "prod" | "full" = "prod"): void {
   writeFileSync(installKeyPath, `${mode}:${currentInstallKey()}\n`);
 }
@@ -39,7 +47,15 @@ export function ensureDependenciesInstalled(): void {
     return;
   }
 
-  const result = spawnSync("npm", ["ci", "--omit=dev", "--no-audit", "--no-fund"], {
+  const mode =
+    existsSync(commanderPackagePath) && recordedInstallMode() === "full"
+      ? "full"
+      : "prod";
+  const args =
+    mode === "full"
+      ? ["ci", "--no-audit", "--no-fund"]
+      : ["ci", "--omit=dev", "--no-audit", "--no-fund"];
+  const result = spawnSync("npm", args, {
     cwd: scriptsDirectory,
     encoding: "utf8",
     shell: process.platform === "win32",
@@ -47,15 +63,15 @@ export function ensureDependenciesInstalled(): void {
   if (result.status !== 0) {
     process.stdout.write(result.stdout ?? "");
     process.stderr.write(result.stderr ?? "");
-    throw new Error(`npm ci exited with status ${result.status}`);
+    throw new Error(`npm ${args.join(" ")} exited with status ${result.status}`);
   }
   if (!existsSync(commanderPackagePath)) {
     throw new Error(
-      "npm ci --omit=dev completed without installing commander"
+      `npm ${args.join(" ")} completed without installing commander`
     );
   }
 
-  writeInstallKey("prod");
+  writeInstallKey(mode);
 
   const restarted = spawnSync(process.execPath, process.argv.slice(1), {
     cwd: process.cwd(),
