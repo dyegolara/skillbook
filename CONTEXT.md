@@ -15,7 +15,8 @@ _Avoid_: plugin, extension, prompt.
 
 **Referenced skill**:
 A skill that lives in another repo and is consumed by reference (npm /
-skills.sh / ClawHub) — never copied into this skillbook.
+skills.sh / ClawHub) — never copied into this skillbook. A skill copied in
+is a Ported skill instead.
 _Avoid_: external skill, dependency skill.
 
 **Own skill**:
@@ -23,10 +24,29 @@ A skill whose canonical source is this repo (`skills/<category>/<name>`).
 _Avoid_: local skill.
 
 **Script standard**:
-The rule that every script shipped in a skill folder is plain ESM
-JavaScript (`.mjs`), run directly by Node, with no build step. See
-`docs/adr/0002`.
+The rule that every script authored in this repo's skill folders is plain
+ESM JavaScript (`.mjs`), run directly by Node, with no build step. Ported
+tooling keeps its upstream TypeScript and runs on Node's native type
+stripping. See `docs/adr/0002` and `docs/adr/0004`.
 _Avoid_: (do not call it "the TS standard" — earlier drafts did)
+
+### pstack pack
+
+**Ported skill**:
+A skill copied from another repository under its license and adapted to this
+book; this repo becomes its canonical source.
+_Avoid_: forked skill, vendored skill, imported skill, copy.
+
+**Adaptation**:
+The deliberate changes applied while porting a skill (capability fallbacks,
+path mapping, frontmatter normalization), as opposed to upstream content kept
+as-is.
+_Avoid_: rewrite, conversion.
+
+**Upstream pin**:
+The upstream repository revision recorded when a skill is ported; the fixed
+baseline a drift check compares against.
+_Avoid_: snapshot, vendor commit.
 
 ### copilot-review-smart
 
