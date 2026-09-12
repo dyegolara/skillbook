@@ -39,7 +39,7 @@ export function ensureDependenciesInstalled(): void {
     return;
   }
 
-  const result = spawnSync("npm", ["install", "--omit=dev", "--no-audit", "--no-fund"], {
+  const result = spawnSync("npm", ["ci", "--omit=dev", "--no-audit", "--no-fund"], {
     cwd: scriptsDirectory,
     encoding: "utf8",
     shell: process.platform === "win32",
@@ -47,11 +47,11 @@ export function ensureDependenciesInstalled(): void {
   if (result.status !== 0) {
     process.stdout.write(result.stdout ?? "");
     process.stderr.write(result.stderr ?? "");
-    throw new Error(`npm install exited with status ${result.status}`);
+    throw new Error(`npm ci exited with status ${result.status}`);
   }
   if (!existsSync(commanderPackagePath)) {
     throw new Error(
-      "npm install --omit=dev completed without installing commander"
+      "npm ci --omit=dev completed without installing commander"
     );
   }
 
