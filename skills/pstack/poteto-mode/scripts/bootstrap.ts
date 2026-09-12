@@ -72,11 +72,10 @@ function withInstallLock<T>(run: () => T): T {
   try {
     return run();
   } finally {
-    closeSync(lockFd);
     try {
-      if (readFileSync(installLockPath, "utf8") === ownerRecord)
-        unlinkSync(installLockPath);
+      unlinkSync(installLockPath);
     } catch {}
+    closeSync(lockFd);
   }
 }
 

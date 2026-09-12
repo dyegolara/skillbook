@@ -8,6 +8,7 @@ import {
   parsePullRequest,
   parseReviewThreadsPage,
   parseReviewThreads,
+  readAllReviewThreads,
   resolveChecks,
   resolveContext,
 } from "./github.ts";
@@ -314,6 +315,57 @@ it("parses review thread pagination metadata", () => {
   expect(page).toEqual({ nodes: [], endCursor: "cursor-2" });
   expect(REVIEW_THREADS_QUERY).toContain("reviewThreads(first: 100, after: $after)");
   expect(REVIEW_THREADS_QUERY).toContain("pageInfo");
+});
+
+it("accumulates review thread pages before parsing unresolved threads", async () => {
+  const cursors: (string | null)[] = [];
+  const threads = await readAllReviewThreads(async (after) => {
+    cursors.push(after);
+    if (after === null)
+      return {
+        endCursor: "cursor-2",
+        nodes: [
+          {
+            id: "one",
+            isResolved: false,
+            comments: {
+              nodes: [
+                {
+                  body: "RUN_ID: run-1",
+                  createdAt: "now",
+                  path: "a.ts",
+                  line: 1,
+                  author: { login: "bugbot" },
+                },
+              ],
+            },
+          },
+        ],
+      };
+    return {
+      endCursor: null,
+      nodes: [
+        {
+          id: "two",
+          isResolved: false,
+          comments: {
+            nodes: [
+              {
+                body: "RUN_ID: run-2",
+                createdAt: "now",
+                path: "b.ts",
+                line: 2,
+                author: { login: "bugbot" },
+              },
+            ],
+          },
+        },
+      ],
+    };
+  });
+  expect(cursors).toEqual([null, "cursor-2"]);
+  expect(threads.map((thread) => thread.id)).toEqual(["one", "two"]);
+  expect(threads.map((thread) => thread.bugbotReviewPasses)).toEqual([2, 2]);
 });
 
 describe("context and stack discovery", () => {

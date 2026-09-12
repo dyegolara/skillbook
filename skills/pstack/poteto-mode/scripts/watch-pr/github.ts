@@ -469,6 +469,20 @@ export function parseReviewThreadsPage(value: unknown): {
 export function parseReviewThreads(value: unknown): readonly T.ReviewThread[] {
   return parseReviewThreadsFromNodes(parseReviewThreadsPage(value).nodes);
 }
+export async function readAllReviewThreads(
+  readPage: (
+    after: string | null
+  ) => Promise<{ readonly nodes: readonly unknown[]; readonly endCursor: string | null }>
+): Promise<readonly T.ReviewThread[]> {
+  const nodes: unknown[] = [];
+  let after: string | null = null;
+  do {
+    const page = await readPage(after);
+    nodes.push(...page.nodes);
+    after = page.endCursor;
+  } while (after !== null);
+  return parseReviewThreadsFromNodes(nodes);
+}
 export function parsePullRequest(
   value: unknown,
   context: T.PrContext
@@ -641,16 +655,11 @@ export class GhGitHubReader implements T.GitHubReader {
   async reviewThreads(
     context: T.PrContext
   ): Promise<readonly T.ReviewThread[]> {
-    const nodes: unknown[] = [];
-    let after: string | null = null;
-    do {
+    return readAllReviewThreads(async (after) => {
       const argv = graphqlArgs(REVIEW_THREADS_QUERY, context);
       if (after !== null) argv.push("-f", `after=${after}`);
-      const page = parseReviewThreadsPage(await runJson(argv));
-      nodes.push(...page.nodes);
-      after = page.endCursor;
-    } while (after !== null);
-    return parseReviewThreadsFromNodes(nodes);
+      return parseReviewThreadsPage(await runJson(argv));
+    });
   }
   async commitRollups(
     context: T.PrContext
