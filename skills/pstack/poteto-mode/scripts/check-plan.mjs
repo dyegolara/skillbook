@@ -78,8 +78,12 @@ let fence = false;
 for (let i = start; i < raw.length; i++) {
 	const text = raw[i];
 	const n = i + 1;
-	if (/^```/.test(text)) fence = !fence;
-	lines.push({ n, text, code: fence });
+	const isFence = /^```/.test(text);
+	lines.push({ n, text, code: fence && !isFence });
+	if (isFence) {
+		fence = !fence;
+		continue;
+	}
 	if (fence) continue;
 	const prose = text
 		.replace(/`[^`]*`/g, "`")

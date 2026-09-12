@@ -319,4 +319,25 @@ describe("context and stack discovery", () => {
     ]);
     expect(ordered.map((item) => Number(item.number))).toEqual([41, 42]);
   });
+
+  it("stops the upstack walk when a branch has multiple open children", () => {
+    const ordered = orderStack(context, [
+      {
+        number: context.number,
+        headRefName: "feature",
+        baseRefName: "main",
+      },
+      {
+        number: parsePrNumber(43),
+        headRefName: "upstack-a",
+        baseRefName: "feature",
+      },
+      {
+        number: parsePrNumber(44),
+        headRefName: "upstack-b",
+        baseRefName: "feature",
+      },
+    ]);
+    expect(ordered.map((item) => Number(item.number))).toEqual([42]);
+  });
 });

@@ -706,15 +706,17 @@ export function orderStack(
     current = parent;
   }
   const up: T.OpenPullRequest[] = [];
-  const visit = (parent: T.OpenPullRequest): void => {
-    for (const child of children.get(parent.headRefName) ?? []) {
-      if (seen.has(child.number)) continue;
-      seen.add(child.number);
-      up.push(child);
-      visit(child);
-    }
-  };
-  visit(start);
+  current = start;
+  while (true) {
+    const next = (children.get(current.headRefName) ?? []).filter(
+      (child) => !seen.has(child.number)
+    );
+    if (next.length !== 1) break;
+    const child = next[0];
+    seen.add(child.number);
+    up.push(child);
+    current = child;
+  }
   return (
     nonEmpty(
       [...down.reverse(), start, ...up].map((pr) => ({
