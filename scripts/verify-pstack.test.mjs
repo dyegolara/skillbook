@@ -274,6 +274,11 @@ test("rejects incomplete provenance", () => {
   assert.ok(problems.some((problem) => problem.includes("missing THIRD_PARTY_NOTICES.md")));
 });
 
+test("rejects a missing provenance file without crashing", () => {
+  const problems = verify(makePack({ omit: ["provenance"] }));
+  assert.ok(problems.some((problem) => problem.includes("missing PROVENANCE.md")));
+});
+
 function addTooling(pack) {
   for (const parts of TOOLING_ENTRYPOINTS) {
     write(pack, ["poteto-mode", "scripts", ...parts].join("/"), "#!/usr/bin/env node\n");

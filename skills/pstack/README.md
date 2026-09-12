@@ -131,7 +131,7 @@ Runtime requirements:
 
 - **Node >= 22.18.0** runs the tooling directly through native TypeScript type
   stripping, with no build step and no Bun at runtime.
-- The tooling installs its own dependencies with `npm` on first use
+- The tooling installs its production dependencies with `npm` on first use
   (`bootstrap.ts`); entry-point shebangs point at Node.
 - **Bun is a dev dependency only**, used to run the upstream `bun:test` suite
   (`npm run test:pstack`). Nothing requires Bun at run time.

@@ -23,17 +23,23 @@ function currentInstallKey(): string {
     .digest("hex");
 }
 
+function hasCurrentInstallKey(installKey: string): boolean {
+  if (!existsSync(installKeyPath)) return false;
+  const recorded = readFileSync(installKeyPath, "utf8").trim();
+  return recorded === installKey || recorded === `prod:${installKey}` || recorded === `full:${installKey}`;
+}
+
+export function writeInstallKey(mode: "prod" | "full" = "prod"): void {
+  writeFileSync(installKeyPath, `${mode}:${currentInstallKey()}\n`);
+}
+
 export function ensureDependenciesInstalled(): void {
   const installKey = currentInstallKey();
-  if (
-    existsSync(commanderPackagePath) &&
-    existsSync(installKeyPath) &&
-    readFileSync(installKeyPath, "utf8").trim() === installKey
-  ) {
+  if (existsSync(commanderPackagePath) && hasCurrentInstallKey(installKey)) {
     return;
   }
 
-  const result = spawnSync("npm", ["install", "--no-audit", "--no-fund"], {
+  const result = spawnSync("npm", ["install", "--omit=dev", "--no-audit", "--no-fund"], {
     cwd: scriptsDirectory,
     encoding: "utf8",
     shell: process.platform === "win32",
@@ -45,11 +51,11 @@ export function ensureDependenciesInstalled(): void {
   }
   if (!existsSync(commanderPackagePath)) {
     throw new Error(
-      "npm install completed without installing commander"
+      "npm install --omit=dev completed without installing commander"
     );
   }
 
-  writeFileSync(installKeyPath, `${installKey}\n`);
+  writeInstallKey("prod");
 
   const restarted = spawnSync(process.execPath, process.argv.slice(1), {
     cwd: process.cwd(),

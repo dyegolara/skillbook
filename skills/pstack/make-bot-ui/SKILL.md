@@ -64,7 +64,6 @@ The server POSTs to the webhook URL with:
 
 - method `POST`
 - `Content-Type: application/json`
-- `Authorization: Bearer <key>`
 - `X-Automation-Key: <key>`
 - body: one JSON object with the fields named in the routine prompt
 - timeout: 8 seconds

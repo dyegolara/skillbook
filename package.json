@@ -12,7 +12,7 @@
     "verify": "npm run verify:publishing && npm run verify:upstream -- --report-only && npm run verify:pstack",
     "test:copilot-review-smart": "node --test skills/engineering/copilot-review-smart/decision.test.mjs skills/engineering/copilot-review-smart/pr_monitor.test.mjs skills/engineering/copilot-review-smart/harness.test.mjs",
     "test:scripts": "node --test scripts/verify-pstack.test.mjs scripts/verify-upstream.test.mjs",
-    "install:pstack": "npm --prefix skills/pstack/poteto-mode/scripts install --no-audit --no-fund",
+    "install:pstack": "npm --prefix skills/pstack/poteto-mode/scripts install --no-audit --no-fund && node --input-type=module -e \"import('./skills/pstack/poteto-mode/scripts/bootstrap.ts').then(({ writeInstallKey }) => writeInstallKey('full'))\"",
     "test:pstack": "npm run install:pstack && npm --prefix skills/pstack/poteto-mode/scripts test",
     "typecheck:pstack": "npm run install:pstack && npm --prefix skills/pstack/poteto-mode/scripts run typecheck",
     "test": "npm run test:copilot-review-smart && npm run test:scripts && npm run test:pstack",

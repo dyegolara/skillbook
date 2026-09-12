@@ -357,12 +357,15 @@ function checkProvenance(packDir, problems) {
       problems.push(`provenance: invalid manifest entry for ${key}`);
     }
   }
-  const provenance = readFileSync(join(upstream, "PROVENANCE.md"), "utf8");
-  if (manifest.commit && !provenance.includes(manifest.commit)) {
-    problems.push("provenance: PROVENANCE.md does not name the pinned commit");
-  }
-  if (!/benny/i.test(provenance)) {
-    problems.push("provenance: PROVENANCE.md does not record the benny exclusion");
+  const provenancePath = join(upstream, "PROVENANCE.md");
+  if (existsSync(provenancePath)) {
+    const provenance = readFileSync(provenancePath, "utf8");
+    if (manifest.commit && !provenance.includes(manifest.commit)) {
+      problems.push("provenance: PROVENANCE.md does not name the pinned commit");
+    }
+    if (!/benny/i.test(provenance)) {
+      problems.push("provenance: PROVENANCE.md does not record the benny exclusion");
+    }
   }
   return manifest;
 }
