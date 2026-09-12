@@ -78,6 +78,7 @@ export function writeInstallKey(mode: "prod" | "full" = "prod"): void {
 }
 
 export function ensureDependenciesInstalled(): void {
+  let shouldRestart = false;
   withInstallLock(() => {
     const installKey = currentInstallKey();
     if (existsSync(commanderPackagePath) && hasCurrentInstallKey(installKey)) {
@@ -111,12 +112,13 @@ export function ensureDependenciesInstalled(): void {
     }
 
     writeInstallKey(mode);
-
-    const restarted = spawnSync(process.execPath, process.argv.slice(1), {
-      cwd: process.cwd(),
-      env: process.env,
-      stdio: "inherit",
-    });
-    process.exit(restarted.status ?? 1);
+    shouldRestart = true;
   });
+  if (!shouldRestart) return;
+  const restarted = spawnSync(process.execPath, process.argv.slice(1), {
+    cwd: process.cwd(),
+    env: process.env,
+    stdio: "inherit",
+  });
+  process.exit(restarted.status ?? 1);
 }
