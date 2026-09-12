@@ -1323,7 +1323,18 @@ function resolveFrontier(repo: string): readonly FrontierPr[] {
   const forge = detectForge();
   let entries: readonly GtFrontierEntry[];
   if (forge === "gt") {
-    entries = graphiteFrontier(repo);
+    try {
+      entries = graphiteFrontier(repo);
+    } catch (error) {
+      if (
+        !(error instanceof UserError) ||
+        !error.message.startsWith("gt log short --stack --reverse failed:") ||
+        !executableOnPath("gh")
+      ) {
+        throw error;
+      }
+      entries = githubFrontier(repo);
+    }
   } else if (forge === "gh") {
     entries = githubFrontier(repo);
   } else if (forge === "git") {

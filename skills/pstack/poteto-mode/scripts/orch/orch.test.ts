@@ -159,6 +159,68 @@ esac
   }
 }
 
+async function withFakeGtAndGh<T>({
+  directory,
+  ghRows,
+  operation,
+}: {
+  directory: string;
+  ghRows: readonly Record<string, unknown>[];
+  operation: () => Promise<T>;
+}): Promise<T> {
+  const bin = join(directory, "bin");
+  await mkdir(bin);
+  const gt = join(bin, "gt");
+  const gh = join(bin, "gh");
+  await writeFile(
+    gt,
+    `#!/usr/bin/env bash
+set -euo pipefail
+if [ "$(pwd -P)" != "${realpathSync(join(directory, "repo"))}" ]; then
+  printf 'gt ran outside the fixture repo: %s\\n' "$(pwd -P)" >&2
+  exit 2
+fi
+printf 'not a graphite repo\\n' >&2
+exit 1
+`
+  );
+  await writeFile(
+    gh,
+    `#!/usr/bin/env bash
+set -euo pipefail
+if [ "$(pwd -P)" != "${realpathSync(join(directory, "repo"))}" ]; then
+  printf 'gh ran outside the fixture repo: %s\\n' "$(pwd -P)" >&2
+  exit 2
+fi
+case "$*" in
+  "pr list --author @me --state all --limit 200 --json number,state,headRefName,baseRefName")
+    cat <<'EOF'
+${JSON.stringify(ghRows)}
+EOF
+    ;;
+  *)
+    printf 'unexpected gh arguments: %s\\n' "$*" >&2
+    exit 2
+    ;;
+esac
+`
+  );
+  await chmod(gt, 0o755);
+  await chmod(gh, 0o755);
+
+  const originalPath = process.env.PATH;
+  process.env.PATH = `${bin}:${originalPath ?? ""}`;
+  try {
+    return await operation();
+  } finally {
+    if (originalPath === undefined) {
+      delete process.env.PATH;
+    } else {
+      process.env.PATH = originalPath;
+    }
+  }
+}
+
 function runCli(
   args: readonly string[],
   env: Readonly<Record<string, string | undefined>> = process.env
@@ -474,6 +536,61 @@ describe("Store", () => {
             prs: [10, 10],
           })
         ).rejects.toThrow("--prs must not contain duplicates");
+      },
+    });
+  });
+
+  it("falls back to gh when gt is installed but unsupported in the target repo", async () => {
+    const { directory, store } = await initializedStore();
+    const stack = await makeGitStack(directory);
+
+    await withFakeGtAndGh({
+      directory,
+      ghRows: [
+        {
+          number: 10,
+          state: "MERGED",
+          headRefName: "stack/merged",
+          baseRefName: "main",
+        },
+        {
+          number: 13,
+          state: "CLOSED",
+          headRefName: "stack/closed",
+          baseRefName: "stack/merged",
+        },
+        {
+          number: 11,
+          state: "OPEN",
+          headRefName: "stack/open",
+          baseRefName: "stack/closed",
+        },
+      ],
+      operation: async () => {
+        expect(await store.frontier.set({ repo: stack.repo })).toEqual({
+          generation: 1,
+          prs: [
+            {
+              pr: 10,
+              branches: "stack/merged",
+              sha: stack.mergedSha,
+              state: "MERGED",
+            },
+            {
+              pr: 13,
+              branches: "stack/closed",
+              sha: stack.closedSha,
+              state: "CLOSED",
+            },
+            {
+              pr: 11,
+              branches: "stack/open",
+              sha: stack.openSha,
+              state: "OPEN",
+            },
+          ],
+          lowestUnmerged: 11,
+        });
       },
     });
   });
