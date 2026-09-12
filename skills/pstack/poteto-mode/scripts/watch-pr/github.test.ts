@@ -303,4 +303,20 @@ describe("context and stack discovery", () => {
     ]);
     expect(ordered.map((item) => Number(item.number))).toEqual([41, 42, 43]);
   });
+
+  it("stops the downstack walk when branch metadata forms a cycle", () => {
+    const ordered = orderStack(context, [
+      {
+        number: parsePrNumber(41),
+        headRefName: "base-feature",
+        baseRefName: "feature",
+      },
+      {
+        number: context.number,
+        headRefName: "feature",
+        baseRefName: "base-feature",
+      },
+    ]);
+    expect(ordered.map((item) => Number(item.number))).toEqual([41, 42]);
+  });
 });

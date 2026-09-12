@@ -151,6 +151,25 @@ describe("rendering", () => {
       "| [#1](https://github.com/owner/repo/pull/1) | \u2014 | \u2014 | ✅ merged |"
     );
   });
+
+  it("keeps a stable merge-gate blocker label and reports the reason separately", () => {
+    const rendered = renderPretty({
+      schemaVersion: 1,
+      sequence: 1,
+      observedAt: "2026-07-26T00:00:00.000Z",
+      mode: "single",
+      kind: "BLOCKER",
+      terminal: true,
+      exitCode: 6,
+      blocker: {
+        kind: "merge-gate",
+        pr: context,
+        reason: "draft-pr",
+      },
+    } satisfies WatcherVerdict);
+    expect(rendered).toContain("BLOCKER: merge-gate");
+    expect(rendered).toContain("reason=draft-pr");
+  });
 });
 
 describe("main", () => {

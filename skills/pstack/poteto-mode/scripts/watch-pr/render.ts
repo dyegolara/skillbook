@@ -112,8 +112,9 @@ function renderBlocker(blocker: T.MergeBlocker | StatusQueryBlocker): string {
             ? "mark the PR ready for review before waiting for the merge queue"
             : "resolve the changes-requested review before waiting for the merge queue";
       return [
-        `BLOCKER: ${blocker.reason}`,
+        "BLOCKER: merge-gate",
         `pr=${blocker.pr.number}`,
+        `reason=${blocker.reason}`,
         `action=${action}`,
       ].join("\n");
     }
