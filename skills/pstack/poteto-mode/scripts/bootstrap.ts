@@ -77,7 +77,6 @@ export function ensureDependenciesInstalled(): void {
     cwd: process.cwd(),
     env: process.env,
     stdio: "inherit",
-    shell: process.platform === "win32",
   });
   process.exit(restarted.status ?? 1);
 }

@@ -76,9 +76,9 @@ A dependency is a context relay, not just ordering. Undeclared upstream context 
 
 #### Stack safety
 
-- The frontier is a computed object, never narrative. Recompute `frontier.json` from `gt` after every merge and stack mutation because GitHub base refs drift mid-restack while gt tracking is authoritative: ordered PR list, branch names, head SHAs, a generation number, the lowest unmerged PR. Resolve it where gt knows the stack, normally the stacker's clone. A checkout whose gt metadata never saw the submits reports no PRs and the command errors rather than guessing.
-- Exactly one stacker per stack may run `gt`, serialized within its stack. Record the holder in the standing orders. Restacks run on a cloud/background runner when your harness offers one; otherwise fall back to local and expect the machine to struggle at this scale.
-- Workers never rebase and never run `gt`. Babysitters follow `playbooks/babysit.md`, one per stack, scoped to one immutable frontier generation. They report conflicts to the stacker rather than restacking.
+- The frontier is a computed object, never narrative. Recompute `frontier.json` after every merge and stack mutation with `orch frontier set --repo <repo-dir>`, because GitHub base refs drift mid-restack while forge metadata is authoritative: ordered PR list, branch names, head SHAs, a generation number, the lowest unmerged PR. Resolve it in the stacker's clone where the resolved forge knows the stack. A checkout whose forge metadata never saw the submits reports no PRs and the command errors rather than guessing.
+- Exactly one stacker per stack may mutate stack order or recompute the frontier, serialized within its stack. Record the holder in the standing orders. Restacks run on a cloud/background runner when your harness offers one; otherwise fall back to local and expect the machine to struggle at this scale.
+- Workers never rebase and never run stack-ownership tooling directly. Babysitters follow `playbooks/babysit.md`, one per stack, scoped to one immutable frontier generation. They report conflicts to the stacker rather than restacking.
 - PR closes and retargets go through the stacker only. Closing a base PR orphans every chain above it. Merges and stack surgery are units with briefs like any other.
 - One retro watcher follows merged PRs for reverts, post-merge CI breaks, and orphaned follow-ups.
 

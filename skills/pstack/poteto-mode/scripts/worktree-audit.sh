@@ -12,7 +12,7 @@ repo="${1:-$(git rev-parse --show-toplevel 2>/dev/null)}"
 cd "$repo" || exit 1
 
 # Main worktree is the first entry; everything else is a candidate.
-main_wt=$(git worktree list --porcelain | awk '/^worktree /{print $2; exit}')
+main_wt=$(git worktree list --porcelain | awk '/^worktree /{print substr($0,10); exit}')
 
 # origin/main drives the merge check. Best-effort; stale is fine for a first pass.
 git fetch origin main --quiet 2>/dev/null || echo "warn: could not fetch origin/main; merged column may be stale" >&2
@@ -34,7 +34,7 @@ now=$(date +%s)
 
 printf "SIZE\tAGE\tMERGED\tDIRTY\tREMOTE\tPR\tLAST_CHAT\tBUCKET\tWORKTREE\n"
 
-git worktree list --porcelain | awk '/^worktree /{print $2}' | while read -r wt; do
+git worktree list --porcelain | awk '/^worktree /{print substr($0,10)}' | while IFS= read -r wt; do
 	[ "$wt" = "$main_wt" ] && continue
 
 	size=$(du -sh "$wt" 2>/dev/null | awk '{print $1}')
@@ -69,8 +69,13 @@ git worktree list --porcelain | awk '/^worktree /{print $2}' | while read -r wt;
 	# followed by "/" or a quote so glint-482 does not match glint-482-r37.
 	last="-"; last_ts=0
 	if [ -d "$transcripts" ]; then
-		f=$(rg -l -e "${wt}/" -e "${wt}\"" "$transcripts" 2>/dev/null \
-			| xargs stat -f '%m %N' 2>/dev/null | sort -rn | head -1)
+		f=$(
+			rg -l -F --null -e "${wt}/" -e "${wt}\"" "$transcripts" 2>/dev/null \
+				| while IFS= read -r -d '' transcript; do
+					stat -f '%m %N' "$transcript" 2>/dev/null || true
+				done \
+				| sort -rn | head -1
+		)
 		if [ -n "$f" ]; then last_ts=$(echo "$f" | awk '{print $1}')
 			last=$(date -r "$last_ts" '+%Y-%m-%d' 2>/dev/null); fi
 	fi

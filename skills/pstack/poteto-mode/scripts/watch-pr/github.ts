@@ -386,8 +386,12 @@ function isReviewBot(comment: T.ReviewComment | null): boolean {
 }
 function passKey(comment: T.ReviewComment | null): string | null {
   if (comment === null) return null;
+  const escapeRegExp = (value: string): string =>
+    value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   for (const key of reviewBotConfig().passKeys) {
-    const match = new RegExp(`${key}:\\s*([a-zA-Z0-9_.:-]+)`).exec(comment.body);
+    const match = new RegExp(
+      `${escapeRegExp(key)}:\\s*([a-zA-Z0-9_.:-]+)`
+    ).exec(comment.body);
     if (match?.[1]) return match[1];
   }
   return null;

@@ -140,6 +140,24 @@ test("rejects a citation of a skill that does not exist", () => {
   assert.ok(problems.some((problem) => problem.includes("cited skill does not exist")));
 });
 
+test("rejects a backticked companion-skill citation that does not exist", () => {
+  const problems = verify(
+    makePack({ body: "# How\n\nCompanion to `how` and `missing-skill`.\n" })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes("cited skill does not exist: missing-skill")
+    )
+  );
+});
+
+test("accepts a backticked run-as citation when the skill exists", () => {
+  const problems = verify(
+    makePack({ body: "# How\n\nFor broad changes, run it as an `how`.\n" })
+  );
+  assert.deepEqual(problems, []);
+});
+
 test("rejects a citation of a principle that does not exist", () => {
   const problems = verify(makePack({ body: "# How\n\nApply principle-nope.\n" }));
   assert.ok(problems.some((problem) => problem.includes("cited principle does not exist")));

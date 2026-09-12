@@ -256,6 +256,46 @@ it("annotates Bugbot threads with distinct review-pass counts", () => {
   expect(threads.map((thread) => thread.bugbotReviewPasses)).toEqual([3, 3]);
 });
 
+it("treats PR_REVIEW_BOT_PASS_KEYS as literal keys", () => {
+  const prior = process.env.PR_REVIEW_BOT_PASS_KEYS;
+  process.env.PR_REVIEW_BOT_PASS_KEYS = "RUN[ID]";
+  try {
+    const response = {
+      data: {
+        repository: {
+          pullRequest: {
+            reviewThreads: {
+              nodes: [
+                {
+                  id: "one",
+                  isResolved: false,
+                  comments: {
+                    nodes: [
+                      {
+                        body: "RUN[ID]: run-1",
+                        createdAt: "now",
+                        path: "a.ts",
+                        line: 1,
+                        author: { login: "bugbot" },
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          },
+        },
+      },
+    };
+    const threads = parseReviewThreads(response);
+    expect(threads).toHaveLength(1);
+    expect(threads[0]?.bugbotReviewPasses).toBe(1);
+  } finally {
+    if (prior === undefined) delete process.env.PR_REVIEW_BOT_PASS_KEYS;
+    else process.env.PR_REVIEW_BOT_PASS_KEYS = prior;
+  }
+});
+
 describe("context and stack discovery", () => {
   it("returns a fully explicit context without any reader call", async () => {
     const reader = fakeReader();

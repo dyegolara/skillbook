@@ -394,7 +394,7 @@ describe("Store", () => {
     ).toEqual([]);
   });
 
-  it("replaces a stale lock whose holder pid is dead", async () => {
+  it("reports a stale lock whose holder pid is dead", async () => {
     const { directory } = await initializedStore();
     const exited = Bun.spawn(["true"]);
     await exited.exited;
@@ -404,15 +404,13 @@ describe("Store", () => {
     const recovered = useStore(directory, {
       onStaleLock: (holder) => stale.push(holder),
     });
-    expect(
-      await recovered.units.add({ id: "u1", track: "build" })
-    ).toMatchObject({ id: "u1" });
+    await expect(
+      recovered.units.add({ id: "u1", track: "build" })
+    ).rejects.toThrow("remove");
     expect(stale).toEqual([String(exited.pid)]);
-    await recovered.close();
-    expect(await readdir(directory)).not.toContain(".orch.lock");
   });
 
-  it("blocks a writer and steals the pid lock only with force", async () => {
+  it("blocks a writer and reports force hand-off as manual", async () => {
     const { directory, store } = await initializedStore();
     await store.close();
     await writeFile(join(directory, ".orch.lock"), `${process.pid}\n`);
@@ -422,17 +420,15 @@ describe("Store", () => {
       blocked.units.add({ id: "u1", track: "build" })
     ).rejects.toThrow(`store lock held by pid ${process.pid}`);
 
-    const stolen: string[] = [];
     const forced = useStore(directory, {
       force: true,
-      onLockStolen: (holder) => stolen.push(holder),
+      onLockStolen: () => {
+        throw new Error("should not steal lock automatically");
+      },
     });
-    expect(
-      await forced.units.add({ id: "u1", track: "build" })
-    ).toMatchObject({ id: "u1" });
-    expect(stolen).toEqual([String(process.pid)]);
-    await forced.close();
-    expect(await readdir(directory)).not.toContain(".orch.lock");
+    await expect(forced.units.add({ id: "u1", track: "build" })).rejects.toThrow(
+      "manual lock removal"
+    );
   });
 
   it("parks gates, stores standing orders, and renders status", async () => {

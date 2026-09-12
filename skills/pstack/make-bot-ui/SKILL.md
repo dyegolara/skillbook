@@ -52,11 +52,11 @@ secret.field: key
 
 If your runtime has no secret-request mechanism, have the user place the key in an environment variable or a credential file and tell you its location, without pasting the value in chat.
 
-After the user submits the secret, you do not see the value. The value is in that connector's credential file, or in the location the user named. Copy the value into the server config. Do not print the value. Do not log the value.
+After the user submits the secret, you do not see the value. The value is in that connector's credential file, or in the location the user named. Keep it in the runtime secret store, environment, or an external permission-restricted credential file that the server reads at startup. Do not print the value. Do not log the value.
 
 ## Host the page on this computer
 
-Store `{url, key}` in that UI's own directory. Buttons POST to this local server. The local server, not the browser, POSTs to the bot's webhook.
+Store only non-secret UI config (for example `{url}`) in that UI's own directory. Keep the sender key outside the UI tree. Buttons POST to this local server. The local server, not the browser, POSTs to the bot's webhook.
 
 If a tunnel will reach the server, bind it to `0.0.0.0:<port>`, not `127.0.0.1`; a tailnet peer cannot reach a localhost-only bind. Otherwise a localhost bind is fine.
 

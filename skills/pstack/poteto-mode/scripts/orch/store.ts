@@ -390,20 +390,6 @@ async function acquireLock(
     await handle.close();
   };
 
-  const takeOver = async (): Promise<void> => {
-    await unlink(path);
-    try {
-      await create();
-    } catch (retryError) {
-      if (errorCode(retryError) === "EEXIST") {
-        const retryHolder =
-          (await readFile(path, "utf8")).trim() || "unknown";
-        throw new UserError(`store lock held by pid ${retryHolder}`);
-      }
-      throw retryError;
-    }
-  };
-
   try {
     await create();
   } catch (error) {
@@ -418,10 +404,13 @@ async function acquireLock(
     }
     if (holderIsDead(holder)) {
       options.onStaleLock?.(holder);
-      await takeOver();
+      throw new UserError(
+        `store lock held by stale pid ${holder}; remove ${path} and retry`
+      );
     } else if (options.force) {
-      options.onLockStolen?.(holder);
-      await takeOver();
+      throw new UserError(
+        `store lock held by pid ${holder}; force hand-off requires manual lock removal at ${path}`
+      );
     } else {
       throw new UserError(`store lock held by pid ${holder}`);
     }
@@ -1280,29 +1269,91 @@ function trunkBranch(repo: string): string {
   return "main";
 }
 
+function currentBranch(repo: string): string {
+  try {
+    const raw = execFileSync("git", ["symbolic-ref", "--short", "HEAD"], {
+      cwd: repo,
+      encoding: "utf8",
+      env: process.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const branch = raw.trim();
+    if (branch !== "") return branch;
+  } catch (error) {
+    throw new UserError(
+      `git symbolic-ref --short HEAD failed: ${errorMessage(error)}`
+    );
+  }
+  throw new UserError("git symbolic-ref --short HEAD returned no branch");
+}
+
 function githubFrontier(repo: string): readonly GtFrontierEntry[] {
   const prs = githubPullRequests(repo);
   if (new Set(prs.map((row) => row.number)).size !== prs.length) {
     throw new UserError("gh pr list returned duplicate pull requests");
   }
   const trunk = trunkBranch(repo);
+  const branch = currentBranch(repo);
+  const byHead = new Map<string, GhPullRequest[]>();
   const byBase = new Map<string, GhPullRequest[]>();
   for (const pr of prs) {
+    const byHeadList = byHead.get(pr.headRefName) ?? [];
+    byHeadList.push(pr);
+    byHead.set(pr.headRefName, byHeadList);
     const list = byBase.get(pr.baseRefName) ?? [];
     list.push(pr);
     byBase.set(pr.baseRefName, list);
   }
+  for (const list of byHead.values()) {
+    list.sort((a, b) => a.number - b.number);
+  }
   for (const list of byBase.values()) {
     list.sort((a, b) => a.number - b.number);
   }
-  const ordered: GhPullRequest[] = [];
-  const visited = new Set<number>();
-  let base = trunk;
+  const current = byHead.get(branch) ?? [];
+  if (current.length === 0) {
+    throw new UserError(
+      `gh found no pull request for current branch ${branch}; set the frontier from a clone with the stack branch checked out`
+    );
+  }
+  if (current.length > 1) {
+    throw new UserError(
+      `gh found multiple pull requests for current branch ${branch}`
+    );
+  }
+  const chain: GhPullRequest[] = [];
+  let cursor = current[0];
   for (;;) {
-    const next = (byBase.get(base) ?? []).find(
+    chain.push(cursor);
+    if (cursor.baseRefName === trunk) break;
+    const parents = byHead.get(cursor.baseRefName) ?? [];
+    if (parents.length === 0) {
+      throw new UserError(
+        `gh could not find a parent pull request for branch ${cursor.baseRefName} in the current stack chain`
+      );
+    }
+    if (parents.length > 1) {
+      throw new UserError(
+        `gh found ambiguous parent pull requests for branch ${cursor.baseRefName}`
+      );
+    }
+    cursor = parents[0];
+  }
+  const ordered = chain.reverse();
+  const visited = new Set<number>();
+  for (const pr of ordered) visited.add(pr.number);
+  let base = current[0].headRefName;
+  for (;;) {
+    const candidates = (byBase.get(base) ?? []).filter(
       (pr) => !visited.has(pr.number)
     );
-    if (next === undefined) break;
+    if (candidates.length === 0) break;
+    if (candidates.length > 1) {
+      throw new UserError(
+        `gh found ambiguous child pull requests based on ${base}; resolve stack branches before setting the frontier`
+      );
+    }
+    const next = candidates[0];
     visited.add(next.number);
     ordered.push(next);
     base = next.headRefName;

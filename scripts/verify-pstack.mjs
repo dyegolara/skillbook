@@ -297,6 +297,23 @@ function checkReferences(label, file, body, skillNames) {
       problems.push(`${label}: cited principle does not exist: ${match[0]}`);
     }
   }
+  const prose = stripFences(body);
+  for (const sentence of prose.matchAll(/\bcompanion to\b([^.\n]+)/gi)) {
+    for (const token of sentence[1].matchAll(/`([a-z][a-z0-9-]+)`/g)) {
+      const cited = token[1];
+      if (!skillNames.has(cited) && !skillNames.has(`principle-${cited}`)) {
+        problems.push(`${label}: cited skill does not exist: ${cited}`);
+      }
+    }
+  }
+  for (const match of prose.matchAll(
+    /\brun(?: [^`\n.]*)?\bas an?\s+`([a-z][a-z0-9-]+)`/gi
+  )) {
+    const cited = match[1];
+    if (!skillNames.has(cited) && !skillNames.has(`principle-${cited}`)) {
+      problems.push(`${label}: cited skill does not exist: ${cited}`);
+    }
+  }
   return problems;
 }
 
