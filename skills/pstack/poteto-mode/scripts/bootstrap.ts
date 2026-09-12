@@ -5,8 +5,9 @@ import {
   existsSync,
   openSync,
   readFileSync,
-  unlinkSync,
   writeFileSync,
+  writeSync,
+  unlinkSync,
 } from "node:fs";
 import { join } from "node:path";
 
@@ -25,17 +26,40 @@ const installLockPath = join(scriptsDirectory, ".poteto-mode-tools-install.lock"
 const lockWait = (milliseconds: number): void => {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
 };
+function isLivePid(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !(error instanceof Error && "code" in error && error.code === "ESRCH");
+  }
+}
+function clearStaleInstallLock(): boolean {
+  try {
+    const content = readFileSync(installLockPath, "utf8").trim();
+    const match = /^pid:(\d+)$/.exec(content);
+    if (match === null) return false;
+    const pid = Number(match[1]);
+    if (!Number.isInteger(pid) || pid <= 0 || isLivePid(pid)) return false;
+    unlinkSync(installLockPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
 function withInstallLock<T>(run: () => T): T {
   const startedAt = Date.now();
   let lockFd: number | null = null;
   while (lockFd === null) {
     try {
       lockFd = openSync(installLockPath, "wx");
+      writeSync(lockFd, `pid:${process.pid}\n`);
     } catch (error) {
       if (
         !(error instanceof Error && "code" in error && error.code === "EEXIST")
       )
         throw error;
+      if (clearStaleInstallLock()) continue;
       if (Date.now() - startedAt > 120_000)
         throw new Error(
           "timed out waiting for dependency bootstrap lock; remove .poteto-mode-tools-install.lock if no install is running"
