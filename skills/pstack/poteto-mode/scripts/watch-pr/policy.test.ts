@@ -221,6 +221,19 @@ it("waits on a draft while checks are pending, then reports the draft gate", asy
   });
 });
 
+it("reports REVIEW_REQUIRED as a merge gate blocker", async () => {
+  const settled = await readSnapshot({
+    reader: fakeReader({ facts: { reviewDecision: "REVIEW_REQUIRED" } }),
+    context: context(13),
+    pendingHistory: "omit",
+    allowDraft: false,
+  });
+  expect(classifyPr(settled)).toMatchObject({
+    kind: "blocker",
+    blocker: { kind: "merge-gate", reason: "review-required" },
+  });
+});
+
 describe("queued-stack cadence", () => {
   async function openSnapshot(pr: PrContext) {
     return readSnapshot({

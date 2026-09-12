@@ -1,10 +1,12 @@
 import { describe, expect, it } from "bun:test";
 import {
+  REVIEW_THREADS_QUERY,
   ChecksUnavailable,
   WatcherQueryError,
   mapRollupNode,
   orderStack,
   parsePullRequest,
+  parseReviewThreadsPage,
   parseReviewThreads,
   resolveChecks,
   resolveContext,
@@ -294,6 +296,24 @@ it("treats PR_REVIEW_BOT_PASS_KEYS as literal keys", () => {
     if (prior === undefined) delete process.env.PR_REVIEW_BOT_PASS_KEYS;
     else process.env.PR_REVIEW_BOT_PASS_KEYS = prior;
   }
+});
+
+it("parses review thread pagination metadata", () => {
+  const page = parseReviewThreadsPage({
+    data: {
+      repository: {
+        pullRequest: {
+          reviewThreads: {
+            pageInfo: { hasNextPage: true, endCursor: "cursor-2" },
+            nodes: [],
+          },
+        },
+      },
+    },
+  });
+  expect(page).toEqual({ nodes: [], endCursor: "cursor-2" });
+  expect(REVIEW_THREADS_QUERY).toContain("reviewThreads(first: 100, after: $after)");
+  expect(REVIEW_THREADS_QUERY).toContain("pageInfo");
 });
 
 describe("context and stack discovery", () => {
