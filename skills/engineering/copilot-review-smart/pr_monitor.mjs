@@ -31,7 +31,7 @@ import { promisify } from "node:util";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { decideWithLlm } from "./decision.mjs";
+import { decideWithLlm, newestRebaseRequestTsMs } from "./decision.mjs";
 
 const execFileP = promisify(execFile);
 
@@ -63,6 +63,9 @@ const REBASE_STALE_RETRY_HOURS = 24 * 7;
 // exempt — it never touches GitHub.)
 const ACTIVE_WORK_QUIET_HOURS = 3;
 const REVIEW_FIX_MAX_PINGS = 3;
+// Mergeability is computed asynchronously by GitHub and has no webhook
+// event; re-check once an hour while it is unknown.
+const MERGE_UNKNOWN_RECHECK_HOURS = 1;
 const STATE_LOCK_PATH = `${STATE_PATH}.lock`;
 const STATE_LOCK_TIMEOUT_MS = 30_000;
 const STATE_LOCK_RETRY_MS = 200;
@@ -660,6 +663,112 @@ function classifyTerminalState({ ctx, action, reason, stateEntry }) {
   return { done: false, terminal: null, skipped: false };
 }
 
+function normalizeOwnerNote(note) {
+  if (note && typeof note === "object" && note.event && note.message) return note;
+  const message = String(note ?? "");
+  if (/READY for your review/i.test(message)) return { event: "notify_ready", message };
+  if (/STILL conflicted|rebase retry budget/i.test(message)) return { event: "escalation", message };
+  return { event: "needs-human", message };
+}
+
+/** The deadline at which the next look at this PR is worth its cost, per the
+ * anti-spam policy. The Listener arms it as an Expectation; `null` means the
+ * PR is quiescent and only a Delivery should wake the loop. Derived from the
+ * state entry (not the decision) so a decision reused from the Signature
+ * cache carries the same deadline a fresh one would. */
+function computeNextCheckAt({ ctx, stateEntry, action, pingedAtMs = null, nowMs }) {
+  const st = stateEntry || {};
+  const iso = (ms) => new Date(ms).toISOString();
+
+  if (action === "notify_ready" || action === "skip_wip") return null;
+  if (action === "llm_failed") return iso(nowMs + H(1));
+
+  // Needs-human keeps its weekly retry (review/fix budget exhausted): revisit
+  // once a week instead of sleeping forever.
+  if (st.review_fix_exhausted_sha === ctx.headSha) {
+    const lastPing = toMs(st.last_ping_ts);
+    return iso(
+      lastPing !== null ? Math.max(lastPing + H(REBASE_STALE_RETRY_HOURS), nowMs) : nowMs + H(REBASE_STALE_RETRY_HOURS)
+    );
+  }
+
+  // Stuck PR: owner escalated, weekly retry only.
+  if (ctx.hasConflicts && st.stuck_notified_sha === ctx.headSha) {
+    const lastPing = toMs(st.last_ping_ts);
+    return iso(
+      lastPing !== null ? Math.max(lastPing + H(REBASE_STALE_RETRY_HOURS), nowMs) : nowMs
+    );
+  }
+
+  // Active work: the branch is likely still being pushed to; re-check when
+  // it should have gone quiet.
+  if (agentStillWorking(ctx, nowMs)) {
+    const lastCommit = toMs(ctx.lastCommitTs);
+    return iso(
+      lastCommit !== null
+        ? Math.max(lastCommit + H(ACTIVE_WORK_QUIET_HOURS), nowMs)
+        : nowMs + H(ACTIVE_WORK_QUIET_HOURS)
+    );
+  }
+
+  // A ping just posted: re-check when its throttle window expires.
+  if (pingedAtMs !== null) {
+    const hours = action === "request_rebase" ? REBASE_PING_MIN_INTERVAL_HOURS : PING_MIN_INTERVAL_HOURS;
+    return iso(pingedAtMs + H(hours));
+  }
+
+  // A review/fix Ping is still pending a response: same 12h throttle.
+  if (st.review_fix_pending_sha === ctx.headSha && st.review_fix_pending_action) {
+    const lastPing = toMs(st.last_ping_ts);
+    if (lastPing !== null) return iso(Math.max(lastPing + H(PING_MIN_INTERVAL_HOURS), nowMs));
+  }
+
+  if (ctx.mergeUnknown) return iso(nowMs + H(MERGE_UNKNOWN_RECHECK_HOURS));
+
+  if (ctx.hasConflicts) {
+    const reqTs = newestRebaseRequestTsMs(ctx.issueTranscript);
+    if (reqTs !== null) return iso(Math.max(reqTs + H(REBASE_RETRY_HOURS), nowMs));
+  }
+
+  const reviewTs = toMs(ctx.latestReviewTs ?? ctx.latestInlineTs);
+  if (reviewTs !== null && nowMs - reviewTs < H(COOLDOWN_AFTER_REVIEW_HOURS)) {
+    return iso(reviewTs + H(COOLDOWN_AFTER_REVIEW_HOURS));
+  }
+
+  return null;
+}
+
+function buildPrReport({
+  repo,
+  num,
+  ctx,
+  stateEntry,
+  action,
+  reason,
+  reused = false,
+  githubActionPosted = false,
+  pingedAtMs = null,
+  ownerNotifications = [],
+  nowMs,
+}) {
+  return {
+    type: "pr",
+    repo,
+    pr: num,
+    title: ctx?.title || null,
+    head_sha: ctx?.headSha ?? null,
+    action,
+    reason,
+    reused_cached_decision: reused,
+    github_action_posted: githubActionPosted,
+    next_check_at: ctx
+      ? computeNextCheckAt({ ctx, stateEntry, action, pingedAtMs, nowMs })
+      : null,
+    owner_notifications: ownerNotifications,
+    ...classifyTerminalState({ ctx: ctx || {}, action, reason, stateEntry }),
+  };
+}
+
 function buildOverallReport({ reports, targetPr, scopeFetchFailures = 0 }) {
   const actionableReports = reports.filter((report) => !report.skipped);
   return {
@@ -694,6 +803,8 @@ function buildTerminalPrReport({
     reason,
     reused_cached_decision: false,
     github_action_posted: false,
+    next_check_at: null,
+    owner_notifications: [],
     done: true,
     terminal,
     skipped,
@@ -741,6 +852,11 @@ export async function runMonitorOnce({
   const reports = [];
   let githubActionsTaken = 0;
   let scopeFetchFailures = 0;
+  const ownerNotifications = [];
+  const pushReport = (report) => {
+    reports.push(report);
+    ownerNotifications.push(...(report.owner_notifications || []));
+  };
 
   // Collect open PRs from every watched repo. A failure on one repo must
   // not kill the whole run.
@@ -781,6 +897,13 @@ export async function runMonitorOnce({
       const num = pr.number;
       const skey = `${repo}#${num}`;
       const st = { ...(nextState[skey] || {}) };
+      const prOwnerNotes = [];
+      const recordOwnerNote = (note) => {
+        const normalized = normalizeOwnerNote(note);
+        prOwnerNotes.push(normalized);
+        notifications.push(normalized.message);
+      };
+      let pingedAtMs = null;
       let ctx;
       try {
         ctx = await collectPrStateFn(pr, num, repo, { runGhFn });
@@ -788,19 +911,15 @@ export async function runMonitorOnce({
         if (!(error instanceof PrStateFetchError)) throw error;
         scopeFetchFailures++;
         console.error(`⚠️ ${error.message}`);
-        reports.push({
-          type: "pr",
+        pushReport(buildPrReport({
           repo,
-          pr: num,
-          head_sha: pr.head?.sha || null,
+          num,
+          ctx: { headSha: pr.head?.sha || null },
+          stateEntry: {},
           action: "wait",
           reason: error.message,
-          reused_cached_decision: false,
-          github_action_posted: false,
-          done: false,
-          terminal: null,
-          skipped: false,
-        });
+          nowMs,
+        }));
         continue;
       }
       const headSha = ctx.headSha;
@@ -885,7 +1004,7 @@ export async function runMonitorOnce({
         llmDecider,
       });
       Object.assign(st, decided.stateEntry);
-      notifications.push(...decided.notifications);
+      for (const note of decided.notifications || []) recordOwnerNote(note);
       let action = decided.action;
       let reason = decided.reason;
       const pendingReviewFixAction =
@@ -915,17 +1034,18 @@ export async function runMonitorOnce({
       if (action === "skip_wip" || action === "llm_failed") {
         st.last_head_sha = headSha;
         nextState[skey] = st;
-        reports.push({
-          type: "pr",
+        pushReport(buildPrReport({
           repo,
-          pr: num,
-          head_sha: headSha,
+          num,
+          ctx,
+          stateEntry: st,
           action: finalAction,
           reason: finalReason,
-          reused_cached_decision: decided.reused,
-          github_action_posted: githubActionPosted,
-          ...classifyTerminalState({ ctx, action: finalAction, reason: finalReason, stateEntry: st }),
-        });
+          reused: decided.reused,
+          githubActionPosted,
+          ownerNotifications: prOwnerNotes,
+          nowMs,
+        }));
         continue;
       }
 
@@ -939,25 +1059,28 @@ export async function runMonitorOnce({
         const readyKey = `${repo}:${headSha}`;
         if (!seenReady.has(readyKey)) {
           seenReady.add(readyKey);
-          notifications.push(
-            `🟢 PR #${num} is READY for your review: **${ctx.title}**\n` +
+          recordOwnerNote({
+            event: "notify_ready",
+            message:
+              `🟢 PR #${num} is READY for your review: **${ctx.title}**\n` +
               `\`${(headSha || "").slice(0, 8)}\` · The review transcript reached an All-clear (${reason}).\n` +
-              `→ http://github.com/${repo}/pull/${num}`
-          );
+              `→ http://github.com/${repo}/pull/${num}`,
+          });
         }
         st.last_head_sha = headSha;
         nextState[skey] = st;
-        reports.push({
-          type: "pr",
+        pushReport(buildPrReport({
           repo,
-          pr: num,
-          head_sha: headSha,
+          num,
+          ctx,
+          stateEntry: st,
           action: finalAction,
           reason: finalReason,
-          reused_cached_decision: decided.reused,
-          github_action_posted: githubActionPosted,
-          ...classifyTerminalState({ ctx, action: finalAction, reason: finalReason, stateEntry: st }),
-        });
+          reused: decided.reused,
+          githubActionPosted,
+          ownerNotifications: prOwnerNotes,
+          nowMs,
+        }));
         continue;
       }
 
@@ -975,6 +1098,7 @@ export async function runMonitorOnce({
           st._reason = finalReason;
         } else if (throttleOkSameSha(st, nowMs, headSha, REBASE_PING_MIN_INTERVAL_HOURS)) {
           await requestRebase(repo, num, { dryRun, runGhFn, dryRunLogs });
+          pingedAtMs = nowMs;
           if (!dryRun) {
             githubActionsTaken++;
             githubActionPosted = true;
@@ -1001,17 +1125,19 @@ export async function runMonitorOnce({
         }
         st.last_head_sha = headSha;
         nextState[skey] = st;
-        reports.push({
-          type: "pr",
+        pushReport(buildPrReport({
           repo,
-          pr: num,
-          head_sha: headSha,
+          num,
+          ctx,
+          stateEntry: st,
           action: finalAction,
           reason: finalReason,
-          reused_cached_decision: decided.reused,
-          github_action_posted: githubActionPosted,
-          ...classifyTerminalState({ ctx, action: finalAction, reason: finalReason, stateEntry: st }),
-        });
+          reused: decided.reused,
+          githubActionPosted,
+          pingedAtMs,
+          ownerNotifications: prOwnerNotes,
+          nowMs,
+        }));
         continue;
       }
 
@@ -1037,11 +1163,13 @@ export async function runMonitorOnce({
           st.review_fix_pending_response_sig = reviewFixResponseSig;
           if (st.review_fix_stuck_notified_sha !== headSha) {
             st.review_fix_stuck_notified_sha = headSha;
-            notifications.push(
-              `🔴 PR #${num} has ${reviewFixPings} unanswered Copilot review/fix requests on ` +
+            recordOwnerNote({
+              event: "needs-human",
+              message:
+                `🔴 PR #${num} has ${reviewFixPings} unanswered Copilot review/fix requests on ` +
                 `this head: **${ctx.title}**\nDecide next step manually.\n` +
-                `→ http://github.com/${repo}/pull/${num}`
-            );
+                `→ http://github.com/${repo}/pull/${num}`,
+            });
           }
         } else if (pingOk) {
           if (action === "request_fix") {
@@ -1049,6 +1177,7 @@ export async function runMonitorOnce({
           } else {
             await requestReview(repo, num, { dryRun, runGhFn, dryRunLogs });
           }
+          pingedAtMs = nowMs;
           if (!dryRun) {
             githubActionsTaken++;
             githubActionPosted = true;
@@ -1080,34 +1209,37 @@ export async function runMonitorOnce({
         }
         st.last_head_sha = headSha;
         nextState[skey] = st;
-        reports.push({
-          type: "pr",
+        pushReport(buildPrReport({
           repo,
-          pr: num,
-          head_sha: headSha,
+          num,
+          ctx,
+          stateEntry: st,
           action: finalAction,
           reason: finalReason,
-          reused_cached_decision: decided.reused,
-          github_action_posted: githubActionPosted,
-          ...classifyTerminalState({ ctx, action: finalAction, reason: finalReason, stateEntry: st }),
-        });
+          reused: decided.reused,
+          githubActionPosted,
+          pingedAtMs,
+          ownerNotifications: prOwnerNotes,
+          nowMs,
+        }));
         continue;
       }
 
       // --- WAIT / unknown action: no action.
       st.last_head_sha = headSha;
       nextState[skey] = st;
-      reports.push({
-        type: "pr",
+      pushReport(buildPrReport({
         repo,
-        pr: num,
-        head_sha: headSha,
+        num,
+        ctx,
+        stateEntry: st,
         action: finalAction,
         reason: finalReason,
-        reused_cached_decision: decided.reused,
-        github_action_posted: githubActionPosted,
-        ...classifyTerminalState({ ctx, action: finalAction, reason: finalReason, stateEntry: st }),
-      });
+        reused: decided.reused,
+        githubActionPosted,
+        ownerNotifications: prOwnerNotes,
+        nowMs,
+      }));
     }
   }
 
@@ -1123,6 +1255,7 @@ export async function runMonitorOnce({
   return {
     state: nextState,
     notifications,
+    ownerNotifications,
     githubActionsTaken,
     reports,
     overallReport,
