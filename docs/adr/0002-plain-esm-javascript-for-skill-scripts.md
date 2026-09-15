@@ -18,7 +18,7 @@ toolchain for compiling.
   required a Python runtime that not every agent environment guarantees,
   and it split the repo across two language toolchains for no benefit.
 - **Plain `.mjs` (chosen)**: zero dependencies beyond Node itself; matches
-  the existing `scripts/verify-references.mjs`.
+  the existing `scripts/verify-publishing.mjs`.
 
 ## Consequences
 
