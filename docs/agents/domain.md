@@ -11,4 +11,4 @@ decision records. All engineers should read `CONTEXT.md` before starting work.
 - Architecture decisions are documented in `docs/adr/`
 - New ADRs should follow the template in `docs/adr/0001-template.md` (create
   sequentially)
-- The `## Agent skills` block in `CLAUDE.md` references the skill catalogue
+- The `## Agent skills` block in `AGENTS.md` references the skill catalogue
