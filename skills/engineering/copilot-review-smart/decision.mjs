@@ -90,12 +90,14 @@ export function decideDeterministic({
           "PR is still conflicted: owner escalated; weekly retry only.";
         if (st.stuck_notified_sha !== ctx.headSha) {
           st.stuck_notified_sha = ctx.headSha;
-          notifications.push(
-            `🔴 PR #${ctx.num} has ${rebasePings} rebase requests to Copilot and is STILL ` +
+          notifications.push({
+            event: "escalation",
+            message:
+              `🔴 PR #${ctx.num} has ${rebasePings} rebase requests to Copilot and is STILL ` +
               `conflicted: **${ctx.title}**\n` +
               "Decide next step: manual merge, manual rebase, or close.\n" +
-              `→ http://github.com/${ctx.repo}/pull/${ctx.num}`
-          );
+              `→ http://github.com/${ctx.repo}/pull/${ctx.num}`,
+          });
         }
       }
     } else {
@@ -212,10 +214,12 @@ export async function decideWithLlm({
       `Could not decide with LLM after ${failures} attempts on this head (${e.message || e})`;
     if (st.llm_fail_notified_sha !== ctx.headSha) {
       st.llm_fail_notified_sha = ctx.headSha;
-      notifications.push(
-        `⚠️ ${ctx.repo}#${ctx.num}: could not decide with LLM after ${failures} attempts ` +
-          `on this head (${e.message || e}). Please inspect manually.`
-      );
+      notifications.push({
+        event: "needs-human",
+        message:
+          `⚠️ ${ctx.repo}#${ctx.num}: could not decide with LLM after ${failures} attempts ` +
+          `on this head (${e.message || e}). Please inspect manually.`,
+      });
     }
     return {
       handled: true,

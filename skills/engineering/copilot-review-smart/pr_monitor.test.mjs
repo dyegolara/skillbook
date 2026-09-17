@@ -21,29 +21,37 @@ function makeCtx({
   commentUrls = [],
   lastCopilotComment = "",
   lastCopilotCommentTs = null,
+  draft = false,
+  lastCommitTs = null,
+  mergeable = true,
+  mergeableState = "clean",
+  hasConflicts = false,
+  mergeUnknown = false,
+  latestReviewTs = null,
+  latestInlineTs = null,
 } = {}) {
   return {
     num: 7,
     title: "Integration test PR",
-    draft: false,
+    draft,
     headSha,
     approved: false,
     commented: false,
     latestReviewState: null,
-    latestReviewTs: null,
+    latestReviewTs,
     reviewTranscript,
     nInlineUnresolved: 0,
-    latestInlineTs: null,
+    latestInlineTs,
     commentUrls,
     lastCopilotComment,
     lastCopilotCommentTs,
     issueTranscript,
     inlineTranscript,
-    lastCommitTs: null,
-    mergeable: true,
-    mergeableState: "clean",
-    hasConflicts: false,
-    mergeUnknown: false,
+    lastCommitTs,
+    mergeable,
+    mergeableState,
+    hasConflicts,
+    mergeUnknown,
   };
 }
 
@@ -235,11 +243,14 @@ test("single-PR scope fetches only that PR and emits JSON lines in agent mode", 
     type: "pr",
     repo: REPO,
     pr: 42,
+    title: "Single PR scope",
     head_sha: "scope123",
     action: "wait",
     reason: "nothing to do right now",
     reused_cached_decision: false,
     github_action_posted: false,
+    next_check_at: null,
+    owner_notifications: [],
     done: false,
     terminal: null,
     skipped: false,
@@ -804,4 +815,303 @@ test("request_fix uses its own retry budget after review requests were answered"
   assert.equal(prLine.done, false);
   assert.equal(out.state[`${REPO}#7`].review_fix_pings_action, "request_fix");
   assert.equal(out.state[`${REPO}#7`].review_fix_pings, 1);
+});
+
+function prJsonLine(out) {
+  return out.output
+    .split("\n")
+    .filter((line) => line.startsWith("{"))
+    .map((line) => JSON.parse(line))[0];
+}
+
+function repoScopeGh(headSha = "abc123") {
+  return async (args) => {
+    if (args[0] === `repos/${REPO}/pulls?state=open&per_page=100&page=1`) return [makePr(headSha)];
+    if (args.includes("POST")) return [];
+    return [];
+  };
+}
+
+test("review ping sets next_check_at to ping time + 12h", async () => {
+  const now = Date.parse("2026-09-08T00:00:00.000Z");
+  const out = await runMonitorOnce({
+    repos: [REPO],
+    state: {},
+    nowMs: now,
+    dryRun: true,
+    emitJsonReport: true,
+    runGhFn: repoScopeGh("ping123"),
+    collectPrStateFn: async () => makeCtx({ headSha: "ping123" }),
+    decideFn: async ({ stateEntry }) => ({
+      handled: true,
+      action: "request_review",
+      reason: "no review on this head yet",
+      reused: false,
+      stateEntry,
+      notifications: [],
+    }),
+  });
+
+  const prLine = prJsonLine(out);
+  assert.equal(prLine.action, "request_review");
+  assert.equal(prLine.next_check_at, new Date(now + 12 * 3600_000).toISOString());
+  assert.deepEqual(prLine.owner_notifications, []);
+});
+
+test("rebase ping sets next_check_at to ping time + 6h", async () => {
+  const now = Date.parse("2026-09-08T00:00:00.000Z");
+  const out = await runMonitorOnce({
+    repos: [REPO],
+    state: {},
+    nowMs: now,
+    dryRun: true,
+    emitJsonReport: true,
+    runGhFn: repoScopeGh("dirty123"),
+    collectPrStateFn: async () =>
+      makeCtx({ headSha: "dirty123", hasConflicts: true, mergeable: false, mergeableState: "dirty" }),
+    llmDecider: async () => {
+      throw new Error("rebase is deterministic; the LLM must not be called");
+    },
+  });
+
+  const prLine = prJsonLine(out);
+  assert.equal(prLine.action, "request_rebase");
+  assert.equal(prLine.next_check_at, new Date(now + 6 * 3600_000).toISOString());
+});
+
+test("stuck PR after escalation arms the weekly retry (+168h) and escalates once", async () => {
+  const now = Date.parse("2026-09-08T00:00:00.000Z");
+  const requestTs = new Date(now - 2 * 24 * 3600_000).toISOString();
+  const out = await runMonitorOnce({
+    repos: [REPO],
+    state: {
+      [`${REPO}#7`]: {
+        rebase_pings_sha: "stuck123",
+        rebase_pings: 3,
+        last_ping_ts: requestTs,
+      },
+    },
+    nowMs: now,
+    dryRun: true,
+    emitJsonReport: true,
+    runGhFn: repoScopeGh("stuck123"),
+    collectPrStateFn: async () =>
+      makeCtx({
+        headSha: "stuck123",
+        hasConflicts: true,
+        mergeable: false,
+        mergeableState: "dirty",
+        issueTranscript: [
+          {
+            author: "alice",
+            ts: requestTs,
+            body: "@copilot resolve the merge conflicts with origin/main",
+          },
+        ],
+      }),
+  });
+
+  const prLine = prJsonLine(out);
+  assert.equal(prLine.action, "wait");
+  assert.equal(prLine.next_check_at, new Date(now - 2 * 24 * 3600_000 + 168 * 3600_000).toISOString());
+  assert.equal(prLine.owner_notifications.length, 1);
+  assert.equal(prLine.owner_notifications[0].event, "escalation");
+  assert.match(prLine.owner_notifications[0].message, /STILL conflicted/);
+});
+
+test("active-work hold arms next_check_at at last commit + 3h", async () => {
+  const now = Date.parse("2026-09-08T00:00:00.000Z");
+  const out = await runMonitorOnce({
+    repos: [REPO],
+    state: {},
+    nowMs: now,
+    dryRun: true,
+    emitJsonReport: true,
+    runGhFn: repoScopeGh("active123"),
+    collectPrStateFn: async () =>
+      makeCtx({ headSha: "active123", lastCommitTs: now - 3600_000 }),
+    decideFn: async ({ stateEntry }) => ({
+      handled: true,
+      action: "request_review",
+      reason: "no review yet",
+      reused: false,
+      stateEntry,
+      notifications: [],
+    }),
+  });
+
+  const prLine = prJsonLine(out);
+  assert.equal(prLine.action, "wait");
+  assert.match(prLine.reason, /still working/i);
+  assert.equal(prLine.next_check_at, new Date(now + 2 * 3600_000).toISOString());
+});
+
+test("recurring LLM failure arms +1h and reports a needs-human owner notification", async () => {
+  const now = Date.parse("2026-09-08T00:00:00.000Z");
+  const out = await runMonitorOnce({
+    repos: [REPO],
+    state: {
+      [`${REPO}#7`]: {
+        llm_failures_sha: "llmfail123",
+        llm_failures: 2,
+      },
+    },
+    nowMs: now,
+    dryRun: true,
+    emitJsonReport: true,
+    runGhFn: repoScopeGh("llmfail123"),
+    collectPrStateFn: async () => makeCtx({ headSha: "llmfail123" }),
+    llmDecider: async () => {
+      throw new Error("simulated llm outage");
+    },
+  });
+
+  const prLine = prJsonLine(out);
+  assert.equal(prLine.action, "llm_failed");
+  assert.equal(prLine.next_check_at, new Date(now + 3600_000).toISOString());
+  assert.equal(prLine.owner_notifications.length, 1);
+  assert.equal(prLine.owner_notifications[0].event, "needs-human");
+});
+
+test("notify_ready reports next_check_at null with a structured owner notification", async () => {
+  const now = Date.parse("2026-09-08T00:00:00.000Z");
+  const out = await runMonitorOnce({
+    repos: [REPO],
+    state: {},
+    nowMs: now,
+    dryRun: true,
+    emitJsonReport: true,
+    runGhFn: repoScopeGh("ready123"),
+    collectPrStateFn: async () => makeCtx({ headSha: "ready123" }),
+    decideFn: async ({ stateEntry }) => ({
+      handled: true,
+      action: "notify_ready",
+      reason: "all clear",
+      reused: false,
+      stateEntry,
+      notifications: [],
+    }),
+  });
+
+  const prLine = prJsonLine(out);
+  assert.equal(prLine.next_check_at, null);
+  assert.equal(prLine.owner_notifications.length, 1);
+  assert.equal(prLine.owner_notifications[0].event, "notify_ready");
+  assert.match(prLine.owner_notifications[0].message, /READY for your review/);
+});
+
+test("draft skip reports next_check_at null and no owner notifications", async () => {
+  const now = Date.parse("2026-09-08T00:00:00.000Z");
+  const out = await runMonitorOnce({
+    repos: [REPO],
+    state: {},
+    nowMs: now,
+    dryRun: true,
+    emitJsonReport: true,
+    runGhFn: repoScopeGh("draft123"),
+    collectPrStateFn: async () => makeCtx({ headSha: "draft123", draft: true }),
+    llmDecider: async () => {
+      throw new Error("draft PRs skip the loop; the LLM must not be called");
+    },
+  });
+
+  const prLine = prJsonLine(out);
+  assert.equal(prLine.action, "skip_wip");
+  assert.equal(prLine.next_check_at, null);
+  assert.deepEqual(prLine.owner_notifications, []);
+});
+
+test("idle wait reports next_check_at null and no owner notifications", async () => {
+  const now = Date.parse("2026-09-08T00:00:00.000Z");
+  const out = await runMonitorOnce({
+    repos: [REPO],
+    state: {},
+    nowMs: now,
+    dryRun: true,
+    emitJsonReport: true,
+    runGhFn: repoScopeGh("idle123"),
+    collectPrStateFn: async () => makeCtx({ headSha: "idle123" }),
+    decideFn: async ({ stateEntry }) => ({
+      handled: true,
+      action: "wait",
+      reason: "nothing worth doing right now",
+      reused: false,
+      stateEntry,
+      notifications: [],
+    }),
+  });
+
+  const prLine = prJsonLine(out);
+  assert.equal(prLine.action, "wait");
+  assert.equal(prLine.next_check_at, null);
+  assert.deepEqual(prLine.owner_notifications, []);
+});
+
+test("a decision reused from the signature cache carries the pending ping deadline", async () => {
+  const now = Date.parse("2026-09-08T00:00:00.000Z");
+  const llmDecider = async () => ({ action: "request_review", reason: "please review" });
+  const runGhFn = repoScopeGh("cache123");
+  const collectPrStateFn = async () => makeCtx({ headSha: "cache123" });
+
+  const first = await runMonitorOnce({
+    repos: [REPO],
+    state: {},
+    nowMs: now,
+    dryRun: true,
+    emitJsonReport: true,
+    runGhFn,
+    collectPrStateFn,
+    llmDecider,
+  });
+  const second = await runMonitorOnce({
+    repos: [REPO],
+    state: first.state,
+    nowMs: now + 3600_000,
+    dryRun: true,
+    emitJsonReport: true,
+    runGhFn,
+    collectPrStateFn,
+    llmDecider,
+  });
+
+  const prLine = prJsonLine(second);
+  assert.equal(prLine.reused_cached_decision, true);
+  assert.equal(prLine.next_check_at, new Date(now + 12 * 3600_000).toISOString());
+});
+
+test("review/fix retry exhaustion keeps the weekly retry and a needs-human notification", async () => {
+  const now = Date.parse("2026-09-08T00:00:00.000Z");
+  const out = await runMonitorOnce({
+    repos: [REPO],
+    state: {
+      [`${REPO}#7`]: {
+        review_fix_pings_sha: "exhaust123",
+        review_fix_pings_action: "request_review",
+        review_fix_pings: 3,
+        last_ping_ts: new Date(now - 2 * 24 * 3600_000).toISOString(),
+      },
+    },
+    nowMs: now,
+    dryRun: true,
+    emitJsonReport: true,
+    runGhFn: repoScopeGh("exhaust123"),
+    collectPrStateFn: async () => makeCtx({ headSha: "exhaust123" }),
+    decideFn: async ({ stateEntry }) => ({
+      handled: true,
+      action: "request_review",
+      reason: "still waiting",
+      reused: false,
+      stateEntry,
+      notifications: [],
+    }),
+  });
+
+  const prLine = prJsonLine(out);
+  assert.equal(prLine.terminal, "needs-human");
+  assert.equal(
+    prLine.next_check_at,
+    new Date(now - 2 * 24 * 3600_000 + 168 * 3600_000).toISOString()
+  );
+  assert.equal(prLine.owner_notifications.length, 1);
+  assert.equal(prLine.owner_notifications[0].event, "needs-human");
 });

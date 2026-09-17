@@ -1,21 +1,42 @@
 # Copilot Review — Smart (LLM-decided) watchdog
 
-A cron/agent loop that drives open PRs toward a Copilot clean bill of health
-without spamming: it pings `@copilot code review` only when a review is
-actually useful, asks Copilot to resolve merge conflicts when needed, and
-tells the **owner** when a PR is ready for human review — staying silent the
-rest of the time.
+A PR watchdog that drives open PRs toward a Copilot clean bill of health without
+spamming: it pings `@copilot code review` only when a review is actually useful,
+asks Copilot to resolve merge conflicts when needed, and tells the **owner** when
+a PR is ready for human review — staying silent the rest of the time.
+
+Webhook-first: a GitHub delivery wakes a tick scoped to the affected PR and the
+fallback is an armed Expectation, not a schedule (see
+[4. Webhook mode](#4-webhook-mode)). Cron remains the alternate mode for Hosts
+without a public endpoint.
 
 The agent-facing instructions live in [`SKILL.md`](./SKILL.md); the reference
-implementation is [`pr_monitor.mjs`](./pr_monitor.mjs) (Node >= 18, `gh` CLI,
-OpenRouter for the decision LLM). This README is the human-readable picture of
-what the loop does.
+implementations are [`pr_monitor.mjs`](./pr_monitor.mjs) (the tick: Node >= 18,
+`gh` CLI, OpenRouter for the decision LLM) and
+[`pr_monitor_webhook.mjs`](./pr_monitor_webhook.mjs) (the Listener: `node:http`,
+no dependencies). This README is the human-readable picture of what the loop
+does.
 
 ## Quick start
+
+Cron/one-shot mode (alternate):
 
 ```bash
 DRY_RUN=1 PR_MONITOR_REPOS="your-org/your-repo" node pr_monitor.mjs
 ```
+
+Webhook mode (primary): register the Hook, then serve.
+
+```bash
+PR_MONITOR_REPOS="your-org/your-repo" \
+PR_MONITOR_WEBHOOK_SECRET="$(openssl rand -hex 32)" \
+PR_MONITOR_PUBLIC_URL="https://your-public-host" \
+node pr_monitor_webhook.mjs --serve --setup-hooks
+```
+
+`--daemon` detaches it, `--status` reports pid + health, `--stop` shuts it down;
+`--tunnel ngrok|cloudflared` brings up a tunnel for development. Deploy files
+and ingress recipes are in [`resources/deploy/`](./resources/deploy/).
 
 Agent-facing one-shots can also use CLI scope flags plus JSON reporting:
 
@@ -36,7 +57,8 @@ npm run harness:copilot-review-smart -- loop-repo-live-scope --loop
 
 The harness runs the real `pr_monitor.mjs` process with a fake `gh` on `PATH`,
 frozen LLM responses, and a temporary state file so one-shot and loop behavior
-stay deterministic and network-free.
+stay deterministic and network-free. The webhook tests use the same fake `gh`
+for an end-to-end signed-delivery → ping check.
 
 ## 1. Main decision flow (per open PR)
 
@@ -117,6 +139,66 @@ sequenceDiagram
     end
     M->>S: persist state
 ```
+
+## 4. Webhook mode
+
+Event-driven primary mode. A signed GitHub delivery only wakes a tick scoped
+to its PR; the decision pipeline below is unchanged. The fallback for a
+missing delivery is an **armed Expectation** (`next_check_at`), not a periodic
+sweep: with no Expectation the loop is asleep and makes zero GitHub/LLM calls.
+
+```mermaid
+sequenceDiagram
+    participant H as Host (invocation)
+    participant L as Listener
+    participant GH as GitHub
+    participant T as Tick (pr_monitor.mjs)
+    participant LLM as OpenRouter
+
+    H->>L: --serve --setup-hooks (Hook bound by id)
+    L->>T: Startup tick (full scope)
+    Note over L: idle — zero GitHub/LLM calls
+    GH-->>L: Delivery (signed, one event)
+    L->>L: verify HMAC → filter (repo, Echo) → debounce
+    L->>T: node pr_monitor.mjs --pr owner/repo#n --json-report
+    T->>GH: read reviews / comments / commits
+    T->>LLM: decision (unless signature cached)
+    T->>GH: post ping if the decision says so
+    T-->>L: report with next_check_at
+    alt Delivery arrives before the deadline
+        GH-->>L: next Delivery
+    else deadline expires (fallback)
+        L->>T: Fallback tick
+    end
+    Note over L: Flow closes (All-clear / PR closed)<br/>no open PR left → Listener exits
+```
+
+- **Listener**: `node:http`, no dependencies; HMAC-verified, repo-filtered,
+  Echo-filtered, debounced per PR, one tick at a time; spawns the tick and
+  holds no decision logic. `--serve` / `--daemon` / `--stop` / `--status`,
+  pid file locking, JSONL logs to stdout.
+- **Hook**: permanent per repo, updated by id (a tunnel URL change updates,
+  never duplicates); `--setup-hooks [--rotate-secret]`, `--list-hooks`,
+  `--teardown`; setup refuses to create a Hook whose public URL cannot answer
+  `/healthz`, and `--serve --setup-hooks` verifies success only after GitHub's
+  ping Delivery arrives.
+- **Expectations**: the tick report carries `next_check_at` per PR; the
+  Listener arms it, a Delivery cancels it, expiry runs exactly one Fallback
+  tick. Failed ticks re-arm with 1 → 5 → 15 min, then hourly backoff. Pending
+  Expectations survive restarts.
+- **Lifecycle**: the Listener runs one Startup tick at start (recovering
+  deliveries missed while it was down; `PR_MONITOR_STARTUP_TICK=0` disables),
+  tracks the Flows it watches, and exits when no open PR is left to watch;
+  `--keep-alive` for a supervised always-on Host.
+- **Ingress**: external to the skill — `PR_MONITOR_PUBLIC_URL` must be public
+  HTTPS (Tailscale Funnel, ngrok, cloudflared, or a reverse proxy). Deploy
+  files are platform-agnostic; the agent picks where to run them:
+  [`resources/deploy/`](./resources/deploy/).
+- **Notifications**: `PR_MONITOR_NOTIFY_CMD` gets JSON on stdin for
+  notify-ready / needs-human / escalation, 30s timeout, failures logged only.
+
+Cron stays as the alternate mode for Hosts that cannot expose a public
+endpoint: everything above section 4 applies unchanged.
 
 ## Anti-spam guardrails (the core)
 

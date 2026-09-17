@@ -215,6 +215,14 @@ const stuckBundle = buildPrBundle({
   ],
 });
 
+const webhookRebaseBundle = buildPrBundle({
+  num: 99,
+  title: "Webhook conflicted PR",
+  headSha: "webhook123",
+  mergeable: false,
+  mergeableState: "dirty",
+});
+
 const loopTick1Bundle = buildPrBundle({
   num: 61,
   title: "Loop until ready",
@@ -334,6 +342,28 @@ const SCENARIOS = {
       {
         gh: prTick(reviewBundle),
         llmResponses: [{ action: "request_review", reason: "new commits need Copilot review" }],
+      },
+    ],
+  },
+  "expectation-after-review-ping": {
+    description: "Review ping report carries the 12h Expectation deadline and no owner notification.",
+    args: ["--pr", `${REPO}#42`, "--json-report"],
+    dryRun: true,
+    ticks: [
+      {
+        gh: prTick(reviewBundle),
+        llmResponses: [{ action: "request_review", reason: "new commits need Copilot review" }],
+      },
+    ],
+  },
+  "webhook-rebase-ping": {
+    description: "Webhook Listener e2e: a signed Delivery wakes a Tick that pings Copilot to resolve conflicts.",
+    args: [],
+    dryRun: false,
+    ticks: [
+      {
+        gh: prTick(webhookRebaseBundle),
+        llmResponses: [],
       },
     ],
   },
