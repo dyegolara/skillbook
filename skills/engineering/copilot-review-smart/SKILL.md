@@ -1,32 +1,38 @@
 ---
 name: copilot-review-smart
-description: "Smart Copilot PR-review watchdog (multi-repo) that reads review state + timestamps, checks merge conflicts first, and lets an LLM decide (rebase/review/fix/notify/wait) instead of pinging daily. Use for cron/agent PR monitors that kept spamming '@copilot code review'."
-version: 2.2.0
+description: "Smart Copilot PR-review watchdog (multi-repo) that reads review state + timestamps, checks merge conflicts first, and lets an LLM decide (rebase/review/fix/notify/wait) instead of pinging daily. Webhook-first Listener with Expectation fallback; cron as alternate mode. Use for PR monitors that kept spamming '@copilot code review'."
+version: 2.3.0
 author: Hermes Agent (Marcus)
 license: MIT
 platforms: [linux, macos, windows]
 metadata:
   hermes:
-    tags: [GitHub, Copilot, PR-monitor, Code-Review, Cron, LLM-decision]
+    tags: [GitHub, Copilot, PR-monitor, Code-Review, Webhook, Cron, LLM-decision]
 ---
 
 # Copilot Review — Smart (LLM-decided) watchdog
 
-A cron/agent loop that drives open PRs toward a Copilot clean bill of health
-without spamming: it pings `@copilot code review` only when a review is
-actually useful, asks Copilot to resolve merge conflicts when needed, and
-tells the OWNER when a PR is ready for human review — staying silent the rest
-of the time.
+Webhook-first: a signed GitHub Delivery wakes one tick scoped to the affected
+PR, and the fallback is an **Expectation** the tick arms (`next_check_at`) —
+not a schedule. Cron is the alternate mode for Hosts that cannot expose a
+public HTTPS endpoint. Design record:
+`docs/adr/0005-webhook-first-expectation-fallback.md` (repo root).
+
+Both modes drive open PRs toward a Copilot clean bill of health without
+spamming: they ping `@copilot code review` only when a review is actually
+useful, ask Copilot to resolve merge conflicts when needed, and tell the OWNER
+when a PR is ready for human review — staying silent the rest of the time.
 
 Triggers:
 
 - "Stop spamming @copilot on that PR, it's already clean."
 - "Watch PRs and tell ME when one is ready, not ping Copilot forever."
+- "Set up the webhook PR watchdog (Listener) on this Host."
 - Building a PR-monitor cron that should be quiet when there's nothing to do.
 
 ## Reference implementation
 
-`pr_monitor.mjs` (next to this file) is the portable reference script:
+`pr_monitor.mjs` (next to this file) is the portable reference tick script:
 plain ESM JavaScript, no build step, runs on Node >= 18 with an
 authenticated `gh` CLI (see `docs/adr/0002` for the repo's script standard).
 It is env-driven and **the repos to watch are passed as context, never
@@ -37,6 +43,19 @@ repos:
 DRY_RUN=1 PR_MONITOR_REPOS="your-org/your-repo" node pr_monitor.mjs
 ```
 
+`pr_monitor_webhook.mjs` is the Listener (webhook transport only, no decision
+logic): plain ESM, `node:http`, no dependencies. Its implementation lives in
+the `listener/` package next to this file (one module per concern — see
+`listener/README.md`); the script itself is the CLI shim. It spawns ticks of
+`pr_monitor.mjs` and arms their Expectations:
+
+```bash
+PR_MONITOR_REPOS="your-org/your-repo" \
+PR_MONITOR_WEBHOOK_SECRET="$(openssl rand -hex 32)" \
+PR_MONITOR_PUBLIC_URL="https://your-public-host" \
+node pr_monitor_webhook.mjs --serve --setup-hooks
+```
+
 Other env: `PR_MONITOR_STATE_PATH` (default `~/.cache/pr-monitor/state.json`),
 `PR_MONITOR_MODEL` (OpenRouter model), `OPENROUTER_API_KEY` (env or
 `~/.pr-monitor.env` / `~/.hermes/.env`), `DRY_RUN=1` (print would-be
@@ -44,19 +63,26 @@ comments, never post, never persist state).
 
 ## Invocation API
 
-Shipped now:
+Tick (shipped):
 
 - **One-shot repo scope**: `node pr_monitor.mjs --repo owner/repo --json-report`
 - **One-shot single-PR scope**: `node pr_monitor.mjs --pr owner/repo#123 --json-report`
 - **Env equivalents**: `PR_MONITOR_REPOS`, `PR_MONITOR_PR`, `PR_MONITOR_REPORT=jsonl`
 - **PR ref formats**: `owner/repo#123` or `https://github.com/owner/repo/pull/123`
 
+Listener (webhook mode):
+
+- `node pr_monitor_webhook.mjs --serve [--setup-hooks] [--keep-alive] [--tunnel ngrok|cloudflared]`
+- `node pr_monitor_webhook.mjs --daemon` / `--stop` / `--status`
+- `node pr_monitor_webhook.mjs --setup-hooks [--rotate-secret]` / `--list-hooks` / `--teardown`
+
 Contract:
 
-- One invocation = **exactly one tick** of the watchdog.
+- One tick invocation = **exactly one tick** of the watchdog.
 - Repo scope and single-PR scope are **mutually exclusive**; missing scope fails fast.
 - `--json-report` / `PR_MONITOR_REPORT=jsonl` emits **one JSON line per PR** plus
-  **one overall JSON line** at the end for machine-readable loop control.
+  **one overall JSON line** at the end for machine-readable loop control. Each PR
+  line carries `next_check_at` and `owner_notifications` for the Listener.
 - `DRY_RUN=1` still prints would-be comments, but never posts to GitHub and never
   persists state.
 
@@ -67,6 +93,9 @@ Implementation status:
 - [x] transcript-based All-clear / Notify-ready
 - [x] needs-human terminal reporting
 - [x] fixture harness runner for one-shot and loop scenarios
+- [x] webhook Listener (`pr_monitor_webhook.mjs`)
+- [x] `next_check_at` + structured owner notifications in the tick report
+- [x] Hook management, process management, Expectation persistence, tunnels, deploy recipes
 
 Harness command:
 
@@ -92,6 +121,67 @@ Terminal meanings in the JSON report:
 - `terminal: "skipped"` → draft/WIP PR skipped entirely and excluded from loop
   completion.
 
+## Webhook mode (primary)
+
+Full design record:
+`docs/adr/0005-webhook-first-expectation-fallback.md` (repo root).
+
+A delivery is a trigger, not a decision: it wakes one tick scoped to the
+affected PR (`--pr`), and the existing gates + LLM decide the next step.
+
+Lifecycle:
+
+1. Invocation ensures the Hook (`--setup-hooks`, idempotent, bound by hook id)
+   and starts the Listener (`--serve` foreground, `--daemon` detached so the
+   invoking session can end).
+2. The Listener runs one **Startup tick** over the watched repos to recover
+   deliveries missed while it was down (`PR_MONITOR_STARTUP_TICK=0` disables).
+3. Deliveries are verified (HMAC), filtered (watched repo, own Echo), debounced
+   per PR (`PR_MONITOR_DEBOUNCE_MS`, default 30s) and queued; one tick runs at
+   a time as `node pr_monitor.mjs --pr owner/repo#123 --json-report`.
+4. The tick report carries `next_check_at` per PR and the Listener arms it. If
+   no Delivery arrives first, it runs a **Fallback tick** — the only fallback,
+   there is no periodic sweep. `next_check_at: null` means the PR is quiescent.
+5. A Flow closes at `notify_ready` (All-clear) or when the PR is closed or
+   merged; `needs-human` keeps its weekly retry. When no open PR is left to
+   watch, the Listener exits (`--keep-alive` keeps it up under a supervisor).
+   Pending Expectations and Hook ids persist in the Listener state file and
+   survive restarts.
+
+Events subscribed (all filtered by watched repo): `pull_request` `opened` /
+`synchronize` / `reopened` / `ready_for_review` / `converted_to_draft` /
+`closed`; `pull_request_review` `submitted` / `dismissed`;
+`pull_request_review_comment` `created`; `issue_comment` `created` / `edited`.
+
+Security: `X-Hub-Signature-256` (HMAC-SHA256 over the raw body, constant-time
+compare) with `PR_MONITOR_WEBHOOK_SECRET`; the Listener refuses to start
+without it. `PR_MONITOR_LOGIN` (default from `gh api user`) filters the loop's
+own comments.
+
+Serving and management:
+
+- `POST /github/webhook`, `GET /healthz` (liveness + last Delivery);
+  `PR_MONITOR_WEBHOOK_HOST`/`PORT` (default `127.0.0.1:8787`), JSONL log to
+  stdout (`PR_MONITOR_WEBHOOK_LOG` optional).
+- `--setup-hooks [--rotate-secret]`, `--list-hooks`, `--teardown`: manage the
+  GitHub-side Hook. Setup verifies `PR_MONITOR_PUBLIC_URL` reaches the
+  Listener and waits for GitHub's `ping` before reporting success; it refuses
+  to create a Hook it cannot verify.
+- `PR_MONITOR_NOTIFY_CMD`: owner notifications (`notify_ready`,
+  `needs-human`, escalation) as JSON on stdin, 30s timeout, failures logged
+  only.
+- `--tunnel ngrok|cloudflared`: spawn a tunnel, use its public URL for setup,
+  clean it up on exit (dev convenience; the Hook is updated by id).
+- `PR_MONITOR_TICK_TIMEOUT` (5 min) kills a hung tick; failed ticks re-arm
+  their Expectation with backoff (1 → 5 → 15 min, then hourly).
+- Ingress is external to the skill: GitHub must reach a public HTTPS URL —
+  Tailscale Funnel (stable `https://<host>.<tailnet>.ts.net`), ngrok or
+  cloudflared. Recipes and platform-agnostic deploy files in
+  `resources/deploy/`.
+
+Cron remains the alternate mode for Hosts that cannot expose a public
+endpoint; everything below applies unchanged.
+
 ## Decision flow (deterministic gates first, LLM last)
 
 ```
@@ -112,6 +202,33 @@ newest non-Copilot conflict-resolution request on this head sha:
   >= 6h, pings < 3            → request_rebase again (retry)
   >= 6h, pings >= 3           → notify owner ONCE per sha; retry weekly
 ```
+
+### `next_check_at` derivation policy (the Expectation contract)
+
+The tick derives each PR's `next_check_at` from state, not from the LLM, so a
+reused cached decision carries the same deadline a fresh one would. This table
+is the complete policy — every arm in the derivation corresponds to a row here,
+and a deadline is never anchored at `now`: a stale anchor advances by whole
+weeks instead of collapsing into an immediate re-arm (a Fallback tick storm).
+Weekly retries anchor at the escalation moment recorded in state
+(`stuck_notified_ts`, `review_fix_exhausted_ts`), not at the last ping.
+
+| State (first match wins) | `next_check_at` |
+|---|---|
+| `notify_ready` / `skip_wip` (draft/WIP) | `null` — quiescent; only a Delivery wakes it |
+| Recurring LLM failure (`llm_failed`) | now + 1h |
+| Review/fix budget exhausted (needs-human) | exhaustion moment + 168h (weekly, whole weeks) |
+| Review/fix exhausted with no recorded exhaustion ts (legacy state) | last ping + 168h (weekly, whole weeks) |
+| Stuck PR, owner escalated (conflicts + pings >= 3) | escalation moment + 168h (weekly, whole weeks) |
+| Stuck PR with no recorded escalation ts (legacy state) | last ping + 168h (weekly, whole weeks) |
+| Active work (last commit < 3h) | last commit + 3h |
+| A Ping just posted this run | ping + 12h (review/fix) or + 6h (rebase) |
+| Review/fix Ping pending a response | last ping + 12h |
+| Rebase Ping inside its 6h same-sha throttle | last rebase ping + 6h (never the older request's deadline) |
+| Mergeability unknown | now + 1h |
+| Conflicts with a pending resolution request | request + 6h |
+| Newest Copilot review < 6h old | review + 6h |
+| Otherwise | `null` — quiescent |
 
 ### Actions and their messages
 
@@ -153,8 +270,9 @@ newest non-Copilot conflict-resolution request on this head sha:
 - **Throttles**: 12h same-sha ping interval for review/fix requests; 6h
   same-sha interval for conflict-resolution pings; 6h cooldown after the newest
   Copilot review; 6h rebase-retry window; 3 rebase pings per sha, then owner
-  escalation + weekly retry (origins and rationale in
-  `resources/docs/adr/0005-anti-spam-throttle-numbers.md`).
+  escalation + weekly retry anchored at the escalation moment (origins and
+  rationale in `resources/docs/adr/0005-anti-spam-throttle-numbers.md`; the
+  full `next_check_at` derivation table above is the contract).
 - **`seen_ready` shas**: `notify_ready` fires ONCE per head sha — never
   re-message the owner.
 - **Silent output**: nothing to report ⇒ print NOTHING (in `no_agent` cron
@@ -187,6 +305,9 @@ Decision seam:
   LLM failure/escalation paths can be validated with stubs.
 
 ## Cron setup
+
+Cron is the alternate mode (Hosts with no public endpoint); the webhook
+Listener is the primary path — see "Webhook mode" above.
 
 - Hourly is fine — the signature cache makes idle ticks cheap. Point the
   cron at `node pr_monitor.mjs` with `PR_MONITOR_REPOS` set; stdout must be

@@ -215,6 +215,33 @@ const stuckBundle = buildPrBundle({
   ],
 });
 
+const webhookRebaseBundle = buildPrBundle({
+  num: 99,
+  title: "Webhook conflicted PR",
+  headSha: "webhook123",
+  mergeable: false,
+  mergeableState: "dirty",
+});
+
+const webhookSyncTick1Bundle = buildPrBundle({
+  num: 98,
+  title: "Webhook synchronize PR",
+  headSha: "sync123",
+});
+
+const webhookSyncTick2Bundle = buildPrBundle({
+  num: 98,
+  title: "Webhook synchronize PR",
+  headSha: "sync123",
+  reviews: [
+    review({
+      author: "reviewer",
+      body: "All clear after the new commits.",
+      ts: "2026-09-08T05:00:00.000Z",
+    }),
+  ],
+});
+
 const loopTick1Bundle = buildPrBundle({
   num: 61,
   title: "Loop until ready",
@@ -334,6 +361,44 @@ const SCENARIOS = {
       {
         gh: prTick(reviewBundle),
         llmResponses: [{ action: "request_review", reason: "new commits need Copilot review" }],
+      },
+    ],
+  },
+  "expectation-after-review-ping": {
+    description: "Review ping report carries the 12h Expectation deadline and no owner notification.",
+    args: ["--pr", `${REPO}#42`, "--json-report"],
+    dryRun: true,
+    ticks: [
+      {
+        gh: prTick(reviewBundle),
+        llmResponses: [{ action: "request_review", reason: "new commits need Copilot review" }],
+      },
+    ],
+  },
+  "webhook-rebase-ping": {
+    description: "Webhook Listener e2e: a signed Delivery wakes a Tick that pings Copilot to resolve conflicts.",
+    args: [],
+    dryRun: false,
+    ticks: [
+      {
+        gh: prTick(webhookRebaseBundle),
+        llmResponses: [],
+      },
+    ],
+  },
+  "webhook-synchronize-to-ready": {
+    description:
+      "Webhook Listener e2e: synchronize Deliveries drive request_review then notify_ready; the Flow closes and the Listener exits.",
+    args: [],
+    dryRun: false,
+    ticks: [
+      {
+        gh: prTick(webhookSyncTick1Bundle),
+        llmResponses: [{ action: "request_review", reason: "new commits need Copilot review" }],
+      },
+      {
+        gh: prTick(webhookSyncTick2Bundle),
+        llmResponses: [{ action: "notify_ready", reason: "All-clear on the synchronized head" }],
       },
     ],
   },

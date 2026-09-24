@@ -114,3 +114,60 @@ blocked (a GitHub `mergeable_state`).
 A single owner notification that the loop cannot safely advance on its own for
 the current head sha (stuck conflicts or recurring LLM/API failure).
 _Avoid_: repeated alerts.
+
+**Host**:
+The machine where the skill runs — listener, state and timers live there. The
+skill never assumes a platform, VPS or container runtime; choosing a host is
+deployment, not design.
+_Avoid_: server, VPS, runner, node.
+
+**Tick**:
+One invocation of the watchdog over a scope (a repo set or a single PR):
+deterministic gates first, at most one LLM decision and one GitHub action per
+PR. One invocation = exactly one tick.
+_Avoid_: run, pass, cycle, iteration.
+
+**Listener**:
+The long-running HTTP process shipped by the skill: it receives GitHub
+deliveries, verifies their signature, filters and coalesces them, and spawns
+ticks. It holds no decision logic.
+_Avoid_: server, daemon, receiver, webhook endpoint.
+
+**Hook**:
+The GitHub-side webhook registration on a watched repo. It is permanent —
+updated by id, never recreated — and removed only by an explicit teardown.
+_Avoid_: webhook (the hook is the registration; a delivery is one POST),
+subscription.
+
+**Delivery**:
+One signed POST from GitHub carrying one event, identified by
+`X-GitHub-Delivery`. Deliveries that fail while no Listener is up are not
+retried by GitHub; the Startup tick is the recovery.
+_Avoid_: event (the payload), notification.
+
+**Echo**:
+A delivery caused by the Listener's own ping comment. Ignored by author, never
+counted as progress.
+_Avoid_: feedback loop, self-trigger.
+
+**Flow**:
+The monitored lifecycle of one PR: it opens when the loop starts watching the
+PR and closes at All-clear (Notify-ready) or when the PR is closed or merged.
+Needs-human does not close it — it keeps its weekly retry.
+_Avoid_: run, session, job.
+
+**Expectation**:
+The deadline a tick arms for a Flow — "something is worth re-checking at
+`next_check_at`". The Listener fires a Fallback tick if no Delivery arrives
+first; no expectations means the loop is asleep.
+_Avoid_: timer, poll, sweep.
+
+**Fallback tick**:
+A tick triggered by an expired Expectation, not by a Delivery and not by a
+schedule.
+_Avoid_: cron, sweep, retry.
+
+**Startup tick**:
+The single full-scope tick a Listener runs at start, to recover deliveries
+missed while it was down.
+_Avoid_: sweep, catch-up poll.
