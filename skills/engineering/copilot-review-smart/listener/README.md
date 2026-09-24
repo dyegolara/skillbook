@@ -20,6 +20,7 @@ Modules (one per reason the code changes):
 - `src/paths.mjs` — script paths and runtime defaults
 - `src/signature.mjs` — HMAC verification, Delivery classification, keys
 - `src/state.mjs` — Listener state (Expectations, Hook ids) persistence
+- `src/gh.mjs` — the `gh api` runner every GitHub call goes through
 - `src/tick-runner.mjs` — spawning and parsing Ticks
 - `src/listener.mjs` — Flows, Expectations, debounce and tick queue
 - `src/http-transport.mjs` — `/healthz` and the signed webhook endpoint

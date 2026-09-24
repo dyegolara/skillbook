@@ -218,7 +218,9 @@ Weekly retries anchor at the escalation moment recorded in state
 | `notify_ready` / `skip_wip` (draft/WIP) | `null` — quiescent; only a Delivery wakes it |
 | Recurring LLM failure (`llm_failed`) | now + 1h |
 | Review/fix budget exhausted (needs-human) | exhaustion moment + 168h (weekly, whole weeks) |
+| Review/fix exhausted with no recorded exhaustion ts (legacy state) | last ping + 168h (weekly, whole weeks) |
 | Stuck PR, owner escalated (conflicts + pings >= 3) | escalation moment + 168h (weekly, whole weeks) |
+| Stuck PR with no recorded escalation ts (legacy state) | last ping + 168h (weekly, whole weeks) |
 | Active work (last commit < 3h) | last commit + 3h |
 | A Ping just posted this run | ping + 12h (review/fix) or + 6h (rebase) |
 | Review/fix Ping pending a response | last ping + 12h |
