@@ -1,12 +1,15 @@
-# 0006 — Webhook-first loop with expectation fallback
+# 0005 — Webhook-first loop with Expectation fallback
 
-The loop was cron-only: it polled GitHub on a cadence, so every step (ask
-review, ask fix, resolve conflicts) waited up to a full tick to be noticed.
-The skill now ships a Listener that receives GitHub webhook deliveries and
-wakes the same tick scoped to the affected PR; cron stays as the alternate
-mode for Hosts that cannot expose a public HTTPS endpoint.
+**Status**: Accepted
 
-## Decision
+**Context**: The Copilot-review watchdog was cron-only: it polled GitHub on a
+cadence, so every step (ask review, ask fix, resolve conflicts) waited up to a
+full tick to be noticed. The skill needed a way to react to Copilot's actions
+in seconds without reintroducing the ping loops the anti-spam gates exist to
+prevent — and without making the loop depend on any specific platform's
+webhook or serverless offering.
+
+**Decision**:
 
 - A Delivery is a trigger, never a decision: no event→action mapping. The
   deterministic gates, transcript reading, LLM decision and throttles are the
@@ -17,7 +20,9 @@ mode for Hosts that cannot expose a public HTTPS endpoint.
   reads the report.
 - Fallback is by Expectation, not by polling: the tick emits `next_check_at`
   per PR; the Listener arms it and fires a Fallback tick if no Delivery
-  arrives first. No expectations → loop asleep (zero GitHub/LLM calls).
+  arrives first. No expectations → loop asleep (zero GitHub/LLM calls). The
+  complete `next_check_at` derivation policy is the table in the skill's
+  `SKILL.md` ("`next_check_at` derivation policy").
 - Lifecycle: the Listener is ephemeral — it exits when no open PR is left to
   watch (`--keep-alive` for supervised always-on Hosts); the Hook is permanent
   per repo and bound by hook id, so a changing public URL updates the existing
@@ -29,7 +34,7 @@ mode for Hosts that cannot expose a public HTTPS endpoint.
 - Deliveries missed while no Listener was up are recovered by the Startup tick.
   GitHub does not retry failed deliveries.
 
-## Rejected options
+Rejected options:
 
 - **Event → action mapping**: duplicates the anti-spam policy and reintroduces
   the ping loops the gates exist to prevent.
@@ -44,7 +49,7 @@ mode for Hosts that cannot expose a public HTTPS endpoint.
 - **Vercel as public relay**: documented as an alternative for Hosts without a
   public URL, not implemented; it adds a hop where a Delivery can be lost.
 
-## Consequences
+**Consequences**:
 
 - Steps advance seconds after Copilot acts instead of up to a cadence later.
 - Idle cost is one open local socket: no API calls, no LLM, no timers.
@@ -52,3 +57,5 @@ mode for Hosts that cannot expose a public HTTPS endpoint.
   Expectation) is only recovered by the next Delivery or a new invocation.
 - The Tick contract changes only additively (`next_check_at`, structured owner
   notifications in the JSON report); cron mode and its recipe are unchanged.
+- The ADR lives in the repo's `docs/adr/` (this file), not inside the skill;
+  the skill's `SKILL.md` links here for the design record.

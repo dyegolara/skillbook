@@ -913,10 +913,162 @@ test("stuck PR after escalation arms the weekly retry (+168h) and escalates once
 
   const prLine = prJsonLine(out);
   assert.equal(prLine.action, "wait");
-  assert.equal(prLine.next_check_at, new Date(now - 2 * 24 * 3600_000 + 168 * 3600_000).toISOString());
+  assert.equal(prLine.next_check_at, new Date(now + 168 * 3600_000).toISOString());
   assert.equal(prLine.owner_notifications.length, 1);
   assert.equal(prLine.owner_notifications[0].event, "escalation");
   assert.match(prLine.owner_notifications[0].message, /STILL conflicted/);
+});
+
+test("stuck weekly retry advances by whole weeks from the escalation, never collapsing to now", async () => {
+  const now = Date.parse("2026-09-08T00:00:00.000Z");
+  const escalatedTs = new Date(now - 8 * 24 * 3600_000).toISOString();
+  const out = await runMonitorOnce({
+    repos: [REPO],
+    state: {
+      [`${REPO}#7`]: {
+        stuck_notified_sha: "stuck123",
+        stuck_notified_ts: escalatedTs,
+        rebase_pings_sha: "stuck123",
+        rebase_pings: 3,
+        last_ping_ts: new Date(now - 9 * 24 * 3600_000).toISOString(),
+      },
+    },
+    nowMs: now,
+    dryRun: true,
+    emitJsonReport: true,
+    runGhFn: repoScopeGh("stuck123"),
+    collectPrStateFn: async () =>
+      makeCtx({ headSha: "stuck123", hasConflicts: true, mergeable: false, mergeableState: "dirty" }),
+    decideFn: async ({ stateEntry }) => ({
+      handled: true,
+      action: "wait",
+      reason: "rebase retry budget exhausted; owner escalated",
+      reused: true,
+      stateEntry,
+      notifications: [],
+    }),
+  });
+
+  const prLine = prJsonLine(out);
+  assert.equal(prLine.action, "wait");
+  // 8 days after escalation, the weekly slot at +168h is already stale: the
+  // next one is escalation + 2 weeks = now + 6 days. Never `now`.
+  assert.equal(
+    prLine.next_check_at,
+    new Date(now - 8 * 24 * 3600_000 + 2 * 168 * 3600_000).toISOString()
+  );
+});
+
+test("legacy stuck state without an escalation ts anchors the weekly retry at the last ping, still not at now", async () => {
+  const now = Date.parse("2026-09-08T00:00:00.000Z");
+  const lastPing = now - 8 * 24 * 3600_000;
+  const out = await runMonitorOnce({
+    repos: [REPO],
+    state: {
+      [`${REPO}#7`]: {
+        stuck_notified_sha: "stuck123",
+        rebase_pings_sha: "stuck123",
+        rebase_pings: 3,
+        last_ping_ts: new Date(lastPing).toISOString(),
+      },
+    },
+    nowMs: now,
+    dryRun: true,
+    emitJsonReport: true,
+    runGhFn: repoScopeGh("stuck123"),
+    collectPrStateFn: async () =>
+      makeCtx({ headSha: "stuck123", hasConflicts: true, mergeable: false, mergeableState: "dirty" }),
+    decideFn: async ({ stateEntry }) => ({
+      handled: true,
+      action: "wait",
+      reason: "rebase retry budget exhausted; owner escalated",
+      reused: true,
+      stateEntry,
+      notifications: [],
+    }),
+  });
+
+  const prLine = prJsonLine(out);
+  assert.equal(prLine.action, "wait");
+  assert.equal(
+    prLine.next_check_at,
+    new Date(lastPing + 2 * 168 * 3600_000).toISOString()
+  );
+});
+
+test("needs-human review/fix exhaustion anchors its weekly retry at the exhaustion, not the last ping", async () => {
+  const now = Date.parse("2026-09-08T00:00:00.000Z");
+  const exhaustedTs = new Date(now - 8 * 24 * 3600_000).toISOString();
+  const out = await runMonitorOnce({
+    repos: [REPO],
+    state: {
+      [`${REPO}#7`]: {
+        review_fix_exhausted_sha: "review123",
+        review_fix_exhausted_ts: exhaustedTs,
+        review_fix_pending_sha: "review123",
+        review_fix_pending_action: "request_fix",
+        last_ping_ts: new Date(now - 10 * 24 * 3600_000).toISOString(),
+      },
+    },
+    nowMs: now,
+    dryRun: true,
+    emitJsonReport: true,
+    runGhFn: repoScopeGh("review123"),
+    collectPrStateFn: async () => makeCtx({ headSha: "review123" }),
+    decideFn: async ({ stateEntry }) => ({
+      handled: true,
+      action: "wait",
+      reason: "review/fix retry budget exhausted",
+      reused: true,
+      stateEntry,
+      notifications: [],
+    }),
+  });
+
+  const prLine = prJsonLine(out);
+  assert.equal(prLine.action, "wait");
+  assert.equal(
+    prLine.next_check_at,
+    new Date(now - 8 * 24 * 3600_000 + 2 * 168 * 3600_000).toISOString()
+  );
+});
+
+test("a rebase ping inside its throttle window arms the deadline at ping time + 6h, not at the older request", async () => {
+  const now = Date.parse("2026-09-08T00:00:00.000Z");
+  const requestTs = new Date(now - 2 * 24 * 3600_000).toISOString();
+  const out = await runMonitorOnce({
+    repos: [REPO],
+    state: {
+      [`${REPO}#7`]: {
+        rebase_pings_sha: "dirty123",
+        rebase_pings: 1,
+        last_ping_sha: "dirty123",
+        last_ping_ts: new Date(now - 3600_000).toISOString(),
+      },
+    },
+    nowMs: now,
+    dryRun: true,
+    emitJsonReport: true,
+    runGhFn: repoScopeGh("dirty123"),
+    collectPrStateFn: async () =>
+      makeCtx({
+        headSha: "dirty123",
+        hasConflicts: true,
+        mergeable: false,
+        mergeableState: "dirty",
+        issueTranscript: [
+          { author: "alice", ts: requestTs, body: "@copilot resolve the merge conflicts with origin/main" },
+        ],
+      }),
+    llmDecider: async () => {
+      throw new Error("rebase is deterministic; the LLM must not be called");
+    },
+  });
+
+  const prLine = prJsonLine(out);
+  assert.equal(prLine.action, "wait", "the 6h rebase throttle blocks an immediate re-ping");
+  assert.equal(prLine.next_check_at, new Date(now - 3600_000 + 6 * 3600_000).toISOString());
+  assert.notEqual(prLine.next_check_at, new Date(now).toISOString(), "the deadline must not collapse to now");
 });
 
 test("active-work hold arms next_check_at at last commit + 3h", async () => {
@@ -1108,10 +1260,9 @@ test("review/fix retry exhaustion keeps the weekly retry and a needs-human notif
 
   const prLine = prJsonLine(out);
   assert.equal(prLine.terminal, "needs-human");
-  assert.equal(
-    prLine.next_check_at,
-    new Date(now - 2 * 24 * 3600_000 + 168 * 3600_000).toISOString()
-  );
+  // Exhaustion happens this run: the weekly retry anchors at the exhaustion
+  // moment (+168h), not at the older last ping.
+  assert.equal(prLine.next_check_at, new Date(now + 168 * 3600_000).toISOString());
   assert.equal(prLine.owner_notifications.length, 1);
   assert.equal(prLine.owner_notifications[0].event, "needs-human");
 });

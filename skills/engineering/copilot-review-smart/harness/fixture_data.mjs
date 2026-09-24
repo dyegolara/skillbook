@@ -223,6 +223,25 @@ const webhookRebaseBundle = buildPrBundle({
   mergeableState: "dirty",
 });
 
+const webhookSyncTick1Bundle = buildPrBundle({
+  num: 98,
+  title: "Webhook synchronize PR",
+  headSha: "sync123",
+});
+
+const webhookSyncTick2Bundle = buildPrBundle({
+  num: 98,
+  title: "Webhook synchronize PR",
+  headSha: "sync123",
+  reviews: [
+    review({
+      author: "reviewer",
+      body: "All clear after the new commits.",
+      ts: "2026-09-08T05:00:00.000Z",
+    }),
+  ],
+});
+
 const loopTick1Bundle = buildPrBundle({
   num: 61,
   title: "Loop until ready",
@@ -364,6 +383,22 @@ const SCENARIOS = {
       {
         gh: prTick(webhookRebaseBundle),
         llmResponses: [],
+      },
+    ],
+  },
+  "webhook-synchronize-to-ready": {
+    description:
+      "Webhook Listener e2e: synchronize Deliveries drive request_review then notify_ready; the Flow closes and the Listener exits.",
+    args: [],
+    dryRun: false,
+    ticks: [
+      {
+        gh: prTick(webhookSyncTick1Bundle),
+        llmResponses: [{ action: "request_review", reason: "new commits need Copilot review" }],
+      },
+      {
+        gh: prTick(webhookSyncTick2Bundle),
+        llmResponses: [{ action: "notify_ready", reason: "All-clear on the synchronized head" }],
       },
     ],
   },

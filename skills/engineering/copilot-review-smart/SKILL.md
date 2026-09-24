@@ -16,7 +16,7 @@ Webhook-first: a signed GitHub Delivery wakes one tick scoped to the affected
 PR, and the fallback is an **Expectation** the tick arms (`next_check_at`) —
 not a schedule. Cron is the alternate mode for Hosts that cannot expose a
 public HTTPS endpoint. Design record:
-`resources/docs/adr/0006-webhook-first-expectation-fallback.md`.
+`docs/adr/0005-webhook-first-expectation-fallback.md` (repo root).
 
 Both modes drive open PRs toward a Copilot clean bill of health without
 spamming: they ping `@copilot code review` only when a review is actually
@@ -44,7 +44,9 @@ DRY_RUN=1 PR_MONITOR_REPOS="your-org/your-repo" node pr_monitor.mjs
 ```
 
 `pr_monitor_webhook.mjs` is the Listener (webhook transport only, no decision
-logic): plain ESM, `node:http`, no dependencies. It spawns ticks of
+logic): plain ESM, `node:http`, no dependencies. Its implementation lives in
+the `listener/` package next to this file (one module per concern — see
+`listener/README.md`); the script itself is the CLI shim. It spawns ticks of
 `pr_monitor.mjs` and arms their Expectations:
 
 ```bash
@@ -122,7 +124,7 @@ Terminal meanings in the JSON report:
 ## Webhook mode (primary)
 
 Full design record:
-`resources/docs/adr/0006-webhook-first-expectation-fallback.md`.
+`docs/adr/0005-webhook-first-expectation-fallback.md` (repo root).
 
 A delivery is a trigger, not a decision: it wakes one tick scoped to the
 affected PR (`--pr`), and the existing gates + LLM decide the next step.
@@ -201,6 +203,31 @@ newest non-Copilot conflict-resolution request on this head sha:
   >= 6h, pings >= 3           → notify owner ONCE per sha; retry weekly
 ```
 
+### `next_check_at` derivation policy (the Expectation contract)
+
+The tick derives each PR's `next_check_at` from state, not from the LLM, so a
+reused cached decision carries the same deadline a fresh one would. This table
+is the complete policy — every arm in the derivation corresponds to a row here,
+and a deadline is never anchored at `now`: a stale anchor advances by whole
+weeks instead of collapsing into an immediate re-arm (a Fallback tick storm).
+Weekly retries anchor at the escalation moment recorded in state
+(`stuck_notified_ts`, `review_fix_exhausted_ts`), not at the last ping.
+
+| State (first match wins) | `next_check_at` |
+|---|---|
+| `notify_ready` / `skip_wip` (draft/WIP) | `null` — quiescent; only a Delivery wakes it |
+| Recurring LLM failure (`llm_failed`) | now + 1h |
+| Review/fix budget exhausted (needs-human) | exhaustion moment + 168h (weekly, whole weeks) |
+| Stuck PR, owner escalated (conflicts + pings >= 3) | escalation moment + 168h (weekly, whole weeks) |
+| Active work (last commit < 3h) | last commit + 3h |
+| A Ping just posted this run | ping + 12h (review/fix) or + 6h (rebase) |
+| Review/fix Ping pending a response | last ping + 12h |
+| Rebase Ping inside its 6h same-sha throttle | last rebase ping + 6h (never the older request's deadline) |
+| Mergeability unknown | now + 1h |
+| Conflicts with a pending resolution request | request + 6h |
+| Newest Copilot review < 6h old | review + 6h |
+| Otherwise | `null` — quiescent |
+
 ### Actions and their messages
 
 | Action | When (decided by) | Message |
@@ -241,8 +268,9 @@ newest non-Copilot conflict-resolution request on this head sha:
 - **Throttles**: 12h same-sha ping interval for review/fix requests; 6h
   same-sha interval for conflict-resolution pings; 6h cooldown after the newest
   Copilot review; 6h rebase-retry window; 3 rebase pings per sha, then owner
-  escalation + weekly retry (origins and rationale in
-  `resources/docs/adr/0005-anti-spam-throttle-numbers.md`).
+  escalation + weekly retry anchored at the escalation moment (origins and
+  rationale in `resources/docs/adr/0005-anti-spam-throttle-numbers.md`; the
+  full `next_check_at` derivation table above is the contract).
 - **`seen_ready` shas**: `notify_ready` fires ONCE per head sha — never
   re-message the owner.
 - **Silent output**: nothing to report ⇒ print NOTHING (in `no_agent` cron

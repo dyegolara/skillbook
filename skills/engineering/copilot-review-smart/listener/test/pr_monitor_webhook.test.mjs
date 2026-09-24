@@ -32,11 +32,12 @@ import {
   stopListenerProcess,
   teardownHooks,
   verifySignature,
-} from "./pr_monitor_webhook.mjs";
+} from "../src/index.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const WEBHOOK_SCRIPT = path.join(__dirname, "pr_monitor_webhook.mjs");
-const HARNESS_BIN = path.join(__dirname, "harness", "bin");
+const SKILL_DIR = path.join(__dirname, "..", "..");
+const WEBHOOK_SCRIPT = path.join(SKILL_DIR, "pr_monitor_webhook.mjs");
+const HARNESS_BIN = path.join(SKILL_DIR, "harness", "bin");
 const REPO = "dyegolara/skillbook";
 
 // ---------------------------------------------------------------------------
@@ -240,6 +241,13 @@ test("classifyDelivery filters events, repos, PR-ness and Echo", () => {
   assert.match(classifyDelivery({ event: "ping", payload: {} }).kind, /ping/);
   const labeled = { ...prOpenedPayload(), action: "labeled" };
   assert.match(classifyDelivery({ event: "pull_request", payload: labeled, repos: [REPO] }).reason, /not subscribed/);
+  const nonPrComment = classifyDelivery({
+    event: "issue_comment",
+    payload: { action: "created", issue: { number: 3 }, repository: { full_name: REPO }, sender: { login: "alice" } },
+    repos: [REPO],
+  });
+  assert.equal(nonPrComment.accepted, false, "issue_comment on a non-PR is ignored");
+  assert.match(nonPrComment.reason, /not on a pull request/);
   const echo = classifyDelivery({
     event: "pull_request",
     payload: prOpenedPayload(7, REPO, "own-bot"),
@@ -645,6 +653,23 @@ test("a failed Startup tick is logged and does not prevent serving", async (t) =
   const health = await (await fetch(`http://127.0.0.1:${listener.port}/healthz`)).json();
   assert.equal(health.status, "ok");
   assert.equal(exits.length, 0, "a failed startup must not trigger an idle exit");
+});
+
+test("stop() is not held open by a keep-alive client connection", async (t) => {
+  const clock = makeClock();
+  const listener = createListener({ config: makeConfig(), now: clock.now, clock, tickRunner: makeTickRunner() });
+  await listener.start();
+  t.after(() => listener.stop());
+
+  // postDelivery uses undici, whose keep-alive socket stays open after the
+  // 202. An idle exit or --stop must not wait for it.
+  await postDelivery(listener.port, "test-secret", prOpenedPayload(7), { deliveryId: "ka-1" });
+
+  let stopped = false;
+  const stopPromise = listener.stop().then(() => { stopped = true; });
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert.equal(stopped, true, "a keep-alive client must not block shutdown");
+  await stopPromise;
 });
 
 test("Notify-ready closes the Flow; with nothing left the Listener exits", async (t) => {
@@ -1153,7 +1178,7 @@ test("listenerStatus reports not running when there is no pid file", async () =>
   assert.deepEqual(status, { running: false, healthy: false, pid: null });
 });
 
-function runCli(args, env, { cwd = __dirname } = {}) {
+function runCli(args, env, { cwd = SKILL_DIR } = {}) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [WEBHOOK_SCRIPT, ...args], { env, cwd });
     let stdout = "";
@@ -1279,6 +1304,12 @@ test("runNotifyCmd passes the note as JSON on stdin and never throws on failure"
   assert.equal(failed.code, 3);
 });
 
+test("runNotifyCmd kills a notify command that exceeds its timeout and reports the failure", async () => {
+  const slow = await runNotifyCmd({ cmd: "sleep 5", note: {}, timeoutMs: 200 });
+  assert.equal(slow.ok, false);
+  assert.match(slow.error, /timed out/);
+});
+
 test("owner notifications from a Tick report are forwarded and failures are logged", async (t) => {
   const clock = makeClock();
   const noted = [];
@@ -1352,7 +1383,10 @@ test("e2e: a signed Delivery wakes one real Tick that pings Copilot (harness fak
 
   const child = spawn(process.execPath, [WEBHOOK_SCRIPT, "--serve"], { env });
   let stdout = "";
+  let stderrBuf = "";
   child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderrBuf += chunk; });
+  t.after(() => { if (stderrBuf) console.error("CHILD STDERR:", stderrBuf); });
   t.after(async () => {
     await runCli(["--stop"], env).catch(() => {});
     try {
@@ -1398,6 +1432,102 @@ test("e2e: a signed Delivery wakes one real Tick that pings Copilot (harness fak
   const stop = await runCli(["--stop"], env);
   assert.equal(stop.code, 0, stop.stderr);
   await waitFor(() => readPidFile(env.PR_MONITOR_WEBHOOK_PID_PATH) === null);
+  assert.equal(readPidFile(env.PR_MONITOR_WEBHOOK_PID_PATH), null);
+});
+
+test("e2e: synchronize Deliveries drive a review ping then Notify-ready; healthz reflects the tick and the Listener exits when the Flow closes", async (t) => {
+  const dir = makeRuntimeDir("webhook-e2e-ready-");
+  const logDir = path.join(dir, "logs");
+  const port = await freePort();
+  const secret = "e2e-secret";
+  const env = {
+    ...process.env,
+    PR_MONITOR_REPOS: REPO,
+    PR_MONITOR_WEBHOOK_SECRET: secret,
+    PR_MONITOR_WEBHOOK_HOST: "127.0.0.1",
+    PR_MONITOR_WEBHOOK_PORT: String(port),
+    PR_MONITOR_DEBOUNCE_MS: "20",
+    PR_MONITOR_STARTUP_TICK: "0",
+    PR_MONITOR_LOGIN: "own-bot",
+    PR_MONITOR_WEBHOOK_STATE_PATH: path.join(dir, "listener-state.json"),
+    PR_MONITOR_WEBHOOK_PID_PATH: path.join(dir, "listener.pid"),
+    PR_MONITOR_WEBHOOK_LOG: path.join(dir, "listener.log"),
+    PR_MONITOR_STATE_PATH: path.join(dir, "tick-state.json"),
+    PR_MONITOR_FIXTURE_SCENARIO: "webhook-synchronize-to-ready",
+    PR_MONITOR_FIXTURE_LOG_DIR: logDir,
+    OPENROUTER_API_KEY: "fixture-key",
+    PATH: `${HARNESS_BIN}${path.delimiter}${process.env.PATH}`,
+    // Every spawned Tick must load the fixture fake OpenRouter.
+    NODE_OPTIONS: `--import ${path.join(SKILL_DIR, "harness", "fake_openrouter.mjs")} ${process.env.NODE_OPTIONS || ""}`.trim(),
+  };
+
+  const child = spawn(process.execPath, [WEBHOOK_SCRIPT, "--serve"], { env });
+  let stdout = "";
+  let exited = null;
+  let stderrBuf = "";
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderrBuf += chunk; });
+  child.on("close", (code) => { exited = code; });
+  t.after(() => { if (stderrBuf) console.error("CHILD STDERR:", stderrBuf); });
+  t.after(async () => {
+    if (exited === null) await runCli(["--stop"], env).catch(() => {});
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // already gone
+    }
+  });
+
+  await waitFor(async () => {
+    const response = await fetch(`http://127.0.0.1:${port}/healthz`).catch(() => null);
+    return response?.ok;
+  });
+  // Tick 1: synchronize -> request_review (the fake gh must record the ping).
+  const first = await postDelivery(port, secret, {
+    action: "synchronize",
+    number: 98,
+    pull_request: { number: 98 },
+    repository: { full_name: REPO },
+    sender: { login: "alice" },
+  }, { deliveryId: "e2e-sync-1" });
+  assert.equal(first.status, 202);
+
+  const ghEntries = await waitFor(() => {
+    const entries = readJsonLines(path.join(logDir, "gh.jsonl"));
+    return entries.some((entry) => entry.method === "POST") ? entries : null;
+  }, 10_000);
+  assert.match(
+    ghEntries.filter((entry) => entry.method === "POST")[0].args.join(" "),
+    /code review/
+  );
+
+  await waitFor(() => {
+    const lines = readJsonLines(path.join(dir, "listener.log"));
+    return lines.some((entry) => entry.event === "tick_finished" && entry.ok === true && entry.action === "request_review")
+      ? lines : null;
+  }, 10_000);
+
+  // healthz reflects the Delivery and the armed Expectation.
+  const health = await (await fetch(`http://127.0.0.1:${port}/healthz`)).json();
+  assert.equal(health.last_delivery.accepted, true);
+  assert.equal(health.last_delivery.pr, 98);
+  assert.deepEqual(health.tracked_flows, [`${REPO}#98`]);
+  assert.deepEqual(health.pending_expectations, [`${REPO}#98`]);
+
+  // Tick 2: synchronize -> notify_ready closes the Flow...
+  const second = await postDelivery(port, secret, {
+    action: "synchronize",
+    number: 98,
+    pull_request: { number: 98 },
+    repository: { full_name: REPO },
+    sender: { login: "alice" },
+  }, { deliveryId: "e2e-sync-2" });
+  assert.equal(second.status, 202);
+
+  // ...and with no Flow left the Listener exits on its own (no --stop).
+  await waitFor(() => exited !== null, 15_000);
+  assert.equal(exited, 0, "the Listener exits cleanly after the Flow closes");
+  assert.match(stdout, /listener_idle/);
   assert.equal(readPidFile(env.PR_MONITOR_WEBHOOK_PID_PATH), null);
 });
 

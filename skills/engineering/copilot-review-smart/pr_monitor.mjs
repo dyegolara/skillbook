@@ -671,6 +671,18 @@ function normalizeOwnerNote(note) {
   return { event: "needs-human", message };
 }
 
+/** Next weekly retry slot strictly in the future, anchored at the escalation
+ * moment. Anchoring at the escalation (not the last ping, and never `now`)
+ * keeps the weekly cadence from drifting and never collapses a stale anchor
+ * into an immediate re-arm, which would turn the weekly retry into a tick
+ * storm. A missing anchor (legacy state) waits a full week from now instead. */
+function weeklyAfter(anchorMs, nowMs) {
+  if (anchorMs === null) return nowMs + H(REBASE_STALE_RETRY_HOURS);
+  const week = H(REBASE_STALE_RETRY_HOURS);
+  if (nowMs < anchorMs + week) return anchorMs + week;
+  return anchorMs + (Math.floor((nowMs - anchorMs) / week) + 1) * week;
+}
+
 /** The deadline at which the next look at this PR is worth its cost, per the
  * anti-spam policy. The Listener arms it as an Expectation; `null` means the
  * PR is quiescent and only a Delivery should wake the loop. Derived from the
@@ -684,20 +696,14 @@ function computeNextCheckAt({ ctx, stateEntry, action, pingedAtMs = null, nowMs 
   if (action === "llm_failed") return iso(nowMs + H(1));
 
   // Needs-human keeps its weekly retry (review/fix budget exhausted): revisit
-  // once a week instead of sleeping forever.
+  // once a week from the exhaustion moment, never collapsing to now.
   if (st.review_fix_exhausted_sha === ctx.headSha) {
-    const lastPing = toMs(st.last_ping_ts);
-    return iso(
-      lastPing !== null ? Math.max(lastPing + H(REBASE_STALE_RETRY_HOURS), nowMs) : nowMs + H(REBASE_STALE_RETRY_HOURS)
-    );
+    return iso(weeklyAfter(toMs(st.review_fix_exhausted_ts) ?? toMs(st.last_ping_ts), nowMs));
   }
 
-  // Stuck PR: owner escalated, weekly retry only.
+  // Stuck PR: owner escalated, weekly retry from the escalation moment.
   if (ctx.hasConflicts && st.stuck_notified_sha === ctx.headSha) {
-    const lastPing = toMs(st.last_ping_ts);
-    return iso(
-      lastPing !== null ? Math.max(lastPing + H(REBASE_STALE_RETRY_HOURS), nowMs) : nowMs
-    );
+    return iso(weeklyAfter(toMs(st.stuck_notified_ts) ?? toMs(st.last_ping_ts), nowMs));
   }
 
   // Active work: the branch is likely still being pushed to; re-check when
@@ -721,6 +727,17 @@ function computeNextCheckAt({ ctx, stateEntry, action, pingedAtMs = null, nowMs 
   if (st.review_fix_pending_sha === ctx.headSha && st.review_fix_pending_action) {
     const lastPing = toMs(st.last_ping_ts);
     if (lastPing !== null) return iso(Math.max(lastPing + H(PING_MIN_INTERVAL_HOURS), nowMs));
+  }
+
+  // A conflict-resolution Ping is still inside its same-sha throttle: hold at
+  // ping time + 6h instead of falling through to the request-timestamp arm
+  // (whose Math.max would collapse an older request to now and re-arm an
+  // immediate Fallback tick during the throttle window).
+  if (ctx.hasConflicts && st.rebase_pings_sha === ctx.headSha && (Number(st.rebase_pings) || 0) > 0) {
+    const lastPing = toMs(st.last_ping_ts);
+    if (lastPing !== null && nowMs - lastPing < H(REBASE_PING_MIN_INTERVAL_HOURS)) {
+      return iso(lastPing + H(REBASE_PING_MIN_INTERVAL_HOURS));
+    }
   }
 
   if (ctx.mergeUnknown) return iso(nowMs + H(MERGE_UNKNOWN_RECHECK_HOURS));
@@ -1031,21 +1048,28 @@ export async function runMonitorOnce({
       let finalReason = reason;
       let githubActionPosted = false;
 
+      // One report builder per PR: the loop-constant fields (repo, num, ctx,
+      // state, owner notes, clock) are closed over; branches pass only what
+      // they change.
+      const reportFor = (overrides = {}) => buildPrReport({
+        repo,
+        num,
+        ctx,
+        stateEntry: st,
+        action: finalAction,
+        reason: finalReason,
+        reused: decided.reused,
+        githubActionPosted,
+        pingedAtMs,
+        ownerNotifications: prOwnerNotes,
+        nowMs,
+        ...overrides,
+      });
+
       if (action === "skip_wip" || action === "llm_failed") {
         st.last_head_sha = headSha;
         nextState[skey] = st;
-        pushReport(buildPrReport({
-          repo,
-          num,
-          ctx,
-          stateEntry: st,
-          action: finalAction,
-          reason: finalReason,
-          reused: decided.reused,
-          githubActionPosted,
-          ownerNotifications: prOwnerNotes,
-          nowMs,
-        }));
+        pushReport(reportFor());
         continue;
       }
 
@@ -1056,6 +1080,7 @@ export async function runMonitorOnce({
         delete st.review_fix_pending_response_sig;
         delete st.review_fix_exhausted_sha;
         delete st.review_fix_exhausted_action;
+        delete st.review_fix_exhausted_ts;
         const readyKey = `${repo}:${headSha}`;
         if (!seenReady.has(readyKey)) {
           seenReady.add(readyKey);
@@ -1069,18 +1094,7 @@ export async function runMonitorOnce({
         }
         st.last_head_sha = headSha;
         nextState[skey] = st;
-        pushReport(buildPrReport({
-          repo,
-          num,
-          ctx,
-          stateEntry: st,
-          action: finalAction,
-          reason: finalReason,
-          reused: decided.reused,
-          githubActionPosted,
-          ownerNotifications: prOwnerNotes,
-          nowMs,
-        }));
+        pushReport(reportFor());
         continue;
       }
 
@@ -1125,19 +1139,7 @@ export async function runMonitorOnce({
         }
         st.last_head_sha = headSha;
         nextState[skey] = st;
-        pushReport(buildPrReport({
-          repo,
-          num,
-          ctx,
-          stateEntry: st,
-          action: finalAction,
-          reason: finalReason,
-          reused: decided.reused,
-          githubActionPosted,
-          pingedAtMs,
-          ownerNotifications: prOwnerNotes,
-          nowMs,
-        }));
+        pushReport(reportFor());
         continue;
       }
 
@@ -1156,6 +1158,9 @@ export async function runMonitorOnce({
           finalReason =
             `Review/fix retry budget exhausted (${reviewFixPings} pings on this sha): ` +
             "owner escalated; stop retrying until new commits land.";
+          if (st.review_fix_exhausted_sha !== headSha) {
+            st.review_fix_exhausted_ts = new Date(nowMs).toISOString();
+          }
           st.review_fix_exhausted_sha = headSha;
           st.review_fix_exhausted_action = action;
           st.review_fix_pending_sha = headSha;
@@ -1192,6 +1197,7 @@ export async function runMonitorOnce({
           st.review_fix_pending_response_sig = reviewFixResponseSig;
           delete st.review_fix_exhausted_sha;
           delete st.review_fix_exhausted_action;
+          delete st.review_fix_exhausted_ts;
         } else if (agentWorking) {
           finalAction = "wait";
           finalReason =
@@ -1209,37 +1215,14 @@ export async function runMonitorOnce({
         }
         st.last_head_sha = headSha;
         nextState[skey] = st;
-        pushReport(buildPrReport({
-          repo,
-          num,
-          ctx,
-          stateEntry: st,
-          action: finalAction,
-          reason: finalReason,
-          reused: decided.reused,
-          githubActionPosted,
-          pingedAtMs,
-          ownerNotifications: prOwnerNotes,
-          nowMs,
-        }));
+        pushReport(reportFor());
         continue;
       }
 
       // --- WAIT / unknown action: no action.
       st.last_head_sha = headSha;
       nextState[skey] = st;
-      pushReport(buildPrReport({
-        repo,
-        num,
-        ctx,
-        stateEntry: st,
-        action: finalAction,
-        reason: finalReason,
-        reused: decided.reused,
-        githubActionPosted,
-        ownerNotifications: prOwnerNotes,
-        nowMs,
-      }));
+      pushReport(reportFor());
     }
   }
 
