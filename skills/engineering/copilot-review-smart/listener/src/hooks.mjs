@@ -19,11 +19,12 @@ export function hookPayload({ publicUrl, secret }) {
 
 export function findOurHook(hooks) {
   if (!Array.isArray(hooks)) return null;
-  return hooks.find(
+  const ours = hooks.filter(
     (h) =>
       String(h?.name || "").startsWith(HOOK_NAME) &&
       String(h?.config?.url || "").includes(HOOK_PATH)
-  ) || hooks.find((h) => String(h?.config?.url || "").includes(HOOK_PATH)) || null;
+  );
+  return ours.length === 1 ? ours[0] : null;
 }
 
 function ghHookArgs(payload) {

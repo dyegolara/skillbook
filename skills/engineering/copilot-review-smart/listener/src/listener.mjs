@@ -1,5 +1,13 @@
 import http from "node:http";
-import { DELIVERY_LRU_SIZE, DEFAULT_DEBOUNCE_MS, DEFAULT_PING_WAIT_MS, DEFAULT_TICK_TIMEOUT_MS, TICK_BACKOFF_MS } from "./paths.mjs";
+import {
+  DELIVERY_LRU_SIZE,
+  DEFAULT_DEBOUNCE_MS,
+  DEFAULT_HOST,
+  DEFAULT_PING_WAIT_MS,
+  DEFAULT_PORT,
+  DEFAULT_TICK_TIMEOUT_MS,
+  TICK_BACKOFF_MS,
+} from "./paths.mjs";
 import { iso, keyOf, parseKey, verifySignature, classifyDelivery } from "./signature.mjs";
 import { emptyListenerState } from "./state.mjs";
 import { spawnTick } from "./tick-runner.mjs";

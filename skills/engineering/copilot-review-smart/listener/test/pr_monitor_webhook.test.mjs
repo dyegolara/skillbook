@@ -222,6 +222,16 @@ test("listener refuses to start without secret or watched repos", () => {
   assert.throws(() => createListener({ config: makeConfig({ repos: [] }) }), /PR_MONITOR_REPOS/);
 });
 
+test("listener start uses default host when host is omitted", async () => {
+  const listener = createListener({
+    config: makeConfig({ host: undefined, port: 0 }),
+    tickRunner: makeTickRunner(),
+  });
+  const started = await listener.start();
+  assert.equal(started.host, "127.0.0.1");
+  await listener.stop();
+});
+
 test("verifySignature accepts only the correct HMAC-SHA256", () => {
   const body = '{"hello":"world"}';
   const good = createHmac("sha256", "s3cret").update(body).digest("hex");
@@ -888,6 +898,26 @@ test("setupHook adopts an existing Hook by name when state has no id", async () 
   assert.equal(result.id, 9);
   assert.equal(result.created, false);
   assert.ok(gh.calls.some((args) => /hooks\/9$/.test(args[0]) && args.includes("PATCH")));
+});
+
+test("setupHook does not adopt an unrelated Hook matched only by webhook path", async () => {
+  const state = emptyListenerState();
+  const gh = makeHookGh({
+    hooks: [{ id: 41, name: "other-integration", active: true, config: { url: "https://old/github/webhook" } }],
+    createId: 77,
+  });
+  const result = await setupHook({
+    repo: REPO,
+    publicUrl: "https://new.example.com",
+    secret: "s3cret",
+    state,
+    gh,
+    fetchFn: PROBE_OK,
+  });
+  assert.equal(result.id, 77);
+  assert.equal(result.created, true);
+  assert.ok(gh.calls.some((args) => args.includes("POST") && /hooks$/.test(args[0])), "creates a dedicated Hook");
+  assert.ok(!gh.calls.some((args) => /hooks\/41$/.test(args[0]) && args.includes("PATCH")), "does not mutate the unrelated Hook");
 });
 
 test("setupHook refuses to create a Hook when the public URL does not answer /healthz", async () => {
