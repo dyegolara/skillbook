@@ -101,6 +101,26 @@ test("loop demo stops immediately on needs-human", async () => {
   assert.equal(out.ticks[0].jsonLines[0].terminal, "needs-human");
 });
 
+test("review ping fixture carries the 12h Expectation deadline", async () => {
+  const out = await runFixtureScenario("expectation-after-review-ping");
+  const [prLine, overallLine] = out.jsonLines;
+  assert.equal(prLine.action, "request_review");
+  assert.deepEqual(prLine.owner_notifications, []);
+  const deadline = Date.parse(prLine.next_check_at);
+  const now = Date.now();
+  assert.ok(deadline > now + 11.5 * 3600_000, "deadline should be out in the throttle window");
+  assert.ok(deadline <= now + 12 * 3600_000 + 60_000, "deadline should be about 12h out");
+  assert.equal(typeof overallLine.done, "boolean");
+});
+
+test("notify-ready fixture reports a structured owner notification", async () => {
+  const out = await runFixtureScenario("all-clear-human");
+  const [prLine] = out.jsonLines;
+  assert.equal(prLine.owner_notifications.length, 1);
+  assert.equal(prLine.owner_notifications[0].event, "notify_ready");
+  assert.equal(prLine.next_check_at, null);
+});
+
 test("repo loop live scope includes a PR opened on the next tick", async () => {
   const out = await runFixtureLoop("loop-repo-live-scope");
   assert.equal(out.ticks.length, 2);

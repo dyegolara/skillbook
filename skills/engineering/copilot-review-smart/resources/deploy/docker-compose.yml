@@ -1,0 +1,28 @@
+# Platform-agnostic compose file. Works on any Docker host; ingress is still
+# external (see ingress/). `docker compose up -d` from the repo root with
+# `-f skills/engineering/copilot-review-smart/resources/deploy/docker-compose.yml`.
+services:
+  listener:
+    build:
+      context: ../../../..
+      dockerfile: skills/engineering/copilot-review-smart/resources/deploy/Dockerfile
+    image: copilot-review-smart-listener
+    env_file:
+      - ./.env
+    environment:
+      PR_MONITOR_WEBHOOK_HOST: 0.0.0.0
+      PR_MONITOR_WEBHOOK_PORT: "8787"
+      PR_MONITOR_WEBHOOK_STATE_PATH: /state/listener-state.json
+      PR_MONITOR_WEBHOOK_PID_PATH: /state/listener.pid
+      PR_MONITOR_WEBHOOK_LOG: /state/listener.log
+      PR_MONITOR_STATE_PATH: /state/state.json
+    volumes:
+      - listener-state:/state
+      # Mount the gh config (from `gh auth login`) when not using GH_TOKEN:
+      # - ~/.config/gh:/root/.config/gh:ro
+    ports:
+      - "127.0.0.1:8787:8787"
+    restart: unless-stopped
+
+volumes:
+  listener-state:

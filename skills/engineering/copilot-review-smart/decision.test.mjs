@@ -135,6 +135,54 @@ test("weekly retry resets budget and re-requests rebase", () => {
   assertDecision(out, "request_rebase", /weekly retry/i);
 });
 
+test("weekly retry anchors at the escalation ts, not the last ping", () => {
+  const out = call({
+    ctx: {
+      hasConflicts: true,
+      issueTranscript: [
+        {
+          author: "alice",
+          ts: new Date(BASE_NOW - 7 * 3600_000).toISOString(),
+          body: "@copilot resolve the merge conflicts with origin/main",
+        },
+      ],
+    },
+    stateEntry: {
+      rebase_pings_sha: "abc123",
+      rebase_pings: 3,
+      stuck_notified_sha: "abc123",
+      stuck_notified_ts: new Date(BASE_NOW - 8 * 24 * 3600_000).toISOString(),
+      last_ping_ts: new Date(BASE_NOW - 1 * 3600_000).toISOString(),
+    },
+  });
+  assertDecision(out, "request_rebase", /weekly retry/i);
+});
+
+test("escalation records the escalation timestamp in state", () => {
+  const out = call({
+    ctx: {
+      num: 3,
+      repo: "dyegolara/skillbook",
+      title: "Test PR",
+      hasConflicts: true,
+      issueTranscript: [
+        {
+          author: "alice",
+          ts: new Date(BASE_NOW - 7 * 3600_000).toISOString(),
+          body: "@copilot resolve the merge conflicts with origin/main",
+        },
+      ],
+    },
+    stateEntry: {
+      rebase_pings_sha: "abc123",
+      rebase_pings: 3,
+      last_ping_ts: new Date(BASE_NOW - 2 * 24 * 3600_000).toISOString(),
+    },
+  });
+  assertDecision(out, "wait", /retry budget exhausted/i);
+  assert.match(out.stateEntry.stuck_notified_ts, /^\d{4}-\d{2}-\d{2}T/);
+});
+
 test("mergeability unknown waits", () => {
   const out = call({ ctx: { mergeUnknown: true } });
   assertDecision(out, "wait", /mergeability yet/i);

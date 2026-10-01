@@ -1,0 +1,28 @@
+[Unit]
+Description=copilot-review-smart webhook Listener
+Documentation=https://github.com/dyegolara/skillbook
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust User/WorkingDirectory to the Host. The skill folder contains the
+# scripts; state lives under the user's cache directory.
+User=%i
+WorkingDirectory=/opt/copilot-review-smart
+EnvironmentFile=/etc/copilot-review-smart.env
+# EnvironmentFile carries at least:
+#   PR_MONITOR_REPOS=owner/repo
+#   PR_MONITOR_WEBHOOK_SECRET=...
+#   PR_MONITOR_PUBLIC_URL=https://...
+#   GH_TOKEN=...            (or mount an authenticated gh config)
+#   OPENROUTER_API_KEY=...
+ExecStart=/usr/bin/node pr_monitor_webhook.mjs --serve --keep-alive
+Restart=on-failure
+RestartSec=5
+# Graceful shutdown: SIGTERM stops after the in-flight Tick.
+KillSignal=SIGTERM
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

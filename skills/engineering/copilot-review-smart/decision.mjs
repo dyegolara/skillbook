@@ -76,7 +76,10 @@ export function decideDeterministic({
         "new commits were pushed: wait before retrying.";
     } else if (rebasePings >= rebaseMaxPings) {
       const lastPingMs = toMs(st.last_ping_ts);
-      const weeklyDue = lastPingMs !== null && nowMs - lastPingMs >= H(rebaseStaleRetryHours);
+      // The weekly gate anchors at the escalation moment, not the last ping:
+      // the derivation arms the same anchor so gate and deadline coincide.
+      const weeklyAnchorMs = toMs(st.stuck_notified_ts) ?? lastPingMs;
+      const weeklyDue = weeklyAnchorMs !== null && nowMs - weeklyAnchorMs >= H(rebaseStaleRetryHours);
       if (weeklyDue) {
         st.rebase_pings = 0;
         action = "request_rebase";
@@ -90,12 +93,15 @@ export function decideDeterministic({
           "PR is still conflicted: owner escalated; weekly retry only.";
         if (st.stuck_notified_sha !== ctx.headSha) {
           st.stuck_notified_sha = ctx.headSha;
-          notifications.push(
-            `🔴 PR #${ctx.num} has ${rebasePings} rebase requests to Copilot and is STILL ` +
+          st.stuck_notified_ts = new Date(nowMs).toISOString();
+          notifications.push({
+            event: "escalation",
+            message:
+              `🔴 PR #${ctx.num} has ${rebasePings} rebase requests to Copilot and is STILL ` +
               `conflicted: **${ctx.title}**\n` +
               "Decide next step: manual merge, manual rebase, or close.\n" +
-              `→ http://github.com/${ctx.repo}/pull/${ctx.num}`
-          );
+              `→ http://github.com/${ctx.repo}/pull/${ctx.num}`,
+          });
         }
       }
     } else {
@@ -212,10 +218,12 @@ export async function decideWithLlm({
       `Could not decide with LLM after ${failures} attempts on this head (${e.message || e})`;
     if (st.llm_fail_notified_sha !== ctx.headSha) {
       st.llm_fail_notified_sha = ctx.headSha;
-      notifications.push(
-        `⚠️ ${ctx.repo}#${ctx.num}: could not decide with LLM after ${failures} attempts ` +
-          `on this head (${e.message || e}). Please inspect manually.`
-      );
+      notifications.push({
+        event: "needs-human",
+        message:
+          `⚠️ ${ctx.repo}#${ctx.num}: could not decide with LLM after ${failures} attempts ` +
+          `on this head (${e.message || e}). Please inspect manually.`,
+      });
     }
     return {
       handled: true,
