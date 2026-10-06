@@ -306,6 +306,10 @@ async function commandStop({ flags, env = process.env }) {
     console.log(`stopped pid=${result.pid}`);
     return;
   }
+  if (result.pending) {
+    console.log(`shutdown pending pid=${result.pid}; check --status before starting another Listener`);
+    return;
+  }
   console.log(`not stopped: ${result.reason}`);
   if (result.reason && !/^not running|^stale/.test(result.reason)) process.exitCode = 1;
 }
@@ -369,6 +373,12 @@ async function commandRotateSecret({ env = process.env }) {
     now: Date.now,
   });
   if (updated.length === 0) {
+    if (failed?.length) {
+      console.error(`Rotation failed for ${failed.map(({ repo }) => repo).join(", ")}; no Hooks were updated.`);
+      for (const { repo, error } of failed) console.error(`hook rotation failed repo=${repo}: ${error}`);
+      process.exitCode = 1;
+      return;
+    }
     console.log("no Hooks found to rotate; nothing to do");
     return;
   }

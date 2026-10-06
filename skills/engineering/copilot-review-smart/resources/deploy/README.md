@@ -38,7 +38,10 @@ Optional: `PR_MONITOR_LOGIN`, `PR_MONITOR_DEBOUNCE_MS`,
 
 Docker users: see [`Dockerfile`](./Dockerfile) and
 [`docker-compose.yml`](./docker-compose.yml). Systemd users:
-[`copilot-review-smart-listener.service`](./copilot-review-smart-listener.service).
+[`copilot-review-smart-listener@.service`](./copilot-review-smart-listener@.service).
+Create a dedicated unprivileged service account, then enable the template with
+that account as the instance name (for example,
+`copilot-review-smart-listener@copilot-review-smart.service`).
 
 Cron mode stays available on Hosts with no public URL:
 

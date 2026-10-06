@@ -6,8 +6,8 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# Adjust User/WorkingDirectory to the Host. The skill folder contains the
-# scripts; state lives under the user's cache directory.
+# Install as copilot-review-smart-listener@ACCOUNT.service, where ACCOUNT is
+# an existing unprivileged service account.
 User=%i
 WorkingDirectory=/opt/copilot-review-smart
 EnvironmentFile=/etc/copilot-review-smart.env

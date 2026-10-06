@@ -275,6 +275,14 @@ test("classifyDelivery filters events, repos, PR-ness and Echo", () => {
     login: "own-bot",
   });
   assert.equal(copilot.accepted, true);
+  const caseInsensitiveEcho = classifyDelivery({
+    event: "pull_request",
+    payload: prOpenedPayload(7, REPO, "own-bot"),
+    repos: [REPO],
+    login: "Own-Bot",
+  });
+  assert.equal(caseInsensitiveEcho.accepted, false);
+  assert.equal(caseInsensitiveEcho.echo, true);
 });
 
 test("a valid signed Delivery gets 202 and wakes exactly one Tick scoped to its PR", async (t) => {
@@ -1250,10 +1258,11 @@ test("setupHook creates by absent and binds the id; a URL change updates the sam
   assert.equal(state.hooks[REPO].url, "https://new.example.com/github/webhook");
 });
 
-test("setupHook adopts a matching GitHub web Hook when state has no id", async () => {
+test("setupHook creates a Hook rather than adopting a matching unbound Hook", async () => {
   const state = emptyListenerState();
   const gh = makeHookGh({ hooks: [{
     id: 9,
+    name: "web",
     active: true,
     events: ["pull_request", "pull_request_review", "pull_request_review_comment", "issue_comment"],
     config: { url: "https://old/github/webhook", content_type: "json" },
@@ -1266,15 +1275,22 @@ test("setupHook adopts a matching GitHub web Hook when state has no id", async (
     gh,
     fetchFn: PROBE_OK,
   });
-  assert.equal(result.id, 9);
-  assert.equal(result.created, false);
-  assert.ok(gh.calls.some((args) => /hooks\/9$/.test(args[0]) && args.includes("PATCH")));
+  assert.equal(result.id, 77);
+  assert.equal(result.created, true);
+  assert.ok(gh.calls.some((args) => args.includes("POST") && /hooks$/.test(args[0])));
+  assert.ok(!gh.calls.some((args) => /hooks\/9$/.test(args[0]) && args.includes("PATCH")));
 });
 
-test("setupHook does not adopt an unrelated Hook matched only by webhook path", async () => {
+test("setupHook does not adopt an unrelated Hook matching the full webhook shape", async () => {
   const state = emptyListenerState();
   const gh = makeHookGh({
-    hooks: [{ id: 41, name: "other-integration", active: true, config: { url: "https://old/github/webhook" } }],
+    hooks: [{
+      id: 41,
+      name: "web",
+      active: true,
+      events: ["pull_request", "pull_request_review", "pull_request_review_comment", "issue_comment"],
+      config: { url: "https://old/github/webhook", content_type: "json" },
+    }],
     createId: 77,
   });
   const result = await setupHook({
@@ -1377,22 +1393,23 @@ test("teardownHooks removes by bound id and clears the state; rotateSecret repla
   assert.ok(patch.join(" ").includes(`config[secret]=${secret}`));
 });
 
-test("rotateSecret discovers every Hook before changing any secrets", async () => {
+test("teardown and rotation do not mutate Hooks without a bound id", async () => {
   const gh = async ([endpoint, ...args]) => {
     gh.calls.push([endpoint, ...args]);
     if (endpoint === `repos/${REPO}/hooks?per_page=100`) {
       return [{ id: 77, name: "web", config: { url: "https://example.com/github/webhook" } }];
     }
-    if (endpoint === "repos/other/repo/hooks?per_page=100") throw new Error("GitHub API unavailable");
     return {};
   };
   gh.calls = [];
 
-  await assert.rejects(
-    rotateSecret({ repos: [REPO, "other/repo"], gh, state: emptyListenerState() }),
-    /GitHub API unavailable/
-  );
+  const state = emptyListenerState();
+  assert.deepEqual(await teardownHooks({ repos: [REPO], gh, state }), []);
+  const result = await rotateSecret({ repos: [REPO], gh, state });
+  assert.deepEqual(result.updated, []);
+  assert.deepEqual(result.failed, []);
   assert.ok(!gh.calls.some(([endpoint, ...args]) => endpoint.endsWith("/hooks/77") && args.includes("PATCH")));
+  assert.ok(!gh.calls.some(([endpoint, ...args]) => endpoint.endsWith("/hooks/77") && args.includes("DELETE")));
 });
 
 test("loadListenerState initializes only when the state file is absent", () => {
@@ -1752,14 +1769,15 @@ test("CLI prints the replacement secret and recovery steps after partial rotatio
   const dir = makeRuntimeDir();
   const ghPath = path.join(dir, "gh");
   fs.writeFileSync(ghPath, `#!/bin/sh
-case "$*" in
-  *"repos/dyegolara/skillbook/hooks?per_page=100"*) printf '[{"id":77,"events":["pull_request","pull_request_review","pull_request_review_comment","issue_comment"],"config":{"url":"https://x/github/webhook","content_type":"json"}}]\\n' ;;
-  *"repos/other/repo/hooks?per_page=100"*) printf '[{"id":88,"events":["pull_request","pull_request_review","pull_request_review_comment","issue_comment"],"config":{"url":"https://y/github/webhook","content_type":"json"}}]\\n' ;;
-  *"repos/other/repo/hooks/88"*) echo "HTTP 500" >&2; exit 1 ;;
-  *) exit 0 ;;
-esac
+case "$*" in *"repos/other/repo/hooks/88"*) echo "HTTP 500" >&2; exit 1 ;; *) exit 0 ;; esac
 `);
   fs.chmodSync(ghPath, 0o755);
+  const statePath = path.join(dir, "state.json");
+  fs.writeFileSync(statePath, JSON.stringify({
+    version: 1,
+    expectations: {},
+    hooks: { [REPO]: { id: 77 }, "other/repo": { id: 88 } },
+  }));
   const names = [
     "PATH",
     "PR_MONITOR_REPOS",
@@ -1771,7 +1789,7 @@ esac
   process.env.PATH = `${dir}${path.delimiter}${previous.PATH || ""}`;
   process.env.PR_MONITOR_REPOS = `${REPO},other/repo`;
   delete process.env.PR_MONITOR_WEBHOOK_SECRET;
-  process.env.PR_MONITOR_WEBHOOK_STATE_PATH = path.join(dir, "state.json");
+  process.env.PR_MONITOR_WEBHOOK_STATE_PATH = statePath;
   const stdout = [];
   const stderr = [];
   const originalLog = console.log;
@@ -1813,6 +1831,19 @@ test("a live pid file blocks a second instance; a stale one does not", async () 
   assert.equal(readPidFile(pidPath), process.pid);
   removePidFile(pidPath, process.pid);
   assert.equal(readPidFile(pidPath), null);
+});
+
+test("stopListenerProcess reports a graceful shutdown as pending after its wait budget", async (t) => {
+  const dir = makeRuntimeDir();
+  const pidPath = path.join(dir, "listener.pid");
+  const child = spawn(process.execPath, ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"]);
+  t.after(() => child.kill("SIGKILL"));
+  fs.writeFileSync(pidPath, `${child.pid}\n`);
+  const result = await stopListenerProcess({ pidPath, timeoutMs: 10 });
+  assert.equal(result.stopped, false);
+  assert.equal(result.pending, true);
+  assert.equal(result.pid, child.pid);
+  assert.match(result.reason, /still shutting down/);
 });
 
 test("simultaneous Listener starts use an exclusive pid-file claim", async (t) => {
@@ -1917,6 +1948,32 @@ test("--rotate-secret does not require the old webhook secret", async () => {
   assert.match(result.stdout, /^PR_MONITOR_WEBHOOK_SECRET=[a-f0-9]{64}$/m);
 });
 
+test("--rotate-secret reports all Hook update failures and exits unsuccessfully", async () => {
+  const dir = makeRuntimeDir();
+  const binDir = path.join(dir, "bin");
+  fs.mkdirSync(binDir);
+  const ghPath = path.join(binDir, "gh");
+  fs.writeFileSync(ghPath, "#!/bin/sh\necho 'HTTP 500' >&2\nexit 1\n");
+  fs.chmodSync(ghPath, 0o755);
+  const statePath = path.join(dir, "listener-state.json");
+  fs.writeFileSync(statePath, JSON.stringify({
+    version: 1,
+    expectations: {},
+    hooks: { [REPO]: { id: 77 } },
+  }));
+  const result = await runCli(["--rotate-secret"], {
+    ...process.env,
+    PATH: `${binDir}${path.delimiter}${process.env.PATH || ""}`,
+    PR_MONITOR_REPOS: REPO,
+    PR_MONITOR_WEBHOOK_STATE_PATH: statePath,
+  });
+  assert.equal(result.code, 1);
+  assert.match(result.stderr, /Rotation failed.*no Hooks were updated/);
+  assert.match(result.stderr, /hook rotation failed repo=dyegolara\/skillbook/);
+  assert.doesNotMatch(result.stdout, /no Hooks found/);
+  assert.doesNotMatch(result.stdout, /PR_MONITOR_WEBHOOK_SECRET=/);
+});
+
 test("shutdown aborts tunnel discovery before Hook setup can continue", async () => {
   const dir = makeRuntimeDir();
   const binDir = path.join(dir, "bin");
@@ -2010,6 +2067,22 @@ test("cloudflared tunnel discovers the public URL from its output and is killed 
   assert.equal(resolved.url, "https://brave-otter-123.trycloudflare.com");
   resolved.stop();
   assert.deepEqual(child.killed, ["SIGTERM"]);
+});
+
+test("cloudflared discovers a URL split across interleaved output chunks", async () => {
+  const child = makeFakeChild();
+  const tunnelPromise = startTunnel({
+    kind: "cloudflared",
+    port: 8787,
+    spawnFn: () => child,
+    timeoutMs: 1_000,
+  });
+  child.emitStdout("https://split-host-");
+  child.emitStderr("cloudflared diagnostic output");
+  child.emitStdout("name.trycloudflare.com");
+  const tunnel = await tunnelPromise;
+  assert.equal(tunnel.url, "https://split-host-name.trycloudflare.com");
+  tunnel.stop();
 });
 
 test("cloudflared that exits before publishing a URL fails fast", async () => {
@@ -2140,8 +2213,9 @@ test("runNotifyCmd waits for notification process-tree cleanup after timeout", a
   assert.equal(spawnOptions.detached, process.platform !== "win32");
 });
 
-test("runNotifyCmd handles asynchronous stdin EPIPE without throwing", async () => {
+test("runNotifyCmd waits for close after stdin EPIPE and reports a zero-exit failure", async () => {
   let stdinError;
+  let close;
   const child = {
     stdin: {
       on(event, handler) { if (event === "error") stdinError = handler; },
@@ -2149,10 +2223,20 @@ test("runNotifyCmd handles asynchronous stdin EPIPE without throwing", async () 
       end() {},
     },
     stderr: { on() {} },
-    on() { return this; },
+    on(event, handler) { if (event === "close") close = handler; return this; },
     kill() {},
   };
-  const result = await runNotifyCmd({ cmd: "notify", note: {}, spawnFn: () => child });
+  let settled = false;
+  const resultPromise = runNotifyCmd({ cmd: "notify", note: {}, spawnFn: () => child }).then((result) => {
+    settled = true;
+    return result;
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  stdinError(new Error("EPIPE"));
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false, "stdin errors alone must not finish the notification process");
+  close(0);
+  const result = await resultPromise;
   assert.equal(result.ok, false);
   assert.match(result.error, /EPIPE/);
 });

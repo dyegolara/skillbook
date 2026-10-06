@@ -88,11 +88,6 @@ export async function setupHook({
   let id = state.hooks?.[repo]?.id || null;
   let created = false;
   const payload = hookPayload({ publicUrl, secret });
-  const discover = async () => {
-    const hooks = await gh([`repos/${repo}/hooks?per_page=100`]);
-    const found = findOurHook(hooks);
-    id = found?.id || null;
-  };
   if (id) {
     try {
       await gh([`repos/${repo}/hooks/${id}`, "-X", "PATCH", ...ghHookArgs(payload)]);
@@ -100,17 +95,6 @@ export async function setupHook({
       if (!/\b404\b/.test(String(error?.message || error))) throw error;
       id = null;
       if (state.hooks?.[repo]) delete state.hooks[repo];
-    }
-  }
-  if (!id) {
-    await discover();
-  }
-  if (id && !state.hooks?.[repo]?.id) {
-    try {
-      await gh([`repos/${repo}/hooks/${id}`, "-X", "PATCH", ...ghHookArgs(payload)]);
-    } catch (error) {
-      if (!/\b404\b/.test(String(error?.message || error))) throw error;
-      id = null;
     }
   }
   if (!id) {
@@ -169,13 +153,6 @@ export async function teardownHooks({ repos, gh = runGh, state = emptyListenerSt
   const removed = [];
   for (const repo of repos) {
     let id = state.hooks?.[repo]?.id || null;
-    if (!id) {
-      try {
-        id = findOurHook(await gh([`repos/${repo}/hooks?per_page=100`]))?.id || null;
-      } catch {
-        id = null;
-      }
-    }
     if (!id) continue;
     await gh([`repos/${repo}/hooks/${id}`, "-X", "DELETE"]);
     removed.push({ repo, id });
@@ -200,9 +177,6 @@ export async function rotateSecret({
   const targets = [];
   for (const repo of repos) {
     let id = state.hooks?.[repo]?.id || null;
-    if (!id) {
-      id = findOurHook(await gh([`repos/${repo}/hooks?per_page=100`]))?.id || null;
-    }
     if (id) targets.push({ repo, id });
   }
 

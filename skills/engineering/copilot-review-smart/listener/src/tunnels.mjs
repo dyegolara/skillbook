@@ -79,12 +79,18 @@ export function startTunnel({
     }
 
     if (kind === "cloudflared") {
-      const onChunk = (chunk) => {
-        const match = String(chunk).match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
+      let stdoutTail = "";
+      let stderrTail = "";
+      const onChunk = (stream) => (chunk) => {
+        const tail = stream === "stdout" ? stdoutTail : stderrTail;
+        const next = `${tail}${String(chunk)}`.slice(-512);
+        if (stream === "stdout") stdoutTail = next;
+        else stderrTail = next;
+        const match = `${stdoutTail}\n${stderrTail}`.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/);
         if (match) succeed(match[0]);
       };
-      child.stderr?.on("data", onChunk);
-      child.stdout?.on("data", onChunk);
+      child.stderr?.on("data", onChunk("stderr"));
+      child.stdout?.on("data", onChunk("stdout"));
     } else {
       let attempts = 0;
       const poll = async () => {

@@ -14,6 +14,7 @@ export function runNotifyCmd({
     let child;
     let settled = false;
     let timedOut = false;
+    let stdinError = null;
     let treeTermination = null;
     const finish = (result) => {
       if (settled) return;
@@ -55,14 +56,19 @@ export function runNotifyCmd({
         void treeTermination?.then(() => finish(timeoutResult));
         return;
       }
-      finish({ ok: code === 0, code, stderr: stderr.slice(0, 500) });
+      finish({
+        ok: code === 0 && !stdinError,
+        code,
+        stderr: stderr.slice(0, 500),
+        ...(stdinError ? { error: stdinError } : {}),
+      });
     });
-    child.stdin?.on("error", (e) => finish({ ok: false, error: String(e?.message || e) }));
+    child.stdin?.on("error", (e) => { stdinError = String(e?.message || e); });
     try {
       child.stdin.write(JSON.stringify(note));
       child.stdin.end();
     } catch (e) {
-      finish({ ok: false, error: String(e?.message || e) });
+      stdinError = String(e?.message || e);
     }
   });
 }
@@ -101,6 +107,7 @@ export function createOwnerNotifier({ notifyCmd, notifier, now, logger }) {
                 event: "owner_notification_failed",
                 notification_event: note.event,
                 code: result?.code ?? null,
+                error: result?.error ?? null,
               });
             }
           })

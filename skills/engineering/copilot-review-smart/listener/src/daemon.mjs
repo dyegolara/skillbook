@@ -131,7 +131,7 @@ export async function stopListenerProcess({
     }
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
-  return { stopped: false, pid, reason: "process did not exit after SIGTERM" };
+  return { stopped: false, pending: true, pid, reason: "process is still shutting down after SIGTERM" };
 }
 
 /** Detach a `--serve` child, wait until it answers /healthz, and report. */
