@@ -10,6 +10,7 @@ export function startTunnel({
   retryMs = 250,
   ngrokApiUrl = process.env.PR_MONITOR_NGROK_API || "http://127.0.0.1:4040",
   logger = () => {},
+  signal = null,
 } = {}) {
   if (!["ngrok", "cloudflared"].includes(kind)) {
     return Promise.reject(new Error(`Unknown tunnel "${kind}": use ngrok or cloudflared.`));
@@ -28,6 +29,7 @@ export function startTunnel({
       if (timer) clearTimeout(timer);
       if (pollTimer) clearTimeout(pollTimer);
       timer = pollTimer = null;
+      signal?.removeEventListener("abort", onAbort);
     };
     const fail = (message) => {
       if (settled) return;
@@ -40,6 +42,7 @@ export function startTunnel({
       }
       reject(new Error(message));
     };
+    const onAbort = () => fail(`starting ${kind} tunnel was aborted`);
     const succeed = (url) => {
       if (settled) return;
       settled = true;
@@ -57,10 +60,15 @@ export function startTunnel({
         },
       });
     };
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
     try {
       child = spawnFn(kind, args, { stdio: ["ignore", "pipe", "pipe"] });
     } catch (e) {
-      reject(new Error(`could not start ${kind}: ${e?.message || e}`));
+      fail(`could not start ${kind}: ${e?.message || e}`);
       return;
     }
     child.on?.("error", (e) => fail(`could not start ${kind}: ${e?.message || e}`));
@@ -90,6 +98,7 @@ export function startTunnel({
         } catch {
           // ngrok API not up yet
         }
+        if (settled) return;
         pollTimer = setTimeout(poll, retryMs);
       };
       poll();

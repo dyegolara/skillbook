@@ -23,6 +23,8 @@ services:
     ports:
       - "127.0.0.1:8787:8787"
     restart: unless-stopped
+    # Above the default five-minute Tick timeout; increase if that timeout is raised.
+    stop_grace_period: 6m
 
 volumes:
   listener-state:

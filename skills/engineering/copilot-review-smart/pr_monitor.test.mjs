@@ -923,6 +923,49 @@ test("a stale pending review ping with new feedback waits for the remaining revi
   assert.notEqual(prLine.next_check_at, new Date(now).toISOString());
 });
 
+test("a blocked review/fix action retains the remaining same-head ping throttle", async () => {
+  const now = Date.parse("2026-09-08T00:00:00.000Z");
+  const out = await runMonitorOnce({
+    repos: [REPO],
+    state: {
+      [`${REPO}#7`]: {
+        _action: "request_fix",
+        last_ping_sha: "feedback123",
+        last_ping_ts: new Date(now - 1 * 3600_000).toISOString(),
+        review_fix_pending_sha: "feedback123",
+        review_fix_pending_action: "request_review",
+        review_fix_pending_response_sig: "signature-before-feedback",
+      },
+    },
+    nowMs: now,
+    dryRun: true,
+    emitJsonReport: true,
+    runGhFn: repoScopeGh("feedback123"),
+    collectPrStateFn: async () => makeCtx({
+      headSha: "feedback123",
+      latestReviewTs: now - 30 * 60_000,
+      reviewTranscript: [{
+        author: "reviewer",
+        ts: new Date(now - 30 * 60_000).toISOString(),
+        state: "COMMENTED",
+        body: "Please address this feedback.",
+      }],
+    }),
+    decideFn: async ({ stateEntry }) => ({
+      handled: true,
+      action: "request_fix",
+      reason: "new feedback needs a fix",
+      reused: false,
+      stateEntry: { ...stateEntry, _action: "request_fix" },
+      notifications: [],
+    }),
+  });
+
+  const prLine = prJsonLine(out);
+  assert.equal(prLine.action, "wait");
+  assert.equal(prLine.next_check_at, new Date(now + 11 * 3600_000).toISOString());
+});
+
 test("an old weekly escalation anchor does not override the fresh rebase-ping throttle", async () => {
   const now = Date.parse("2026-09-08T00:00:00.000Z");
   const out = await runMonitorOnce({
@@ -1204,6 +1247,52 @@ test("recurring LLM failure arms +1h and reports a needs-human owner notificatio
   assert.equal(prLine.next_check_at, new Date(now + 3600_000).toISOString());
   assert.equal(prLine.owner_notifications.length, 1);
   assert.equal(prLine.owner_notifications[0].event, "needs-human");
+});
+
+test("transient LLM failures schedule another Tick before terminal escalation", async () => {
+  const now = Date.parse("2026-09-08T00:00:00.000Z");
+  const out = await runMonitorOnce({
+    repos: [REPO],
+    state: {},
+    nowMs: now,
+    dryRun: true,
+    emitJsonReport: true,
+    runGhFn: repoScopeGh("llmfail123"),
+    collectPrStateFn: async () => makeCtx({ headSha: "llmfail123" }),
+    llmDecider: async () => { throw new Error("simulated temporary outage"); },
+  });
+
+  const prLine = prJsonLine(out);
+  assert.equal(prLine.action, "wait");
+  assert.equal(prLine.next_check_at, new Date(now + 3600_000).toISOString());
+  assert.deepEqual(prLine.owner_notifications, []);
+});
+
+test("failed PR-state reads are explicitly marked in the JSON report", async () => {
+  const errors = [];
+  const originalError = console.error;
+  console.error = (...args) => errors.push(args.join(" "));
+  try {
+    const out = await runMonitorOnce({
+      repos: [REPO],
+      state: {},
+      nowMs: Date.parse("2026-09-08T00:00:00.000Z"),
+      dryRun: true,
+      emitJsonReport: true,
+      runGhFn: async (args) => {
+        if (args[0] === `repos/${REPO}/pulls?state=open&per_page=100&page=1`) return [makePr("readfail123")];
+        if (args[0] === `repos/${REPO}/pulls/7/reviews`) return [];
+        if (args[0] === `repos/${REPO}/pulls/7/comments`) throw new Error("API unavailable");
+        throw new Error(`unexpected gh call: ${args[0]}`);
+      },
+    });
+    const prLine = prJsonLine(out);
+    assert.equal(prLine.fetch_failed, true);
+    assert.equal(prLine.next_check_at, null);
+    assert.equal(out.overallReport.scope_fetch_failures, 1);
+  } finally {
+    console.error = originalError;
+  }
 });
 
 test("notify_ready reports next_check_at null with a structured owner notification", async () => {

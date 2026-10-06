@@ -156,8 +156,8 @@ export async function startDaemon({
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     const health = await probeHealthz({ host, port, timeoutMs: 500 });
-    if (health.healthy) {
-      const pid = readPidFile(pidPath) || child.pid;
+    const pid = readPidFile(pidPath);
+    if (health.healthy && pid === child.pid && health.body?.pid === child.pid) {
       return { started: true, pid, logPath, health: health.body };
     }
     if (child.exitCode !== null && child.exitCode !== undefined) break;

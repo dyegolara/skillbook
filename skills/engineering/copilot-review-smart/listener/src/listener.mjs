@@ -98,17 +98,29 @@ export function createListener({
   // --- Expectations ---------------------------------------------------------
 
   function armExpectation(key, deadlineMs, backoffIndex = 0, origin = "tick") {
-    if (stopping) return;
     cancelTimer(expectations, key);
     const deadline = Number(deadlineMs);
     if (!Number.isFinite(deadline)) return;
     const delay = Math.max(0, deadline - now());
+    const { repo, num } = parseKey(key);
+    state.expectations[key] = { repo, num, deadline_ms: deadline, backoff_index: backoffIndex, origin };
+    if (stopping) {
+      persist();
+      logger({
+        event: "expectation_armed",
+        key,
+        deadline_at: iso(deadline),
+        delay_ms: delay,
+        backoff_index: backoffIndex,
+        origin,
+        timer_suppressed: true,
+      });
+      return;
+    }
     let entry;
     const timer = clock.setTimeout(() => fireFallback(key, entry), delay);
     entry = { timer, deadlineMs: deadline, backoffIndex };
     expectations.set(key, entry);
-    const { repo, num } = parseKey(key);
-    state.expectations[key] = { repo, num, deadline_ms: deadline, backoff_index: backoffIndex, origin };
     persist();
     logger({
       event: "expectation_armed",
@@ -428,6 +440,11 @@ export function createListener({
         if (!report.repo || !report.pr) continue;
         const key = keyOf(report.repo, report.pr);
         touched.add(key);
+        if (report.fetch_failed) {
+          trackFlow(key);
+          armTickBackoff(key);
+          continue;
+        }
         await ownerNotifier.dispatch(report.owner_notifications, {
           repo: report.repo,
           pr: report.pr,
@@ -471,6 +488,8 @@ export function createListener({
   function restoreExpectations(touched = new Set(), { authoritative = false } = {}) {
     for (const [key, entry] of Object.entries(state.expectations)) {
       if (touched.has(key) || closedFlows.has(key)) continue;
+      const { repo, num } = parseKey(key);
+      if (!repos.includes(repo)) continue;
       if (authoritative) {
         closeFlow(key, "PR is no longer open (reconciled by the Startup tick)");
         continue;
@@ -479,7 +498,6 @@ export function createListener({
       if (!Number.isFinite(deadlineMs)) continue;
       const overdue = deadlineMs <= now();
       logger({ event: "expectation_restored", key, deadline_at: iso(deadlineMs), overdue });
-      const { repo, num } = entry.repo && entry.num ? entry : parseKey(key);
       trackFlow(keyOf(repo, num));
       tickFailures.set(key, Number(entry.backoff_index) || 0);
       armExpectation(key, overdue ? now() : deadlineMs, Number(entry.backoff_index) || 0, "restored");

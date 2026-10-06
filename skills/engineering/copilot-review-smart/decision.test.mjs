@@ -159,6 +159,33 @@ test("weekly retry anchors at the escalation ts, not the last ping", () => {
   assertDecision(out, "request_rebase", /weekly retry/i);
 });
 
+test("an escalation timestamp from a different head does not grant an early weekly retry", () => {
+  const out = call({
+    ctx: {
+      headSha: "head-b",
+      hasConflicts: true,
+      issueTranscript: [
+        {
+          author: "alice",
+          ts: new Date(BASE_NOW - 7 * 3600_000).toISOString(),
+          body: "@copilot resolve the merge conflicts with origin/main",
+        },
+      ],
+    },
+    stateEntry: {
+      rebase_pings_sha: "head-b",
+      rebase_pings: 3,
+      stuck_notified_sha: "head-a",
+      stuck_notified_ts: new Date(BASE_NOW - 8 * 24 * 3600_000).toISOString(),
+      last_ping_ts: new Date(BASE_NOW - 1 * 3600_000).toISOString(),
+    },
+  });
+  assertDecision(out, "wait", /retry budget exhausted/i);
+  assert.equal(out.stateEntry.stuck_notified_sha, "head-b");
+  assert.equal(out.stateEntry.stuck_notified_ts, new Date(BASE_NOW).toISOString());
+  assert.equal(out.notifications.length, 1);
+});
+
 test("escalation records the escalation timestamp in state", () => {
   const out = call({
     ctx: {

@@ -63,6 +63,7 @@ const REBASE_STALE_RETRY_HOURS = 24 * 7;
 // exempt — it never touches GitHub.)
 const ACTIVE_WORK_QUIET_HOURS = 3;
 const REVIEW_FIX_MAX_PINGS = 3;
+const LLM_RETRY_HOURS = 1;
 // Mergeability is computed asynchronously by GitHub and has no webhook
 // event; re-check once an hour while it is unknown.
 const MERGE_UNKNOWN_RECHECK_HOURS = 1;
@@ -700,7 +701,15 @@ function computeNextCheckAt({
   const iso = (ms) => new Date(ms).toISOString();
 
   if (action === "notify_ready" || action === "skip_wip") return null;
-  if (action === "llm_failed") return iso(nowMs + H(1));
+  if (action === "llm_failed") return iso(nowMs + H(LLM_RETRY_HOURS));
+  if (
+    action === "wait" &&
+    st.llm_failures_sha === ctx.headSha &&
+    Number(st.llm_failures) > 0 &&
+    Number(st.llm_failures) < 3
+  ) {
+    return iso(nowMs + H(LLM_RETRY_HOURS));
+  }
 
   // Needs-human keeps its weekly retry (review/fix budget exhausted): revisit
   // once a week from the exhaustion moment, never collapsing to now.
@@ -758,6 +767,19 @@ function computeNextCheckAt({
 
   if (ctx.mergeUnknown) return iso(nowMs + H(MERGE_UNKNOWN_RECHECK_HOURS));
 
+  if (
+    action === "wait" &&
+    ["request_fix", "request_review"].includes(st._action) &&
+    st.review_fix_pending_sha === ctx.headSha &&
+    ["request_fix", "request_review"].includes(st.review_fix_pending_action) &&
+    st.last_ping_sha === ctx.headSha
+  ) {
+    const lastPing = toMs(st.last_ping_ts);
+    if (lastPing !== null && nowMs < lastPing + H(PING_MIN_INTERVAL_HOURS)) {
+      return iso(lastPing + H(PING_MIN_INTERVAL_HOURS));
+    }
+  }
+
   if (ctx.hasConflicts) {
     const reqTs = newestRebaseRequestTsMs(ctx.issueTranscript);
     if (reqTs !== null) return iso(Math.max(reqTs + H(REBASE_RETRY_HOURS), nowMs));
@@ -783,6 +805,7 @@ function buildPrReport({
   pingedAtMs = null,
   reviewFixResponseSig = null,
   ownerNotifications = [],
+  fetchFailed = false,
   nowMs,
 }) {
   return {
@@ -799,6 +822,7 @@ function buildPrReport({
       ? computeNextCheckAt({ ctx, stateEntry, action, pingedAtMs, reviewFixResponseSig, nowMs })
       : null,
     owner_notifications: ownerNotifications,
+    ...(fetchFailed ? { fetch_failed: true } : {}),
     ...classifyTerminalState({ ctx: ctx || {}, action, reason, stateEntry }),
   };
 }
@@ -953,6 +977,7 @@ export async function runMonitorOnce({
           action: "wait",
           reason: error.message,
           nowMs,
+          fetchFailed: true,
         }));
         continue;
       }

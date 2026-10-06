@@ -439,7 +439,10 @@ test("spawnTick accepts clean empty repo scope and rejects failed scoped API rea
 test("spawnTick kills a child that exceeds PR_MONITOR_TICK_TIMEOUT and marks it failed", async () => {
   const clock = makeClock();
   const killed = [];
+  const treeKills = [];
+  let spawnOptions;
   const fakeChild = {
+    pid: 123,
     stdout: { on: () => {} },
     stderr: { on: () => {} },
     on(event, handler) {
@@ -456,13 +459,22 @@ test("spawnTick kills a child that exceeds PR_MONITOR_TICK_TIMEOUT and marks it 
     num: 7,
     timeoutMs: 1000,
     clock,
-    spawnFn: () => fakeChild,
+    spawnFn: (_node, _args, options) => {
+      spawnOptions = options;
+      return fakeChild;
+    },
+    killProcessTree: (child, signal) => {
+      treeKills.push([child, signal]);
+      child.kill(signal);
+    },
   });
   clock.advance(1000);
   const result = await resultPromise;
   assert.equal(result.ok, false);
   assert.equal(result.timedOut, true);
   assert.deepEqual(killed, ["SIGKILL"]);
+  assert.deepEqual(treeKills, [[fakeChild, "SIGKILL"]]);
+  assert.equal(spawnOptions.detached, process.platform !== "win32");
 });
 
 // ---------------------------------------------------------------------------
@@ -792,6 +804,92 @@ test("a failed Startup tick is logged and does not prevent serving", async (t) =
   const health = await (await fetch(`http://127.0.0.1:${listener.port}/healthz`)).json();
   assert.equal(health.status, "ok");
   assert.equal(exits.length, 0, "a failed startup must not trigger an idle exit");
+});
+
+test("startup retries PRs whose state reads failed instead of dropping their Expectations", async (t) => {
+  const clock = makeClock();
+  const state = emptyListenerState();
+  state.expectations[`${REPO}#7`] = {
+    repo: REPO,
+    num: 7,
+    deadline_ms: clock.now() + 3_600_000,
+    backoff_index: 0,
+  };
+  const listener = createListener({
+    config: makeConfig({ startupTick: true }),
+    now: clock.now,
+    clock,
+    state,
+    tickRunner: makeTickRunner([{
+      ok: true,
+      reports: [prReport(7, { fetch_failed: true, next_check_at: null })],
+      overall: { scope_fetch_failures: 1 },
+    }]),
+  });
+  t.after(() => listener.stop());
+
+  await listener.start();
+  assert.deepEqual(listener.trackedFlows(), [`${REPO}#7`]);
+  assert.deepEqual(listener.pendingExpectations(), [`${REPO}#7`]);
+  assert.equal(state.expectations[`${REPO}#7`].deadline_ms, clock.now() + 60_000);
+  assert.equal(state.expectations[`${REPO}#7`].origin, "tick_failure");
+});
+
+test("startup skips persisted Expectations outside the watched repository scope", async (t) => {
+  const clock = makeClock();
+  const state = emptyListenerState();
+  state.expectations["other/repo#7"] = {
+    repo: "other/repo",
+    num: 7,
+    deadline_ms: clock.now() + 60_000,
+    backoff_index: 0,
+  };
+  const listener = createListener({
+    config: makeConfig({ startupTick: true }),
+    now: clock.now,
+    clock,
+    state,
+    tickRunner: makeTickRunner([{
+      ok: true,
+      reports: [],
+      overall: { scope_fetch_failures: 0 },
+    }]),
+  });
+  t.after(() => listener.stop());
+
+  await listener.start();
+  assert.deepEqual(listener.trackedFlows(), []);
+  assert.deepEqual(listener.pendingExpectations(), []);
+  assert.ok(state.expectations["other/repo#7"], "out-of-scope persisted state remains untouched");
+});
+
+test("stop persists an in-flight Tick deadline without leaving a live timer", async () => {
+  const clock = makeClock();
+  let finishTick;
+  const futureDeadline = clock.now() + 3_600_000;
+  const state = emptyListenerState();
+  const listener = createListener({
+    config: makeConfig(),
+    now: clock.now,
+    clock,
+    state,
+    tickRunner: () => new Promise((resolve) => { finishTick = resolve; }),
+  });
+  await listener.start();
+  listener.ingest({ event: "pull_request", payload: prOpenedPayload(7), verify: false });
+  clock.advance(30_000);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const stopping = listener.stop();
+  finishTick({
+    ok: true,
+    reports: [prReport(7, { next_check_at: new Date(futureDeadline).toISOString() })],
+    overall: {},
+  });
+  await stopping;
+
+  assert.equal(state.expectations[`${REPO}#7`].deadline_ms, futureDeadline);
+  assert.equal(clock.pending(), 0);
 });
 
 test("stop() is not held open by a keep-alive client connection", async (t) => {
@@ -1211,6 +1309,24 @@ test("teardownHooks removes by bound id and clears the state; rotateSecret repla
   assert.ok(patch.join(" ").includes(`config[secret]=${secret}`));
 });
 
+test("rotateSecret discovers every Hook before changing any secrets", async () => {
+  const gh = async ([endpoint, ...args]) => {
+    gh.calls.push([endpoint, ...args]);
+    if (endpoint === `repos/${REPO}/hooks?per_page=100`) {
+      return [{ id: 77, name: "web", config: { url: "https://example.com/github/webhook" } }];
+    }
+    if (endpoint === "repos/other/repo/hooks?per_page=100") throw new Error("GitHub API unavailable");
+    return {};
+  };
+  gh.calls = [];
+
+  await assert.rejects(
+    rotateSecret({ repos: [REPO, "other/repo"], gh, state: emptyListenerState() }),
+    /GitHub API unavailable/
+  );
+  assert.ok(!gh.calls.some(([endpoint, ...args]) => endpoint.endsWith("/hooks/77") && args.includes("PATCH")));
+});
+
 test("--serve --setup-hooks verifies success only after GitHub's ping Delivery arrives", async (t) => {
   const clock = makeClock();
   const listener = createListener({
@@ -1540,11 +1656,98 @@ test("--daemon detaches, --status reports healthy, --stop shuts it down graceful
   assert.equal(status.code, 0, status.stderr);
   assert.match(status.stdout, /running pid=\d+ healthy=true/);
 
+  const duplicate = await runCli(["--daemon"], env);
+  assert.notEqual(duplicate.code, 0, "a second daemon must not claim the existing Listener as its own");
+
   const stop = await runCli(["--stop"], env);
   assert.equal(stop.code, 0, stop.stderr);
   assert.match(stop.stdout, /stopped pid=\d+/);
   await waitFor(() => readPidFile(env.PR_MONITOR_WEBHOOK_PID_PATH) === null);
   assert.ok(fs.existsSync(env.PR_MONITOR_WEBHOOK_LOG));
+});
+
+test("--rotate-secret does not require the old webhook secret", async () => {
+  const dir = makeRuntimeDir();
+  const binDir = path.join(dir, "bin");
+  fs.mkdirSync(binDir);
+  const ghPath = path.join(binDir, "gh");
+  fs.writeFileSync(ghPath, "#!/bin/sh\nprintf '{}'\n");
+  fs.chmodSync(ghPath, 0o755);
+  const statePath = path.join(dir, "listener-state.json");
+  fs.writeFileSync(statePath, JSON.stringify({
+    version: 1,
+    expectations: {},
+    hooks: { [REPO]: { id: 77 } },
+  }));
+  const env = {
+    ...process.env,
+    PATH: `${binDir}${path.delimiter}${process.env.PATH || ""}`,
+    PR_MONITOR_REPOS: REPO,
+    PR_MONITOR_WEBHOOK_STATE_PATH: statePath,
+  };
+  delete env.PR_MONITOR_WEBHOOK_SECRET;
+
+  const result = await runCli(["--rotate-secret"], env);
+  assert.equal(result.code, 0, result.stderr);
+  assert.match(result.stdout, /^PR_MONITOR_WEBHOOK_SECRET=[a-f0-9]{64}$/m);
+});
+
+test("shutdown aborts tunnel discovery before Hook setup can continue", async () => {
+  const dir = makeRuntimeDir();
+  const binDir = path.join(dir, "bin");
+  fs.mkdirSync(binDir);
+  const tunnelPidPath = path.join(dir, "tunnel.pid");
+  const cloudflaredPath = path.join(binDir, "cloudflared");
+  fs.writeFileSync(
+    cloudflaredPath,
+    `#!/bin/sh\nprintf '%s' "$$" > "$TEST_TUNNEL_PID"\nexec node -e 'setInterval(() => {}, 1000)'\n`
+  );
+  fs.chmodSync(cloudflaredPath, 0o755);
+  const ghCalledPath = path.join(dir, "gh-called");
+  const ghPath = path.join(binDir, "gh");
+  fs.writeFileSync(ghPath, `#!/bin/sh\ntouch "${ghCalledPath}"\nprintf '{}'\n`);
+  fs.chmodSync(ghPath, 0o755);
+  const port = await freePort();
+  const env = {
+    ...process.env,
+    PATH: `${binDir}${path.delimiter}${process.env.PATH || ""}`,
+    TEST_TUNNEL_PID: tunnelPidPath,
+    PR_MONITOR_REPOS: REPO,
+    PR_MONITOR_WEBHOOK_SECRET: "tunnel-shutdown-secret",
+    PR_MONITOR_WEBHOOK_HOST: "127.0.0.1",
+    PR_MONITOR_WEBHOOK_PORT: String(port),
+    PR_MONITOR_WEBHOOK_PID_PATH: path.join(dir, "listener.pid"),
+    PR_MONITOR_WEBHOOK_LOG: path.join(dir, "listener.log"),
+    PR_MONITOR_WEBHOOK_STATE_PATH: path.join(dir, "listener-state.json"),
+    PR_MONITOR_STARTUP_TICK: "0",
+    PR_MONITOR_LOGIN: "own-bot",
+  };
+  const child = spawn(process.execPath, [WEBHOOK_SCRIPT, "--serve", "--setup-hooks", "--tunnel", "cloudflared"], {
+    env,
+    cwd: SKILL_DIR,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let stderr = "";
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  const closed = new Promise((resolve) => child.on("close", (code) => resolve(code)));
+  try {
+    await waitFor(() => fs.existsSync(tunnelPidPath));
+    const tunnelPid = Number(fs.readFileSync(tunnelPidPath, "utf8"));
+    child.kill("SIGTERM");
+    const code = await closed;
+    assert.equal(code, 0, stderr);
+    await waitFor(() => {
+      try {
+        process.kill(tunnelPid, 0);
+        return false;
+      } catch (error) {
+        return error.code === "ESRCH";
+      }
+    });
+    assert.equal(fs.existsSync(ghCalledPath), false, "Hook setup must not continue after shutdown");
+  } finally {
+    if (child.exitCode === null) child.kill("SIGKILL");
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -1586,6 +1789,46 @@ test("cloudflared that exits before publishing a URL fails fast", async () => {
   const promise = startTunnel({ kind: "cloudflared", port: 8787, spawnFn: () => child, timeoutMs: 1_000 });
   child.emitClose(1);
   await assert.rejects(promise, /exited before publishing a URL/);
+});
+
+test("tunnel startup abort kills the child and rejects URL discovery", async () => {
+  const child = makeFakeChild();
+  const controller = new AbortController();
+  const promise = startTunnel({
+    kind: "cloudflared",
+    port: 8787,
+    spawnFn: () => child,
+    signal: controller.signal,
+    timeoutMs: 1_000,
+  });
+
+  controller.abort();
+  await assert.rejects(promise, /starting cloudflared tunnel was aborted/);
+  assert.deepEqual(child.killed, ["SIGTERM"]);
+});
+
+test("aborted ngrok discovery does not restart polling after an in-flight probe returns", async () => {
+  const child = makeFakeChild();
+  const controller = new AbortController();
+  let resolveFetch;
+  let fetches = 0;
+  const promise = startTunnel({
+    kind: "ngrok",
+    port: 8787,
+    spawnFn: () => child,
+    fetchFn: () => {
+      fetches++;
+      return new Promise((resolve) => { resolveFetch = resolve; });
+    },
+    retryMs: 5,
+    signal: controller.signal,
+  });
+  controller.abort();
+  await assert.rejects(promise, /aborted/);
+  resolveFetch({ json: async () => ({ tunnels: [] }) });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(fetches, 1);
+  assert.deepEqual(child.killed, ["SIGTERM"]);
 });
 
 test("ngrok tunnel discovers the URL from the local API and cleans up on stop", async () => {

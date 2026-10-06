@@ -119,15 +119,19 @@ function createJsonlLogger({ logPath = null } = {}) {
   };
 }
 
+function requireRepos(config) {
+  if (config.repos.length === 0) {
+    throw new Error("PR_MONITOR_REPOS is required: a watched-repo filter is required.");
+  }
+}
+
 function requireServeConfig(config) {
+  requireRepos(config);
   if (!config.secret) {
     throw new Error(
       "PR_MONITOR_WEBHOOK_SECRET is required: refusing to serve an unauthenticated webhook. " +
         "Use --rotate-secret (or --setup-hooks) to generate/register one."
     );
-  }
-  if (config.repos.length === 0) {
-    throw new Error("PR_MONITOR_REPOS is required: refusing to serve without a watched-repo filter.");
   }
 }
 
@@ -142,12 +146,14 @@ async function commandServe({ flags, env = process.env }) {
   let tunnel = null;
   let listener = null;
   let shuttingDown = false;
+  const tunnelStartup = new AbortController();
   let resolveShutdown;
   const shutdownRequest = new Promise((resolve) => { resolveShutdown = resolve; });
 
   async function shutdown(reason) {
     if (shuttingDown) return;
     shuttingDown = true;
+    tunnelStartup.abort();
     log({ event: "shutdown", reason });
     tunnel?.stop?.();
     try {
@@ -173,15 +179,37 @@ async function commandServe({ flags, env = process.env }) {
     onExit: () => { shutdown("idle"); },
   });
 
-  const { port } = await listener.start();
-  config.port = port;
-  if (config.tunnel) {
-    tunnel = await startTunnel({ kind: config.tunnel, port, logger: log });
-    config.publicUrl = tunnel.url;
-    log({ event: "tunnel_started", kind: config.tunnel, url: tunnel.url });
-  }
-
   try {
+    const { port } = await listener.start();
+    if (shuttingDown) {
+      await shutdownRequest;
+      return;
+    }
+    config.port = port;
+    if (config.tunnel) {
+      try {
+        tunnel = await startTunnel({
+          kind: config.tunnel,
+          port,
+          logger: log,
+          signal: tunnelStartup.signal,
+        });
+      } catch (e) {
+        if (shuttingDown) {
+          await shutdownRequest;
+          return;
+        }
+        throw e;
+      }
+      if (shuttingDown) {
+        tunnel.stop();
+        tunnel = null;
+        await shutdownRequest;
+        return;
+      }
+      config.publicUrl = tunnel.url;
+      log({ event: "tunnel_started", kind: config.tunnel, url: tunnel.url });
+    }
     if (flags.setupHooks) {
       // Register the ping wait before setup POSTs the pings: GitHub can
       // deliver a ping before the HTTP round-trip returns.
@@ -225,8 +253,11 @@ async function commandServe({ flags, env = process.env }) {
     });
     process.exit(0);
   } catch (e) {
-    await shutdown("error");
-    throw e;
+    if (!shuttingDown) {
+      await shutdown("error");
+      throw e;
+    }
+    await shutdownRequest;
   }
 }
 
@@ -328,7 +359,7 @@ async function commandTeardown({ env = process.env }) {
 
 async function commandRotateSecret({ env = process.env }) {
   const config = resolveListenerConfig({ env });
-  requireServeConfig(config);
+  requireRepos(config);
   const state = loadListenerState(config.statePath);
   const { secret, updated } = await rotateSecret({
     repos: config.repos,

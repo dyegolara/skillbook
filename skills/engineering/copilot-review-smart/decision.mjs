@@ -78,7 +78,9 @@ export function decideDeterministic({
       const lastPingMs = toMs(st.last_ping_ts);
       // The weekly gate anchors at the escalation moment, not the last ping:
       // the derivation arms the same anchor so gate and deadline coincide.
-      const weeklyAnchorMs = toMs(st.stuck_notified_ts) ?? lastPingMs;
+      const weeklyAnchorMs = st.stuck_notified_sha === ctx.headSha
+        ? toMs(st.stuck_notified_ts) ?? lastPingMs
+        : lastPingMs;
       const weeklyDue = weeklyAnchorMs !== null && nowMs - weeklyAnchorMs >= H(rebaseStaleRetryHours);
       if (weeklyDue) {
         st.rebase_pings = 0;

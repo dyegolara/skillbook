@@ -19,6 +19,46 @@ export function parseTickOutput(stdout) {
   return { reports, overall };
 }
 
+function terminateProcessTree(child, signal) {
+  if (Number.isInteger(child?.pid) && process.platform === "win32") {
+    return new Promise((resolve) => {
+      let killer;
+      try {
+        killer = spawn("taskkill.exe", ["/pid", String(child.pid), "/t", "/f"], {
+          stdio: "ignore",
+          windowsHide: true,
+        });
+      } catch {
+        child.kill(signal);
+        resolve();
+        return;
+      }
+      killer.once("error", () => {
+        try {
+          child.kill(signal);
+        } catch {
+          // already gone
+        }
+        resolve();
+      });
+      killer.once("close", () => resolve());
+    });
+  }
+  if (Number.isInteger(child?.pid)) {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch {
+      // Fall back to terminating the Tick process.
+    }
+  }
+  try {
+    child?.kill(signal);
+  } catch {
+    // already gone
+  }
+}
+
 /** Spawn one Tick. Single-PR scope when repo/num are given, repo scope for a
  * Startup tick. Never inherits the Listener's own scope env (the child must
  * use the scope we pass). */
@@ -29,6 +69,7 @@ export function spawnTick({
   reason = "tick",
   timeoutMs = DEFAULT_TICK_TIMEOUT_MS,
   spawnFn = spawn,
+  killProcessTree = terminateProcessTree,
   nodePath = process.execPath,
   scriptPath = PR_MONITOR_SCRIPT,
   env = process.env,
@@ -45,6 +86,7 @@ export function spawnTick({
     let stderr = "";
     let timedOut = false;
     let settled = false;
+    let treeTermination = null;
     let child;
     const finish = (result) => {
       if (settled) return;
@@ -53,7 +95,11 @@ export function spawnTick({
       resolve(result);
     };
     try {
-      child = spawnFn(nodePath, args, { env: childEnv, stdio: ["ignore", "pipe", "pipe"] });
+      child = spawnFn(nodePath, args, {
+        env: childEnv,
+        stdio: ["ignore", "pipe", "pipe"],
+        detached: process.platform !== "win32",
+      });
     } catch (e) {
       resolve({ ok: false, reason, error: String(e?.message || e), stdout, stderr, reports: [], overall: null });
       return;
@@ -61,9 +107,9 @@ export function spawnTick({
     const timer = clock.setTimeout(() => {
       timedOut = true;
       try {
-        child.kill("SIGKILL");
+        treeTermination = Promise.resolve(killProcessTree(child, "SIGKILL")).catch(() => {});
       } catch {
-        // already gone
+        treeTermination = Promise.resolve();
       }
     }, timeoutMs);
     child.stdout?.on("data", (chunk) => { stdout += chunk; });
@@ -79,7 +125,7 @@ export function spawnTick({
         Boolean(repo && num) && Number(overall?.scope_fetch_failures) > 0;
       const ok = !timedOut && code === 0 && overall !== null &&
         (reports.length > 0 || successfulRepoScope) && !scopedFetchFailed;
-      finish({
+      const result = {
         ok,
         reason,
         code,
@@ -93,7 +139,9 @@ export function spawnTick({
           : scopedFetchFailed
             ? "tick failed because a scoped API read failed"
             : `tick failed (exit ${code})`,
-      });
+      };
+      if (treeTermination) void treeTermination.then(() => finish(result));
+      else finish(result);
     });
   });
 }

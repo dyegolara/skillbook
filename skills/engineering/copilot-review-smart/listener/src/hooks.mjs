@@ -178,17 +178,17 @@ export async function rotateSecret({
   now = () => Date.now(),
 } = {}) {
   const secret = generateWebhookSecret();
-  const updated = [];
+  const targets = [];
   for (const repo of repos) {
     let id = state.hooks?.[repo]?.id || null;
     if (!id) {
-      try {
-        id = findOurHook(await gh([`repos/${repo}/hooks?per_page=100`]))?.id || null;
-      } catch {
-        id = null;
-      }
+      id = findOurHook(await gh([`repos/${repo}/hooks?per_page=100`]))?.id || null;
     }
-    if (!id) continue;
+    if (id) targets.push({ repo, id });
+  }
+
+  const updated = [];
+  for (const { repo, id } of targets) {
     await gh([`repos/${repo}/hooks/${id}`, "-X", "PATCH", "-f", `config[secret]=${secret}`]);
     state.hooks = state.hooks || {};
     state.hooks[repo] = { ...(state.hooks[repo] || {}), id, updated_at: iso(now()) };
