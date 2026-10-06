@@ -879,6 +879,87 @@ test("rebase ping sets next_check_at to ping time + 6h", async () => {
   assert.equal(prLine.next_check_at, new Date(now + 6 * 3600_000).toISOString());
 });
 
+test("a stale pending review ping with new feedback waits for the remaining review cooldown", async () => {
+  const now = Date.parse("2026-09-08T00:00:00.000Z");
+  const reviewTs = now - 1 * 3600_000;
+  const out = await runMonitorOnce({
+    repos: [REPO],
+    state: {
+      [`${REPO}#7`]: {
+        last_ping_sha: "feedback123",
+        last_ping_ts: new Date(now - 13 * 3600_000).toISOString(),
+        review_fix_pending_sha: "feedback123",
+        review_fix_pending_action: "request_review",
+        review_fix_pending_response_sig: "signature-before-feedback",
+      },
+    },
+    nowMs: now,
+    dryRun: true,
+    emitJsonReport: true,
+    runGhFn: repoScopeGh("feedback123"),
+    collectPrStateFn: async () => makeCtx({
+      headSha: "feedback123",
+      latestReviewTs: reviewTs,
+      reviewTranscript: [{
+        author: "reviewer",
+        ts: new Date(reviewTs).toISOString(),
+        state: "COMMENTED",
+        body: "Please address this feedback.",
+      }],
+    }),
+    decideFn: async ({ stateEntry }) => ({
+      handled: true,
+      action: "wait",
+      reason: "new feedback arrived",
+      reused: false,
+      stateEntry,
+      notifications: [],
+    }),
+  });
+
+  const prLine = prJsonLine(out);
+  assert.equal(prLine.action, "wait");
+  assert.equal(prLine.next_check_at, new Date(reviewTs + 6 * 3600_000).toISOString());
+  assert.notEqual(prLine.next_check_at, new Date(now).toISOString());
+});
+
+test("an old weekly escalation anchor does not override the fresh rebase-ping throttle", async () => {
+  const now = Date.parse("2026-09-08T00:00:00.000Z");
+  const out = await runMonitorOnce({
+    repos: [REPO],
+    state: {
+      [`${REPO}#7`]: {
+        rebase_pings_sha: "fresh-cycle",
+        rebase_pings: 1,
+        stuck_notified_sha: "fresh-cycle",
+        stuck_notified_ts: new Date(now - 8 * 24 * 3600_000).toISOString(),
+        last_ping_sha: "fresh-cycle",
+        last_ping_ts: new Date(now - 7 * 3600_000).toISOString(),
+      },
+    },
+    nowMs: now,
+    dryRun: true,
+    emitJsonReport: true,
+    runGhFn: repoScopeGh("fresh-cycle"),
+    collectPrStateFn: async () => makeCtx({
+      headSha: "fresh-cycle",
+      hasConflicts: true,
+      mergeable: false,
+      mergeableState: "dirty",
+      issueTranscript: [{
+        author: "alice",
+        ts: new Date(now - 7 * 3600_000).toISOString(),
+        body: "@copilot resolve the merge conflicts with origin/main",
+      }],
+    }),
+    llmDecider: async () => { throw new Error("conflict gate should be deterministic"); },
+  });
+
+  const prLine = prJsonLine(out);
+  assert.equal(prLine.action, "request_rebase");
+  assert.equal(prLine.next_check_at, new Date(now + 6 * 3600_000).toISOString());
+});
+
 test("stuck PR after escalation arms the weekly retry (+168h) and escalates once", async () => {
   const now = Date.parse("2026-09-08T00:00:00.000Z");
   const requestTs = new Date(now - 2 * 24 * 3600_000).toISOString();

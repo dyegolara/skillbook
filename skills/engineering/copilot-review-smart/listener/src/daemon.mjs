@@ -34,14 +34,46 @@ export function readPidFile(pidPath = defaultPidPath()) {
 }
 
 export function claimPidFile(pidPath = defaultPidPath()) {
-  const existing = readPidFile(pidPath);
-  if (existing && isPidAlive(existing) && existing !== process.pid) {
-    throw new Error(
-      `another Listener is already running (pid ${existing}); use --status or --stop before starting a new one.`
-    );
-  }
   fs.mkdirSync(path.dirname(pidPath), { recursive: true });
-  fs.writeFileSync(pidPath, `${process.pid}\n`);
+  const waitCell = new Int32Array(new SharedArrayBuffer(4));
+  for (;;) {
+    let fd;
+    try {
+      fd = fs.openSync(pidPath, "wx", 0o600);
+      fs.writeFileSync(fd, `${process.pid}\n`);
+      fs.closeSync(fd);
+      return;
+    } catch (e) {
+      if (e?.code !== "EEXIST") throw e;
+      if (fd !== undefined) {
+        fs.closeSync(fd);
+        fs.rmSync(pidPath, { force: true });
+        throw e;
+      }
+    }
+
+    const existing = readPidFile(pidPath);
+    if (existing === process.pid) return;
+    if (existing && isPidAlive(existing) && existing !== process.pid) {
+      throw new Error(
+        `another Listener is already running (pid ${existing}); use --status or --stop before starting a new one.`
+      );
+    }
+    try {
+      const before = fs.statSync(pidPath);
+      if (!existing && before.size === 0 && Date.now() - before.mtimeMs < 5000) {
+        Atomics.wait(waitCell, 0, 0, 10);
+        continue;
+      }
+      const current = readPidFile(pidPath);
+      const after = fs.statSync(pidPath);
+      if (before.dev === after.dev && before.ino === after.ino && current === existing) {
+        fs.unlinkSync(pidPath);
+      }
+    } catch (e) {
+      if (e?.code !== "ENOENT") throw e;
+    }
+  }
 }
 
 export function removePidFile(pidPath = defaultPidPath(), pid = process.pid) {

@@ -73,7 +73,12 @@ export function spawnTick({
     });
     child.on?.("close", (code) => {
       const { reports, overall } = parseTickOutput(stdout);
-      const ok = !timedOut && code === 0 && overall !== null && reports.length > 0;
+      const successfulRepoScope =
+        repos?.length > 0 && reports.length === 0 && overall?.scope_fetch_failures === 0;
+      const scopedFetchFailed =
+        Boolean(repo && num) && Number(overall?.scope_fetch_failures) > 0;
+      const ok = !timedOut && code === 0 && overall !== null &&
+        (reports.length > 0 || successfulRepoScope) && !scopedFetchFailed;
       finish({
         ok,
         reason,
@@ -83,7 +88,11 @@ export function spawnTick({
         stderr,
         reports,
         overall,
-        error: ok ? null : timedOut ? `tick timed out after ${timeoutMs}ms` : `tick failed (exit ${code})`,
+        error: ok ? null : timedOut
+          ? `tick timed out after ${timeoutMs}ms`
+          : scopedFetchFailed
+            ? "tick failed because a scoped API read failed"
+            : `tick failed (exit ${code})`,
       });
     });
   });

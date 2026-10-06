@@ -4,8 +4,8 @@
 services:
   listener:
     build:
-      context: ../../../..
-      dockerfile: skills/engineering/copilot-review-smart/resources/deploy/Dockerfile
+      context: ../..
+      dockerfile: resources/deploy/Dockerfile
     image: copilot-review-smart-listener
     env_file:
       - ./.env

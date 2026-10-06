@@ -688,7 +688,14 @@ function weeklyAfter(anchorMs, nowMs) {
  * PR is quiescent and only a Delivery should wake the loop. Derived from the
  * state entry (not the decision) so a decision reused from the Signature
  * cache carries the same deadline a fresh one would. */
-function computeNextCheckAt({ ctx, stateEntry, action, pingedAtMs = null, nowMs }) {
+function computeNextCheckAt({
+  ctx,
+  stateEntry,
+  action,
+  pingedAtMs = null,
+  reviewFixResponseSig = null,
+  nowMs,
+}) {
   const st = stateEntry || {};
   const iso = (ms) => new Date(ms).toISOString();
 
@@ -702,7 +709,12 @@ function computeNextCheckAt({ ctx, stateEntry, action, pingedAtMs = null, nowMs 
   }
 
   // Stuck PR: owner escalated, weekly retry from the escalation moment.
-  if (ctx.hasConflicts && st.stuck_notified_sha === ctx.headSha) {
+  if (
+    ctx.hasConflicts &&
+    st.stuck_notified_sha === ctx.headSha &&
+    st.rebase_pings_sha === ctx.headSha &&
+    (Number(st.rebase_pings) || 0) >= REBASE_MAX_PINGS
+  ) {
     return iso(weeklyAfter(toMs(st.stuck_notified_ts) ?? toMs(st.last_ping_ts), nowMs));
   }
 
@@ -724,7 +736,11 @@ function computeNextCheckAt({ ctx, stateEntry, action, pingedAtMs = null, nowMs 
   }
 
   // A review/fix Ping is still pending a response: same 12h throttle.
-  if (st.review_fix_pending_sha === ctx.headSha && st.review_fix_pending_action) {
+  if (
+    st.review_fix_pending_sha === ctx.headSha &&
+    st.review_fix_pending_action &&
+    st.review_fix_pending_response_sig === reviewFixResponseSig
+  ) {
     const lastPing = toMs(st.last_ping_ts);
     if (lastPing !== null) return iso(Math.max(lastPing + H(PING_MIN_INTERVAL_HOURS), nowMs));
   }
@@ -765,6 +781,7 @@ function buildPrReport({
   reused = false,
   githubActionPosted = false,
   pingedAtMs = null,
+  reviewFixResponseSig = null,
   ownerNotifications = [],
   nowMs,
 }) {
@@ -779,7 +796,7 @@ function buildPrReport({
     reused_cached_decision: reused,
     github_action_posted: githubActionPosted,
     next_check_at: ctx
-      ? computeNextCheckAt({ ctx, stateEntry, action, pingedAtMs, nowMs })
+      ? computeNextCheckAt({ ctx, stateEntry, action, pingedAtMs, reviewFixResponseSig, nowMs })
       : null,
     owner_notifications: ownerNotifications,
     ...classifyTerminalState({ ctx: ctx || {}, action, reason, stateEntry }),
@@ -1061,6 +1078,7 @@ export async function runMonitorOnce({
         reused: decided.reused,
         githubActionPosted,
         pingedAtMs,
+        reviewFixResponseSig,
         ownerNotifications: prOwnerNotes,
         nowMs,
         ...overrides,

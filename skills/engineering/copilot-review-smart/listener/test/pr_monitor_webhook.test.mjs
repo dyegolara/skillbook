@@ -7,6 +7,7 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { runGh } from "../src/gh.mjs";
 import {
   claimPidFile,
   classifyDelivery,
@@ -396,6 +397,45 @@ test("parseTickOutput reads the PR and overall JSON lines", () => {
   assert.equal(overall.type, "overall");
 });
 
+test("spawnTick accepts clean empty repo scope and rejects failed scoped API reads", async () => {
+  const run = async ({ repo = null, num = null, output }) => {
+    const handlers = {};
+    const streams = {};
+    const child = {
+      stdout: { on(event, handler) { streams.stdout = handler; } },
+      stderr: { on(event, handler) { streams.stderr = handler; } },
+      on(event, handler) { handlers[event] = handler; return this; },
+      kill() {},
+    };
+    const result = spawnTick({
+      repo,
+      num,
+      repos: repo ? null : [REPO],
+      clock: makeClock(),
+      spawnFn: () => child,
+    });
+    streams.stdout(output);
+    handlers.close(0);
+    return result;
+  };
+  const empty = await run({
+    output: JSON.stringify({ type: "overall", scope: "repo", scope_fetch_failures: 0 }),
+  });
+  assert.equal(empty.ok, true);
+  assert.deepEqual(empty.reports, []);
+
+  const failed = await run({
+    repo: REPO,
+    num: 7,
+    output: [
+      JSON.stringify(prReport(7, { next_check_at: null })),
+      JSON.stringify({ type: "overall", scope: "single-pr", scope_fetch_failures: 1 }),
+    ].join("\n"),
+  });
+  assert.equal(failed.ok, false);
+  assert.match(failed.error, /scoped API read failed/);
+});
+
 test("spawnTick kills a child that exceeds PR_MONITOR_TICK_TIMEOUT and marks it failed", async () => {
   const clock = makeClock();
   const killed = [];
@@ -559,6 +599,23 @@ test("tick report arms the Expectation, a Delivery cancels it, expiry runs exact
   assert.equal(tickRunner.calls.length, 3, "no periodic sweep after the Fallback tick");
 });
 
+test("replacing an Expectation clears its timer and stale callbacks cannot fire", async (t) => {
+  const clock = makeClock();
+  const tickRunner = makeTickRunner();
+  const listener = createListener({ config: makeConfig(), now: clock.now, clock, tickRunner });
+  await listener.start();
+  t.after(() => listener.stop());
+
+  const key = `${REPO}#7`;
+  listener.armExpectation(key, clock.now() + 60_000);
+  listener.armExpectation(key, clock.now() + 120_000);
+  assert.equal(clock.pending(), 1);
+  clock.advance(60_000);
+  await listener.drain();
+  assert.deepEqual(listener.pendingExpectations(), [key]);
+  assert.equal(tickRunner.calls.length, 0);
+});
+
 test("failed ticks re-arm with 1 → 5 → 15 min, then hourly backoff", async (t) => {
   const clock = makeClock();
   const tickRunner = makeTickRunner([
@@ -643,6 +700,78 @@ test("Startup tick seeds tracked Flows and arms their Expectations; done Flows d
   assert.deepEqual(listener.pendingExpectations(), [`${REPO}#5`]);
 });
 
+test("startup serializes with Delivery ticks and dispatches startup notifications before idle checks", async () => {
+  const clock = makeClock();
+  let finishStartup;
+  const notified = [];
+  let concurrent = 0;
+  let maxConcurrent = 0;
+  const tickRunner = async ({ reason, num }) => {
+    concurrent++;
+    maxConcurrent = Math.max(maxConcurrent, concurrent);
+    try {
+      if (reason === "startup") {
+        return await new Promise((resolve) => { finishStartup = resolve; });
+      }
+      return { ok: true, reports: [prReport(num)], overall: {} };
+    } finally {
+      concurrent--;
+    }
+  };
+  const listener = createListener({
+    config: makeConfig({ startupTick: true, deferIdleExit: true, notifyCmd: "notify" }),
+    now: clock.now,
+    clock,
+    tickRunner,
+    notifier: async (note) => { notified.push(note); return { ok: true }; },
+  });
+  const startPromise = listener.start();
+  await new Promise((resolve) => setImmediate(resolve));
+  await postDelivery(listener.port, "test-secret", prOpenedPayload(7), { deliveryId: "during-startup" });
+  clock.advance(30_000);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(maxConcurrent, 1);
+
+  finishStartup({
+    ok: true,
+    reports: [
+      prReport(8, {
+        terminal: "done",
+        owner_notifications: [{ event: "notify_ready", message: "ready at startup" }],
+      }),
+      prReport(9, { next_check_at: new Date(clock.now() + 3_600_000).toISOString() }),
+    ],
+    overall: { scope_fetch_failures: 0 },
+  });
+  await startPromise;
+  await listener.drain();
+  assert.equal(maxConcurrent, 1);
+  assert.deepEqual(notified.map((note) => note.message), ["ready at startup"]);
+  assert.deepEqual(listener.trackedFlows(), [`${REPO}#7`, `${REPO}#9`]);
+  await listener.stop();
+});
+
+test("idle exit can be deferred through setup and released after startup reconciliation", async () => {
+  const clock = makeClock();
+  const exits = [];
+  const listener = createListener({
+    config: makeConfig({ startupTick: true, deferIdleExit: true }),
+    now: clock.now,
+    clock,
+    tickRunner: makeTickRunner([{
+      ok: true,
+      reports: [],
+      overall: { scope_fetch_failures: 0 },
+    }]),
+    onExit: () => exits.push("exit"),
+  });
+  await listener.start();
+  assert.deepEqual(exits, []);
+  listener.releaseIdleExit();
+  assert.deepEqual(exits, ["exit"]);
+  await listener.stop();
+});
+
 test("a failed Startup tick is logged and does not prevent serving", async (t) => {
   const clock = makeClock();
   const logged = [];
@@ -680,6 +809,43 @@ test("stop() is not held open by a keep-alive client connection", async (t) => {
   await new Promise((resolve) => setTimeout(resolve, 500));
   assert.equal(stopped, true, "a keep-alive client must not block shutdown");
   await stopPromise;
+});
+
+test("shutdown stops new work, clears queued work, and waits for the in-flight Tick", async (t) => {
+  const clock = makeClock();
+  let releaseTick;
+  const calls = [];
+  const listener = createListener({
+    config: makeConfig(),
+    now: clock.now,
+    clock,
+    tickRunner: async ({ num }) => {
+      calls.push(num);
+      if (num === 7) {
+        return await new Promise((resolve) => { releaseTick = resolve; });
+      }
+      return { ok: true, reports: [prReport(num)], overall: {} };
+    },
+  });
+  await listener.start();
+  t.after(() => listener.stop());
+
+  listener.ingest({ event: "pull_request", payload: prOpenedPayload(7), verify: false });
+  listener.ingest({ event: "pull_request", payload: prOpenedPayload(8), verify: false });
+  clock.advance(30_000);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls, [7]);
+
+  const stopping = listener.stop();
+  assert.equal(listener.ingest({ event: "pull_request", payload: prOpenedPayload(9), verify: false }).status, 503);
+  releaseTick({
+    ok: true,
+    reports: [prReport(7, { next_check_at: new Date(clock.now() + 60_000).toISOString() })],
+    overall: {},
+  });
+  await stopping;
+  assert.deepEqual(calls, [7]);
+  assert.equal(clock.pending(), 0);
 });
 
 test("Notify-ready closes the Flow; with nothing left the Listener exits", async (t) => {
@@ -793,6 +959,50 @@ test("a PR closed Delivery closes its Flow without a Tick, and later Deliveries 
   assert.equal(tickRunner.calls.length, 1, "a closed Flow ignores later Deliveries");
 });
 
+test("closed queued Flows are skipped and closed in-flight Tick results are ignored", async (t) => {
+  const clock = makeClock();
+  let releaseTick;
+  const calls = [];
+  const noted = [];
+  const tickRunner = async ({ num }) => {
+    calls.push(num);
+    if (num === 7) {
+      return await new Promise((resolve) => { releaseTick = resolve; });
+    }
+    return { ok: true, reports: [prReport(num)], overall: {} };
+  };
+  const listener = createListener({
+    config: makeConfig({ notifyCmd: "notify" }),
+    now: clock.now,
+    clock,
+    tickRunner,
+    notifier: async (note) => { noted.push(note); return { ok: true }; },
+  });
+  await listener.start();
+  t.after(() => listener.stop());
+
+  await postDelivery(listener.port, "test-secret", prOpenedPayload(7), { deliveryId: "close-flight-open" });
+  clock.advance(30_000);
+  await new Promise((resolve) => setImmediate(resolve));
+  await postDelivery(listener.port, "test-secret", prOpenedPayload(8), { deliveryId: "close-queued-open" });
+  clock.advance(30_000);
+  await postDelivery(listener.port, "test-secret", { ...prOpenedPayload(8), action: "closed" }, {
+    deliveryId: "close-queued-close",
+  });
+  await postDelivery(listener.port, "test-secret", { ...prOpenedPayload(7), action: "closed" }, {
+    deliveryId: "close-flight-close",
+  });
+  releaseTick({
+    ok: true,
+    reports: [prReport(7, { owner_notifications: [{ event: "notify_ready", message: "must be ignored" }] })],
+    overall: {},
+  });
+  await listener.drain();
+  assert.deepEqual(noted, []);
+  assert.deepEqual(calls, [7]);
+  assert.deepEqual(listener.trackedFlows(), []);
+});
+
 test("--keep-alive keeps serving when no active Flow remains", async (t) => {
   const clock = makeClock();
   const tickRunner = makeTickRunner([
@@ -862,6 +1072,7 @@ test("setupHook creates by absent and binds the id; a URL change updates the sam
   const joined = createCall.join(" ");
   assert.match(joined, /config\[url\]=https:\/\/old\.example\.com\/github\/webhook/);
   assert.match(joined, /config\[content_type\]=json/);
+  assert.match(joined, /name=web/);
   assert.match(joined, /config\[secret\]=s3cret/);
   assert.match(joined, /events\[\]=pull_request/);
   assert.ok(gh.calls.some((args) => /\/pings$/.test(args[0])), "setup pings the Hook");
@@ -885,7 +1096,7 @@ test("setupHook creates by absent and binds the id; a URL change updates the sam
 test("setupHook adopts an existing Hook by name when state has no id", async () => {
   const state = emptyListenerState();
   const gh = makeHookGh({
-    hooks: [{ id: 9, name: "copilot-review-smart (pr-monitor)", active: true, config: { url: "https://old/github/webhook" } }],
+    hooks: [{ id: 9, name: "web", active: true, config: { url: "https://old/github/webhook" } }],
   });
   const result = await setupHook({
     repo: REPO,
@@ -949,10 +1160,28 @@ test("setupHook refuses to create a Hook when the public URL does not answer /he
   assert.equal(gh.calls.length, 0, "no Hook is created when the URL cannot be verified");
 });
 
+test("setupHook rejects non-HTTPS public URLs before probing or changing Hooks", async () => {
+  const gh = makeHookGh();
+  let probes = 0;
+  await assert.rejects(
+    setupHook({
+      repo: REPO,
+      publicUrl: "http://listener.example.com",
+      secret: "s3cret",
+      state: emptyListenerState(),
+      gh,
+      fetchFn: async () => { probes++; return { ok: true }; },
+    }),
+    /HTTPS/
+  );
+  assert.equal(probes, 0);
+  assert.equal(gh.calls.length, 0);
+});
+
 test("listHooks shows our Hooks and their recent delivery status", async () => {
   const gh = makeHookGh({
     hooks: [
-      { id: 77, name: "copilot-review-smart (pr-monitor)", active: true, events: ["pull_request"], config: { url: "https://x/github/webhook" } },
+      { id: 77, name: "web", active: true, events: ["pull_request"], config: { url: "https://x/github/webhook" } },
       { id: 78, name: "someone else", active: true, config: { url: "https://y/other" } },
     ],
   });
@@ -1000,6 +1229,26 @@ test("--serve --setup-hooks verifies success only after GitHub's ping Delivery a
     deliveryId: "ping-1",
   });
   assert.deepEqual(await waiting, [REPO]);
+});
+
+test("one ping waiter remains registered until every requested repository reports", async (t) => {
+  const repos = [REPO, "example/other"];
+  const listener = createListener({
+    config: makeConfig({ repos }),
+    tickRunner: makeTickRunner(),
+  });
+  await listener.start();
+  t.after(() => listener.stop());
+
+  const waiting = listener.waitForPings(repos, 5_000);
+  await new Promise((resolve) => setImmediate(resolve));
+  for (const [index, repo] of repos.entries()) {
+    await postDelivery(listener.port, "test-secret", { repository: { full_name: repo } }, {
+      event: "ping",
+      deliveryId: `multi-ping-${index}`,
+    });
+  }
+  assert.deepEqual(await waiting, repos);
 });
 
 // ---------------------------------------------------------------------------
@@ -1181,6 +1430,29 @@ test("listener state is written atomically and never shares the Tick state file"
   assert.notEqual(statePath, path.join(os.homedir(), ".cache", "pr-monitor", "state.json"));
 });
 
+test("stale state snapshots update only changed fields and preserve concurrent Hook and Expectation updates", () => {
+  const dir = makeRuntimeDir();
+  const statePath = path.join(dir, "listener-state.json");
+  saveListenerState(emptyListenerState(), statePath);
+  const listenerState = loadListenerState(statePath);
+  const hookState = loadListenerState(statePath);
+
+  hookState.hooks[REPO] = { id: 77, updated_at: "2026-10-06T00:00:00.000Z" };
+  saveListenerState(hookState, statePath);
+  listenerState.expectations[`${REPO}#7`] = {
+    repo: REPO,
+    num: 7,
+    deadline_ms: 1_800_000_000_000,
+    backoff_index: 0,
+  };
+  saveListenerState(listenerState, statePath);
+
+  const saved = loadListenerState(statePath);
+  assert.equal(saved.hooks[REPO].id, 77);
+  assert.equal(saved.expectations[`${REPO}#7`].num, 7);
+  assert.deepEqual(fs.readdirSync(dir), ["listener-state.json"]);
+});
+
 // ---------------------------------------------------------------------------
 // #31 — Process management
 // ---------------------------------------------------------------------------
@@ -1200,6 +1472,30 @@ test("a live pid file blocks a second instance; a stale one does not", async () 
   assert.equal(readPidFile(pidPath), process.pid);
   removePidFile(pidPath, process.pid);
   assert.equal(readPidFile(pidPath), null);
+});
+
+test("simultaneous Listener starts use an exclusive pid-file claim", async (t) => {
+  const dir = makeRuntimeDir();
+  const pidPath = path.join(dir, "listener.pid");
+  const daemonPath = new URL("../src/daemon.mjs", import.meta.url).href;
+  const script = `import { claimPidFile } from ${JSON.stringify(daemonPath)}; try { claimPidFile(process.argv[1]); console.log("claimed"); setTimeout(() => {}, 30000); } catch (error) { console.error(error.message); process.exitCode = 1; setTimeout(() => {}, 30000); }`;
+  const children = [0, 1].map(() => spawn(process.execPath, ["--input-type=module", "-e", script, pidPath]));
+  t.after(() => { for (const child of children) child.kill("SIGKILL"); });
+  const results = await Promise.all(children.map((child) => new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    let reported = false;
+    const report = () => {
+      if (reported || (!stdout && !stderr)) return;
+      reported = true;
+      resolve({ child, stdout, stderr });
+    };
+    child.stdout.on("data", (chunk) => { stdout += chunk; report(); });
+    child.stderr.on("data", (chunk) => { stderr += chunk; report(); });
+  })));
+  for (const result of results) result.child.kill("SIGKILL");
+  assert.equal(results.filter((result) => /claimed/.test(result.stdout)).length, 1);
+  assert.equal(results.filter((result) => /already running/.test(result.stderr)).length, 1);
 });
 
 test("listenerStatus reports not running when there is no pid file", async () => {
@@ -1338,6 +1634,44 @@ test("runNotifyCmd kills a notify command that exceeds its timeout and reports t
   const slow = await runNotifyCmd({ cmd: "sleep 5", note: {}, timeoutMs: 200 });
   assert.equal(slow.ok, false);
   assert.match(slow.error, /timed out/);
+});
+
+test("runNotifyCmd handles asynchronous stdin EPIPE without throwing", async () => {
+  let stdinError;
+  const child = {
+    stdin: {
+      on(event, handler) { if (event === "error") stdinError = handler; },
+      write() { queueMicrotask(() => stdinError(new Error("EPIPE"))); },
+      end() {},
+    },
+    stderr: { on() {} },
+    on() { return this; },
+    kill() {},
+  };
+  const result = await runNotifyCmd({ cmd: "notify", note: {}, spawnFn: () => child });
+  assert.equal(result.ok, false);
+  assert.match(result.error, /EPIPE/);
+});
+
+test("GitHub CLI errors redact webhook secrets from arguments and stderr", async () => {
+  const dir = makeRuntimeDir();
+  const ghPath = path.join(dir, "gh");
+  fs.writeFileSync(ghPath, "#!/bin/sh\nprintf '%s\\n' 'failed config[secret]=leaky-secret' >&2\nexit 1\n");
+  fs.chmodSync(ghPath, 0o755);
+  const previousPath = process.env.PATH;
+  process.env.PATH = `${dir}${path.delimiter}${previousPath || ""}`;
+  try {
+    await assert.rejects(
+      runGh(["repos/example/repo/hooks", "-f", "config[secret]=leaky-secret"]),
+      (error) => {
+        assert.doesNotMatch(error.message, /leaky-secret/);
+        assert.match(error.message, /config\[secret\]=\[REDACTED\]/);
+        return true;
+      }
+    );
+  } finally {
+    process.env.PATH = previousPath;
+  }
 });
 
 test("owner notifications from a Tick report are forwarded and failures are logged", async (t) => {
@@ -1561,7 +1895,7 @@ test("e2e: synchronize Deliveries drive a review ping then Notify-ready; healthz
   assert.equal(readPidFile(env.PR_MONITOR_WEBHOOK_PID_PATH), null);
 });
 
-test("--serve --setup-hooks reports verified success only after GitHub's ping arrives", async (t) => {
+test("--serve --setup-hooks rejects an insecure public URL without changing Hooks", async (t) => {
   const dir = makeRuntimeDir("webhook-hooks-e2e-");
   const binDir = path.join(dir, "bin");
   const ghLog = path.join(dir, "gh.jsonl");
@@ -1585,7 +1919,9 @@ test("--serve --setup-hooks reports verified success only after GitHub's ping ar
   };
   const child = spawn(process.execPath, [WEBHOOK_SCRIPT, "--serve", "--setup-hooks"], { env });
   let stdout = "";
+  let stderr = "";
   child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
   t.after(async () => {
     await runCli(["--stop"], env).catch(() => {});
     try {
@@ -1595,23 +1931,11 @@ test("--serve --setup-hooks reports verified success only after GitHub's ping ar
     }
   });
 
-  await waitFor(async () => {
-    const entries = readJsonLines(ghLog);
-    return entries.some((args) => /\/pings$/.test(args[1] || ""));
-  }, 10_000);
-  assert.match(
-    (await waitFor(() => (stdout.includes("hook updated") || stdout.includes("hook created")) ? stdout : null, 10_000)),
-    /hook created id=42/
-  );
-
-  await postDelivery(port, secret, { zen: "Design for failure.", hook_id: 42, repository: { full_name: REPO } }, {
-    event: "ping",
-    deliveryId: "ping-e2e-1",
-  });
-
-  await waitFor(() => (stdout.includes("✅ Hooks verified by GitHub ping") ? stdout : null), 10_000);
-  const state = loadListenerState(env.PR_MONITOR_WEBHOOK_STATE_PATH);
-  assert.equal(state.hooks[REPO].id, 42);
+  const exit = await new Promise((resolve) => child.on("close", resolve));
+  assert.notEqual(exit, 0);
+  assert.match(stderr, /HTTPS/);
+  assert.deepEqual(readJsonLines(ghLog), []);
+  assert.equal(stdout.includes("✅ Hooks verified"), false);
 
   const stop = await runCli(["--stop"], env);
   assert.equal(stop.code, 0, stop.stderr);

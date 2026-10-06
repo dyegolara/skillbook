@@ -9,6 +9,7 @@ RUN apk add --no-cache github-cli ca-certificates
 
 WORKDIR /skill
 COPY pr_monitor.mjs decision.mjs pr_monitor_webhook.mjs ./
+COPY listener/src/ ./listener/src/
 
 # State, Expectations, pid and log files live here; mount a volume on it.
 ENV PR_MONITOR_WEBHOOK_HOST=0.0.0.0 \

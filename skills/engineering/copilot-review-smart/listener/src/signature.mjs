@@ -1,6 +1,6 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-export const HOOK_NAME = "copilot-review-smart (pr-monitor)";
+export const HOOK_NAME = "web";
 export const HOOK_PATH = "/github/webhook";
 
 export const SUBSCRIBED_EVENTS = [

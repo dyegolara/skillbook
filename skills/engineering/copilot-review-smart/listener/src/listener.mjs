@@ -55,6 +55,10 @@ export function createListener({
   let running = false;
   let activeTickPromise = null;
   let pendingStarts = 0;
+  let startupInProgress = false;
+  let startupReconciled = false;
+  let idleExitDeferred = Boolean(config.deferIdleExit);
+  let stopping = false;
   const seenDeliveries = new Map(); // delivery id -> insertion order (LRU)
   let lastDelivery = null;
   let pingWaiters = [];
@@ -86,7 +90,7 @@ export function createListener({
   function cancelTimer(map, key) {
     const timer = map.get(key);
     if (timer !== undefined) {
-      clock.clearTimeout(timer);
+      clock.clearTimeout(timer?.timer ?? timer);
       map.delete(key);
     }
   }
@@ -94,12 +98,15 @@ export function createListener({
   // --- Expectations ---------------------------------------------------------
 
   function armExpectation(key, deadlineMs, backoffIndex = 0, origin = "tick") {
+    if (stopping) return;
     cancelTimer(expectations, key);
     const deadline = Number(deadlineMs);
     if (!Number.isFinite(deadline)) return;
     const delay = Math.max(0, deadline - now());
-    const timer = clock.setTimeout(() => fireFallback(key), delay);
-    expectations.set(key, { timer, deadlineMs: deadline, backoffIndex });
+    let entry;
+    const timer = clock.setTimeout(() => fireFallback(key, entry), delay);
+    entry = { timer, deadlineMs: deadline, backoffIndex };
+    expectations.set(key, entry);
     const { repo, num } = parseKey(key);
     state.expectations[key] = { repo, num, deadline_ms: deadline, backoff_index: backoffIndex, origin };
     persist();
@@ -122,8 +129,8 @@ export function createListener({
     logger({ event: "expectation_disarmed", key, reason });
   }
 
-  function fireFallback(key) {
-    if (!expectations.has(key)) return;
+  function fireFallback(key, expected) {
+    if (stopping || expectations.get(key) !== expected) return;
     cancelTimer(expectations, key);
     delete state.expectations[key];
     persist();
@@ -154,7 +161,7 @@ export function createListener({
   }
 
   function maybeExit() {
-    if (exitRequested || config.keepAlive) return;
+    if (exitRequested || config.keepAlive || idleExitDeferred || !startupReconciled || stopping) return;
     if (flows.size === 0) {
       exitRequested = true;
       logger({ event: "listener_idle", reason: "no tracked Flow remains" });
@@ -165,6 +172,7 @@ export function createListener({
   // --- Tick queue: one at a time, one re-tick per PR ------------------------
 
   function scheduleDeliveryTick(key, delayMs = debounceMs) {
+    if (stopping) return;
     cancelTimer(debounces, key);
     const timer = clock.setTimeout(() => {
       debounces.delete(key);
@@ -174,7 +182,7 @@ export function createListener({
   }
 
   function enqueueTick(key, reason) {
-    if (!flows.has(key) || closedFlows.has(key)) return;
+    if (stopping || !flows.has(key) || closedFlows.has(key)) return;
     if (queuedKeys.has(key)) return;
     queuedKeys.add(key);
     queue.push({ key, reason });
@@ -182,8 +190,12 @@ export function createListener({
   }
 
   async function pump() {
-    if (running) return;
-    const item = queue.shift();
+    if (running || stopping || startupInProgress) return;
+    let item = queue.shift();
+    while (item && (!flows.has(item.key) || closedFlows.has(item.key))) {
+      queuedKeys.delete(item.key);
+      item = queue.shift();
+    }
     if (!item) return;
     queuedKeys.delete(item.key);
     const { repo, num } = parseKey(item.key);
@@ -220,6 +232,7 @@ export function createListener({
   }
 
   async function handleTickResult(key, result) {
+    if (closedFlows.has(key) || !flows.has(key)) return;
     if (!result?.ok) {
       logger({ event: "tick_failed", key, error: result?.error || "unknown", timed_out: Boolean(result?.timedOut) });
       if (flows.has(key) && !closedFlows.has(key)) armTickBackoff(key);
@@ -266,6 +279,7 @@ export function createListener({
   // --- Delivery ingest ------------------------------------------------------
 
   function ingest({ event, deliveryId = "", payload = null, rawBody = "", signature = null, verify = true } = {}) {
+    if (stopping) return { status: 503, accepted: false, reason: "Listener is shutting down" };
     if (deliveryId && seenDeliveries.has(deliveryId)) {
       logger({ event: "delivery_ignored", delivery_id: deliveryId, reason: "duplicate" });
       return { status: 200, accepted: false, reason: "duplicate delivery" };
@@ -297,9 +311,7 @@ export function createListener({
 
     if (info.kind === "ping") {
       logger({ event: "ping_received", delivery_id: deliveryId, repo: info.repo });
-      const waiters = pingWaiters;
-      pingWaiters = [];
-      for (const waiter of waiters) waiter.resolve({ repo: info.repo, at: iso(now()) });
+      pingWaiters = pingWaiters.filter((waiter) => !waiter.resolve({ repo: info.repo, at: iso(now()) }));
       return { status: 202, accepted: true, kind: "ping", repo: info.repo };
     }
 
@@ -397,34 +409,59 @@ export function createListener({
     if (config.startupTick === false) {
       logger({ event: "startup_tick_skipped" });
       restoreExpectations(new Set());
+      startupReconciled = true;
       return false;
     }
     logger({ event: "startup_tick_started", repos });
-    const result = await runTick({ repos, reason: "startup", timeoutMs: tickTimeoutMs });
-    if (!result?.ok) {
-      logger({ event: "startup_tick_failed", error: result?.error || "unknown" });
+    startupInProgress = true;
+    running = true;
+    pendingStarts++;
+    const operation = (async () => {
+      const result = await runTick({ repos, reason: "startup", timeoutMs: tickTimeoutMs });
+      if (!result?.ok) {
+        logger({ event: "startup_tick_failed", error: result?.error || "unknown" });
+        restoreExpectations(new Set());
+        return false;
+      }
+      const touched = new Set();
+      for (const report of result.reports || []) {
+        if (!report.repo || !report.pr) continue;
+        const key = keyOf(report.repo, report.pr);
+        touched.add(key);
+        await ownerNotifier.dispatch(report.owner_notifications, {
+          repo: report.repo,
+          pr: report.pr,
+          headSha: report.head_sha,
+          title: report.title,
+        });
+        if (report.terminal === "done") {
+          closeFlow(key, "flow completed at startup");
+        } else if (report.skipped) {
+          trackFlow(key);
+          disarmExpectation(key, "draft/WIP is quiescent");
+        } else {
+          trackFlow(key);
+          if (report.next_check_at) armExpectation(key, Date.parse(report.next_check_at), 0, "startup_report");
+          else disarmExpectation(key, "quiescent at startup");
+        }
+      }
+      logger({ event: "startup_tick_finished", prs: (result.reports || []).length });
+      restoreExpectations(touched, { authoritative: result.overall?.scope_fetch_failures === 0 });
+      return true;
+    })().catch((error) => {
+      logger({ event: "startup_tick_failed", error: String(error?.message || error) });
       restoreExpectations(new Set());
       return false;
-    }
-    const touched = new Set();
-    for (const report of result.reports || []) {
-      if (!report.repo || !report.pr) continue;
-      const key = keyOf(report.repo, report.pr);
-      touched.add(key);
-      if (report.terminal === "done") {
-        closeFlow(key, "flow completed at startup");
-      } else if (report.skipped) {
-        trackFlow(key);
-        disarmExpectation(key, "draft/WIP is quiescent");
-      } else {
-        trackFlow(key);
-        if (report.next_check_at) armExpectation(key, Date.parse(report.next_check_at), 0, "startup_report");
-        else disarmExpectation(key, "quiescent at startup");
-      }
-    }
-    logger({ event: "startup_tick_finished", prs: (result.reports || []).length });
-    restoreExpectations(touched, { authoritative: result.overall?.scope_fetch_failures === 0 });
-    return true;
+    }).finally(() => {
+      startupReconciled = true;
+      startupInProgress = false;
+      running = false;
+      pendingStarts--;
+      activeTickPromise = null;
+      pump();
+    });
+    activeTickPromise = operation;
+    return operation;
   }
 
   /** Re-arm Expectations that survived a restart. Keys the Startup tick just
@@ -453,20 +490,30 @@ export function createListener({
     const pending = new Set(expectRepos);
     return new Promise((resolve, reject) => {
       const timer = clock.setTimeout(() => {
-        pingWaiters = pingWaiters.filter((w) => w.resolve !== onPing);
+        pingWaiters = pingWaiters.filter((w) => w !== waiter);
         reject(new Error(`timed out waiting for GitHub ping Delivery from: ${[...pending].join(", ")}`));
       }, timeoutMs);
       const onPing = (info) => {
         if (info.repo) pending.delete(info.repo);
-        if (pending.size > 0) return;
+        if (pending.size > 0) return false;
         clock.clearTimeout(timer);
         resolve([...expectRepos]);
+        return true;
       };
-      pingWaiters.push({ resolve: onPing, reject });
+      const waiter = { resolve: onPing, reject, timer };
+      pingWaiters.push(waiter);
     });
   }
 
   async function stop() {
+    stopping = true;
+    queue.length = 0;
+    queuedKeys.clear();
+    for (const waiter of pingWaiters) {
+      clock.clearTimeout(waiter.timer);
+      waiter.reject(new Error("Listener stopped while waiting for GitHub pings."));
+    }
+    pingWaiters = [];
     for (const [, timer] of debounces) clock.clearTimeout(timer);
     debounces.clear();
     for (const [, entry] of expectations) clock.clearTimeout(entry.timer);
@@ -474,6 +521,10 @@ export function createListener({
     // Pending Expectations stay in the state file on purpose: they must
     // survive a restart (only a Flow closing removes them).
     if (activeTickPromise) await activeTickPromise.catch(() => {});
+    for (const [, timer] of debounces) clock.clearTimeout(timer);
+    debounces.clear();
+    for (const [, entry] of expectations) clock.clearTimeout(entry.timer);
+    expectations.clear();
     await ownerNotifier.drain();
     if (server) {
       await new Promise((resolve) => {
@@ -506,6 +557,10 @@ export function createListener({
     drain,
     health,
     waitForPings,
+    releaseIdleExit() {
+      idleExitDeferred = false;
+      maybeExit();
+    },
     handleRequest: transport.handleRequest,
     get port() { return boundPort; },
     state,

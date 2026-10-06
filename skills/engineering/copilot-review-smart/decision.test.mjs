@@ -133,6 +133,7 @@ test("weekly retry resets budget and re-requests rebase", () => {
     },
   });
   assertDecision(out, "request_rebase", /weekly retry/i);
+  assert.equal(out.stateEntry.stuck_notified_ts, new Date(BASE_NOW).toISOString());
 });
 
 test("weekly retry anchors at the escalation ts, not the last ping", () => {

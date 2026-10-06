@@ -82,6 +82,8 @@ export function decideDeterministic({
       const weeklyDue = weeklyAnchorMs !== null && nowMs - weeklyAnchorMs >= H(rebaseStaleRetryHours);
       if (weeklyDue) {
         st.rebase_pings = 0;
+        st.stuck_notified_sha = ctx.headSha;
+        st.stuck_notified_ts = new Date(nowMs).toISOString();
         action = "request_rebase";
         reason =
           "Weekly retry: PR still has conflicts after exhausting rebase " +

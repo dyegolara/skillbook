@@ -22,7 +22,7 @@ Restart=on-failure
 RestartSec=5
 # Graceful shutdown: SIGTERM stops after the in-flight Tick.
 KillSignal=SIGTERM
-TimeoutStopSec=60
+TimeoutStopSec=6min
 
 [Install]
 WantedBy=multi-user.target

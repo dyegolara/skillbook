@@ -20,9 +20,14 @@ export function hookPayload({ publicUrl, secret }) {
 export function findOurHook(hooks) {
   if (!Array.isArray(hooks)) return null;
   const ours = hooks.filter(
-    (h) =>
-      String(h?.name || "").startsWith(HOOK_NAME) &&
-      String(h?.config?.url || "").includes(HOOK_PATH)
+    (h) => {
+      if (h?.name !== HOOK_NAME) return false;
+      try {
+        return new URL(h?.config?.url).pathname.replace(/\/+$/, "") === HOOK_PATH;
+      } catch {
+        return false;
+      }
+    }
   );
   return ours.length === 1 ? ours[0] : null;
 }
@@ -52,6 +57,15 @@ export async function setupHook({
 } = {}) {
   if (!secret) throw new Error("PR_MONITOR_WEBHOOK_SECRET is required to set up a Hook.");
   if (!publicUrl) throw new Error("PR_MONITOR_PUBLIC_URL is required to set up a Hook.");
+  let parsedPublicUrl;
+  try {
+    parsedPublicUrl = new URL(publicUrl);
+  } catch {
+    throw new Error("PR_MONITOR_PUBLIC_URL must be a valid HTTPS URL.");
+  }
+  if (parsedPublicUrl.protocol !== "https:" || parsedPublicUrl.username || parsedPublicUrl.password) {
+    throw new Error("PR_MONITOR_PUBLIC_URL must be a valid HTTPS URL.");
+  }
   const healthUrl = `${String(publicUrl).replace(/\/+$/, "")}/healthz`;
   if (requireHealth) {
     let response;

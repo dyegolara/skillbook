@@ -133,6 +133,7 @@ function requireServeConfig(config) {
 
 async function commandServe({ flags, env = process.env }) {
   const config = resolveListenerConfig({ env, flags });
+  config.deferIdleExit = Boolean(flags.setupHooks || config.tunnel);
   requireServeConfig(config);
   claimPidFile(config.pidPath);
   const { log, close } = createJsonlLogger({ logPath: config.logPath });
@@ -208,6 +209,7 @@ async function commandServe({ flags, env = process.env }) {
         message: "set PR_MONITOR_PUBLIC_URL (or use --tunnel) to manage the GitHub Hook",
       });
     }
+    if (config.deferIdleExit) listener.releaseIdleExit();
     await shutdownRequest;
     // Everything graceful is done (state persisted, Hook ids saved, pid file
     // removed, log closed). Libuv can still be held by transport debris

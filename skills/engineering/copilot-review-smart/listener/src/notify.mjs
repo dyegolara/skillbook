@@ -38,6 +38,7 @@ export function runNotifyCmd({
     child.stderr?.on("data", (chunk) => { stderr += chunk; });
     child.on?.("error", (e) => finish({ ok: false, error: String(e?.message || e) }));
     child.on?.("close", (code) => finish({ ok: code === 0, code, stderr: stderr.slice(0, 500) }));
+    child.stdin?.on("error", (e) => finish({ ok: false, error: String(e?.message || e) }));
     try {
       child.stdin.write(JSON.stringify(note));
       child.stdin.end();
