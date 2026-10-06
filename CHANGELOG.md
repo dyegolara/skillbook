@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.1.0
+
+- Add copilot-review-smart v2.3.0's webhook-first Listener, Expectation
+  fallback, lifecycle management, and deployment resources.
+
 ## 1.0.0
 
 - Baseline: repo versioning introduced (VERSION + CHANGELOG + version-bump CI
