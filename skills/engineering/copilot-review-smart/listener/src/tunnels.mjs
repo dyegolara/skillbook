@@ -73,6 +73,10 @@ export function startTunnel({
     }
     child.on?.("error", (e) => fail(`could not start ${kind}: ${e?.message || e}`));
     child.on?.("close", (code) => fail(`${kind} exited before publishing a URL (exit ${code})`));
+    if (kind === "ngrok") {
+      child.stdout?.on("data", () => {});
+      child.stderr?.on("data", () => {});
+    }
 
     if (kind === "cloudflared") {
       const onChunk = (chunk) => {
@@ -89,6 +93,7 @@ export function startTunnel({
           const response = await fetchFn(`${ngrokApiUrl}/api/tunnels`);
           const payload = await response.json();
           const publicUrl = (payload?.tunnels || [])
+            .filter((t) => t?.config?.addr === localUrl)
             .map((t) => t.public_url)
             .find((u) => typeof u === "string" && u.startsWith("https://"));
           if (publicUrl) {

@@ -21,9 +21,10 @@ export function findOurHook(hooks) {
   if (!Array.isArray(hooks)) return null;
   const ours = hooks.filter(
     (h) => {
-      if (h?.name !== HOOK_NAME) return false;
       try {
-        return new URL(h?.config?.url).pathname.replace(/\/+$/, "") === HOOK_PATH;
+        return new URL(h?.config?.url).pathname.replace(/\/+$/, "") === HOOK_PATH &&
+          h?.config?.content_type === "json" &&
+          SUBSCRIBED_EVENTS.every((event) => h?.events?.includes(event));
       } catch {
         return false;
       }
@@ -86,15 +87,33 @@ export async function setupHook({
   }
   let id = state.hooks?.[repo]?.id || null;
   let created = false;
-  if (!id) {
+  const payload = hookPayload({ publicUrl, secret });
+  const discover = async () => {
     const hooks = await gh([`repos/${repo}/hooks?per_page=100`]);
     const found = findOurHook(hooks);
-    if (found) id = found.id;
-  }
-  const payload = hookPayload({ publicUrl, secret });
+    id = found?.id || null;
+  };
   if (id) {
-    await gh([`repos/${repo}/hooks/${id}`, "-X", "PATCH", ...ghHookArgs(payload)]);
-  } else {
+    try {
+      await gh([`repos/${repo}/hooks/${id}`, "-X", "PATCH", ...ghHookArgs(payload)]);
+    } catch (error) {
+      if (!/\b404\b/.test(String(error?.message || error))) throw error;
+      id = null;
+      if (state.hooks?.[repo]) delete state.hooks[repo];
+    }
+  }
+  if (!id) {
+    await discover();
+  }
+  if (id && !state.hooks?.[repo]?.id) {
+    try {
+      await gh([`repos/${repo}/hooks/${id}`, "-X", "PATCH", ...ghHookArgs(payload)]);
+    } catch (error) {
+      if (!/\b404\b/.test(String(error?.message || error))) throw error;
+      id = null;
+    }
+  }
+  if (!id) {
     const hook = await gh([`repos/${repo}/hooks`, "-X", "POST", ...ghHookArgs(payload)]);
     id = hook?.id ?? null;
     created = true;
@@ -188,12 +207,17 @@ export async function rotateSecret({
   }
 
   const updated = [];
+  const failed = [];
   for (const { repo, id } of targets) {
-    await gh([`repos/${repo}/hooks/${id}`, "-X", "PATCH", "-f", `config[secret]=${secret}`]);
-    state.hooks = state.hooks || {};
-    state.hooks[repo] = { ...(state.hooks[repo] || {}), id, updated_at: iso(now()) };
-    updated.push({ repo, id });
+    try {
+      await gh([`repos/${repo}/hooks/${id}`, "-X", "PATCH", "-f", `config[secret]=${secret}`]);
+      state.hooks = state.hooks || {};
+      state.hooks[repo] = { ...(state.hooks[repo] || {}), id, updated_at: iso(now()) };
+      updated.push({ repo, id });
+    } catch (error) {
+      failed.push({ repo, id, error: String(error?.message || error) });
+    }
   }
   if (persistState) persistState(state);
-  return { secret, updated };
+  return { secret, updated, failed };
 }

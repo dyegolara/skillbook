@@ -139,9 +139,9 @@ async function commandServe({ flags, env = process.env }) {
   const config = resolveListenerConfig({ env, flags });
   config.deferIdleExit = Boolean(flags.setupHooks || config.tunnel);
   requireServeConfig(config);
+  const state = loadListenerState(config.statePath);
   claimPidFile(config.pidPath);
   const { log, close } = createJsonlLogger({ logPath: config.logPath });
-  const state = loadListenerState(config.statePath);
   const persistState = (next) => saveListenerState(next, config.statePath);
   let tunnel = null;
   let listener = null;
@@ -337,7 +337,7 @@ async function commandSetupHooks({ flags, env = process.env }) {
 
 async function commandListHooks({ env = process.env }) {
   const config = resolveListenerConfig({ env });
-  requireServeConfig(config);
+  requireRepos(config);
   const state = loadListenerState(config.statePath);
   const rows = await listHooks({ repos: config.repos, gh: runGh, state });
   console.log(JSON.stringify(rows, null, 2));
@@ -345,7 +345,7 @@ async function commandListHooks({ env = process.env }) {
 
 async function commandTeardown({ env = process.env }) {
   const config = resolveListenerConfig({ env });
-  requireServeConfig(config);
+  requireRepos(config);
   const state = loadListenerState(config.statePath);
   const removed = await teardownHooks({
     repos: config.repos,
@@ -361,7 +361,7 @@ async function commandRotateSecret({ env = process.env }) {
   const config = resolveListenerConfig({ env });
   requireRepos(config);
   const state = loadListenerState(config.statePath);
-  const { secret, updated } = await rotateSecret({
+  const { secret, updated, failed } = await rotateSecret({
     repos: config.repos,
     gh: runGh,
     state,
@@ -376,6 +376,15 @@ async function commandRotateSecret({ env = process.env }) {
   console.log("");
   console.log("Update the Host env and RESTART the Listener (it keeps the old secret in memory):");
   console.log(`PR_MONITOR_WEBHOOK_SECRET=${secret}`);
+  if (failed?.length) {
+    console.error(
+      `Rotation failed for ${failed.map(({ repo }) => repo).join(", ")}. Updated Hooks now use this key; ` +
+        "failed Hooks still use their previous key. Install this key and restart the Listener, then update " +
+        "the failed Hooks to this same key in GitHub before they can deliver successfully."
+    );
+    for (const { repo, error } of failed) console.error(`hook rotation failed repo=${repo}: ${error}`);
+    process.exitCode = 1;
+  }
 }
 
 export async function main(argv = process.argv.slice(2)) {

@@ -5,21 +5,23 @@ import { keyOf } from "./signature.mjs";
 export function parseTickOutput(stdout) {
   const reports = [];
   let overall = null;
+  let invalid = false;
   for (const line of String(stdout || "").split("\n")) {
     if (!line.startsWith("{")) continue;
     let parsed;
     try {
       parsed = JSON.parse(line);
     } catch {
+      invalid = true;
       continue;
     }
     if (parsed?.type === "pr") reports.push(parsed);
     if (parsed?.type === "overall") overall = parsed;
   }
-  return { reports, overall };
+  return { reports, overall, invalid };
 }
 
-function terminateProcessTree(child, signal) {
+export function terminateProcessTree(child, signal) {
   if (Number.isInteger(child?.pid) && process.platform === "win32") {
     return new Promise((resolve) => {
       let killer;
@@ -118,12 +120,12 @@ export function spawnTick({
       finish({ ok: false, reason, error: `spawn failed: ${e?.message || e}`, stdout, stderr, reports: [], overall: null });
     });
     child.on?.("close", (code) => {
-      const { reports, overall } = parseTickOutput(stdout);
+      const { reports, overall, invalid } = parseTickOutput(stdout);
       const successfulRepoScope =
         repos?.length > 0 && reports.length === 0 && overall?.scope_fetch_failures === 0;
       const scopedFetchFailed =
         Boolean(repo && num) && Number(overall?.scope_fetch_failures) > 0;
-      const ok = !timedOut && code === 0 && overall !== null &&
+      const ok = !timedOut && !invalid && code === 0 && overall !== null &&
         (reports.length > 0 || successfulRepoScope) && !scopedFetchFailed;
       const result = {
         ok,
@@ -136,9 +138,11 @@ export function spawnTick({
         overall,
         error: ok ? null : timedOut
           ? `tick timed out after ${timeoutMs}ms`
-          : scopedFetchFailed
-            ? "tick failed because a scoped API read failed"
-            : `tick failed (exit ${code})`,
+          : invalid
+            ? "tick failed because output contained malformed JSON"
+            : scopedFetchFailed
+              ? "tick failed because a scoped API read failed"
+              : `tick failed (exit ${code})`,
       };
       if (treeTermination) void treeTermination.then(() => finish(result));
       else finish(result);

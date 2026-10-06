@@ -386,6 +386,7 @@ export function createListener({
         logger({ event: "login_unresolved", error: String(e?.message || e) });
       }
     }
+    if (stopping) return { host: config.host || DEFAULT_HOST, port: null };
     if (!effectiveLogin) {
       logger({
         event: "echo_filter_disabled",
@@ -439,6 +440,7 @@ export function createListener({
       for (const report of result.reports || []) {
         if (!report.repo || !report.pr) continue;
         const key = keyOf(report.repo, report.pr);
+        if (closedFlows.has(key)) continue;
         touched.add(key);
         if (report.fetch_failed) {
           trackFlow(key);

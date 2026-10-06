@@ -21,14 +21,22 @@ export function defaultListenerStatePath() {
 }
 
 export function loadListenerState(statePath = defaultListenerStatePath()) {
+  let contents;
   try {
-    const parsed = JSON.parse(fs.readFileSync(statePath, "utf8"));
-    const state = { ...emptyListenerState(), ...parsed, expectations: parsed.expectations || {}, hooks: parsed.hooks || {} };
-    savedSnapshots.set(state, clone(state));
-    return state;
-  } catch {
-    return emptyListenerState();
+    contents = fs.readFileSync(statePath, "utf8");
+  } catch (error) {
+    if (error?.code === "ENOENT") return emptyListenerState();
+    throw error;
   }
+  let parsed;
+  try {
+    parsed = JSON.parse(contents);
+  } catch (error) {
+    throw new Error(`Invalid Listener state JSON at ${statePath}: ${error.message}`, { cause: error });
+  }
+  const state = { ...emptyListenerState(), ...parsed, expectations: parsed.expectations || {}, hooks: parsed.hooks || {} };
+  savedSnapshots.set(state, clone(state));
+  return state;
 }
 
 export function saveListenerState(state, statePath = defaultListenerStatePath()) {
