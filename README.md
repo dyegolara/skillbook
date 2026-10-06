@@ -2,6 +2,9 @@
 
 [![skills.sh](https://skills.sh/b/dyegolara/skillbook)](https://skills.sh/dyegolara/skillbook)
 
+**Versioning:** `main` is PR-only and every PR bumps `VERSION` (semver) with a
+CHANGELOG entry — CI enforces it. See [docs/VERSIONING.md](docs/VERSIONING.md).
+
 > **Note:** This repository contains agent skills in the standard [Agent Skills](https://agentskills.io) format — a folder per skill with a `SKILL.md` of instructions, scripts and resources an agent loads dynamically for specialized tasks. Skills are self-contained, composable, and model-agnostic. Hack around with them, make them your own.
 
 ## What's inside
