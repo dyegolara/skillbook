@@ -1,0 +1,32 @@
+name: version-bump
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  version-bumped:
+    # every PR must bump the repo VERSION (semver). Direct pushes to main are
+    # forbidden (PR-only repo).
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Fail if VERSION did not change vs base
+        run: |
+          base="${{ github.event.pull_request.base.sha }}"
+          head="${{ github.event.pull_request.head.sha }}"
+          old="$(git show "$base":VERSION 2>/dev/null || echo missing)"
+          new="$(git show "$head":VERSION 2>/dev/null || echo missing)"
+          echo "VERSION: $old -> $new"
+          if [ "$old" = "$new" ]; then
+            echo "::error::VERSION must be bumped in every PR (semver: fix -> patch, feature -> minor, breaking -> major). Update VERSION and CHANGELOG.md."
+            exit 1
+          fi
+          if ! grep -q "^## $new" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md must contain a '## $new' section for the bumped version."
+            exit 1
+          fi
