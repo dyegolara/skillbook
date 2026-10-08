@@ -65,6 +65,10 @@
     "./skills/pstack/technical-writing",
     "./skills/pstack/typescript-best-practices",
     "./skills/pstack/unslop",
-    "./skills/pstack/why"
+    "./skills/pstack/why",
+    "./skills/software-factory/grill-with-spec",
+    "./skills/software-factory/dev-flow",
+    "./skills/software-factory/code-review-loop",
+    "./skills/software-factory/create-pr"
   ]
 }
