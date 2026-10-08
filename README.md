@@ -16,10 +16,12 @@ CHANGELOG entry — CI enforces it. See [docs/VERSIONING.md](docs/VERSIONING.md)
 | `pstack` pack | **ported** (`./skills/pstack`, from [cursor/plugins](https://github.com/cursor/plugins/tree/main/pstack), MIT) | pstack | 47 ported, harness-agnostic engineering skills: `poteto-mode` with 23 playbooks, 23 principles, and the standalone skills (`how`, `why`, `architect`, `arena`, `interrogate`, `swarm`, and more), plus the upstream tooling on Node. See [`skills/pstack/README.md`](./skills/pstack/README.md). |
 | `lnurl-auth` | [dyegolara/lnurl-auth-agents](https://github.com/dyegolara/lnurl-auth-agents) (npm `lnurl-auth`) | auth | LNURL-auth (LUD-04) signer — Sign in with Lightning for LLM agents. No wallet, no node, no payment. |
 | `nostr-auth` | [dyegolara/nostr-auth-agents](https://github.com/dyegolara/nostr-auth-agents) (npm `nostr-auth`, also on skills.sh + ClawHub) | auth | Nostr sign-in (NIP-07) for LLM coding agents — no wallet, no extension, auth-only. |
+| Matt Pocock pack | [mattpocock/skills](https://github.com/mattpocock/skills) (skills.sh) | software-factory | Matt Pocock's spec-driven engineering pack (55 skills) — grilling, domain modeling, to-spec, to-tickets, implement-spec, code-review, tdd, pr, handoff, and more. The `software-factory` chain's referenced dependency, installed from skills.sh. |
 
-The two auth skills are **references only** — they keep their own repos, their
-own npm packages and their own skills.sh/ClawHub presence. This book points at
-their published channels (npm / skills.sh / ClawHub), never copies them.
+The referenced skills (`lnurl-auth`, `nostr-auth`, and the Matt Pocock pack)
+are **references only** — they keep their own repos and their own published
+channels. This book points at those channels (npm / skills.sh / ClawHub),
+never copies them.
 
 The pstack pack is the opposite case: it has no published skill channel, so it
 is **ported** (copied under its MIT license and adapted) and this repo becomes
@@ -28,7 +30,7 @@ live in [`skills/pstack/_upstream/`](./skills/pstack/_upstream/PROVENANCE.md).
 
 ## Installation
 
-Two ways in, two philosophies: the **Claude Code plugin** installs this book's own skills as a managed bundle; **[skills.sh](https://skills.sh)** / **npm** install the referenced auth skills from their published channels (no repo cloning, no copies).
+Two ways in, two philosophies: the **Claude Code plugin** installs this book's own skills as a managed bundle; **[skills.sh](https://skills.sh)** / **npm** install the referenced skills from their published channels (no repo cloning, no copies).
 
 ### 1. Get the skills
 
@@ -42,8 +44,9 @@ Add this repo as a marketplace, then install the book's skills:
 /plugin install skillbook-skills@skillbook
 ```
 
-The referenced auth skills (`lnurl-auth`, `nostr-auth`) are NOT in this
-marketplace on purpose — they install from their published channels below.
+The referenced skills (`lnurl-auth`, `nostr-auth`, and the Matt Pocock pack)
+are NOT in this marketplace on purpose — they install from their published
+channels below.
 
 </details>
 
@@ -54,12 +57,13 @@ marketplace on purpose — they install from their published channels below.
 npx skills@latest add dyegolara/skillbook                       # own + ported skills
 npx skills@latest add dyegolara/lnurl-auth-agents --skill lnurl-auth
 npx skills@latest add dyegolara/nostr-auth-agents --skill nostr-auth
+npx skills@latest add mattpocock/skills                         # Matt Pocock pack (referenced)
 ```
 
 Or, from this repo:
 
 ```bash
-npm run skills:install    # runs the two `npx skills add` commands above
+npm run skills:install    # runs the `npx skills add` commands above
 ```
 
 </details>
@@ -90,9 +94,10 @@ The auth skills document their own MCP server + CLI usage in their repos.
 
 Add a skill as a folder under `skills/<category>/<skill>/` with a `SKILL.md`,
 then register it in `.claude-plugin/plugin.json` and the table above. External
-skills join by adding a reference (npm dependency or marketplace plugin) — never
-a copy. The pstack pack is a deliberate exception: it is ported under its MIT
-license with provenance and a drift check in
+skills join by adding a reference (published channel: npm dependency,
+skills.sh, or marketplace plugin) — never a copy. The pstack pack is a
+deliberate exception: it is ported under its MIT license with provenance and a
+drift check in
 [`skills/pstack/_upstream/`](./skills/pstack/_upstream/PROVENANCE.md).
 
 ## License
