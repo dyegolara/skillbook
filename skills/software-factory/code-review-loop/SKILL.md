@@ -4,8 +4,8 @@ description: "Software-factory chain stage: two-axis code review of the integrat
 disable-model-invocation: true
 license: MIT
 metadata:
-  model: opencode-go/mimo-2.6-pro
-  thinking: none
+  model: opencode-go/mimo-v2.6-pro
+  thinking: high
 ---
 
 # code-review-loop
@@ -14,8 +14,8 @@ Independent review of the integration branch, then route to the next stage.
 You did not write this code. Read durable artifacts only; do not reconstruct
 the implementer's reasoning from the handoff doc.
 
-**Model pin**: `opencode-go/mimo-2.6-pro`, no thinking flag — the model
-exposes no effort option. It runs as a background pi terminal session from the
+**Model pin**: `opencode-go/mimo-v2.6-pro`, `--thinking high` — the model's
+highest available effort (`max` clamps to it). It runs as a background pi terminal session from the
 shared worktree, launched at the end of the implement-spec session or
 standalone with `/code-review-loop`.
 

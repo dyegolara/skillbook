@@ -24,7 +24,7 @@ grill-with-spec ──► dev-flow ──► implement-spec ──► code-revie
 | Grill and spec | `grill-with-spec` | Kepler (interactive) | `opencode-go/glm-5.3` | max |
 | Tickets | `dev-flow` | pi (background) | `opencode-go/glm-5.3` | `--thinking max` |
 | Implement | `implement-spec` (referenced) | pi (background) | `opencode-go/deepseek-v4.1-flash` | `--thinking max` |
-| Review | `code-review-loop` | pi (background) | `opencode-go/mimo-2.6-pro` | none exposed |
+| Review | `code-review-loop` | pi (background) | `opencode-go/mimo-v2.6-pro` | `--thinking high` |
 | PR | `create-pr` | pi (background) | `opencode-go/muse-spark-1.3-contributor` | `--thinking xhigh` |
 
 Routes out of `code-review-loop`:

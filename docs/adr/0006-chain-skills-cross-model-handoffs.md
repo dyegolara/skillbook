@@ -22,11 +22,11 @@ context is not independent.
   catalog is cached; pi is lighter and runs headless in the background.
 - Each stage's `SKILL.md` pins its model, invoked at the model's highest
   available effort/thinking (whatever the model exposes — max, xhigh or
-  high; some models expose none):
+  high):
   - grill-with-spec — `opencode-go/glm-5.3` (effort max)
   - dev-flow — `opencode-go/glm-5.3` (`--thinking max`)
   - implement-spec — `opencode-go/deepseek-v4.1-flash` (`--thinking max`)
-  - code-review-loop — `opencode-go/mimo-2.6-pro` (no thinking flag — none exposed)
+  - code-review-loop — `opencode-go/mimo-v2.6-pro` (`--thinking high` — the model's cap: `max` clamps to it)
   - create-pr — `opencode-go/muse-spark-1.3-contributor` (`--thinking xhigh`, provider cap)
 - The pause path needs no MCP (pi has none configured): on a
   decision-forcing finding the terminal chain stops with a durable review

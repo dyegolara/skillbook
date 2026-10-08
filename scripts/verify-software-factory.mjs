@@ -24,7 +24,7 @@ const DESCRIPTION_LIMIT = 1024;
 const CHAIN_SKILLS = [
   { name: "grill-with-spec", model: "opencode-go/glm-5.3", thinking: "max" },
   { name: "dev-flow", model: "opencode-go/glm-5.3", thinking: "max" },
-  { name: "code-review-loop", model: "opencode-go/mimo-2.6-pro", thinking: "none" },
+  { name: "code-review-loop", model: "opencode-go/mimo-v2.6-pro", thinking: "high" },
   { name: "create-pr", model: "opencode-go/muse-spark-1.3-contributor", thinking: "xhigh" },
 ];
 

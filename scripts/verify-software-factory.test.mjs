@@ -10,7 +10,7 @@ import { verifySoftwareFactoryPack } from "./verify-software-factory.mjs";
 const CHAIN_PINS = {
   "grill-with-spec": { model: "opencode-go/glm-5.3", thinking: "max" },
   "dev-flow": { model: "opencode-go/glm-5.3", thinking: "max" },
-  "code-review-loop": { model: "opencode-go/mimo-2.6-pro", thinking: "none" },
+  "code-review-loop": { model: "opencode-go/mimo-v2.6-pro", thinking: "high" },
   "create-pr": { model: "opencode-go/muse-spark-1.3-contributor", thinking: "xhigh" },
 };
 
