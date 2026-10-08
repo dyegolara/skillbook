@@ -121,6 +121,13 @@ function verify(packDir) {
   return verifySoftwareFactoryPack(packDir);
 }
 
+function withoutRow(text, prefix) {
+  return text
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith(prefix))
+    .join("\n");
+}
+
 after(() => {
   for (const root of roots) rmSync(root, { recursive: true, force: true });
 });
@@ -188,6 +195,51 @@ test("rejects a chain skill missing from the plugin manifest", () => {
   assert.ok(
     problems.some((problem) =>
       problem.includes("skills/software-factory/dev-flow/SKILL.md: not registered in the plugin manifest")
+    )
+  );
+});
+
+test("rejects a missing pack README", () => {
+  const problems = verify(makeRepo({ skipPackReadme: true }));
+  assert.ok(problems.some((problem) => problem.includes("skills/software-factory/README.md: missing")));
+});
+
+test("rejects a missing software-factory row in README What's inside", () => {
+  const problems = verify(
+    makeRepo({ readmeText: withoutRow(readme, "| `software-factory` pack ") })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes('README.md: missing the software-factory pack row in "What\'s inside"')
+    )
+  );
+});
+
+test("rejects a missing software-factory row in AGENTS Own skills", () => {
+  const problems = verify(
+    makeRepo({ agentsText: withoutRow(agents, "| `software-factory` pack ") })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes('AGENTS.md: missing the software-factory pack row in "Own skills"')
+    )
+  );
+});
+
+test("rejects a missing Matt Pocock row in README What's inside", () => {
+  const problems = verify(makeRepo({ readmeText: withoutRow(readme, "| Matt Pocock pack ") }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes('README.md: missing the Matt Pocock pack row in "What\'s inside"')
+    )
+  );
+});
+
+test("rejects a missing Matt Pocock row in AGENTS referenced skills", () => {
+  const problems = verify(makeRepo({ agentsText: withoutRow(agents, "| Matt Pocock pack ") }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes('AGENTS.md: missing the Matt Pocock pack row in "Referenced skills (published channels)"')
     )
   );
 });
