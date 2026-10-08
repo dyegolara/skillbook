@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.2.0
+
+- Add the software-factory pack: grill-with-spec, dev-flow, code-review-loop,
+  and create-pr, four chain skills that wrap the referenced Matt Pocock pack
+  into one path from a rough idea to a ready PR. Each hop is a new session on
+  a pinned agent and model; the chain mechanism is recorded in ADR-0006.
+- Add the Matt Pocock pack as referenced skills (published from skills.sh):
+  one install command in the book's skills:install script, two
+  published-channel checks in the publishing verify, and referenced-skills
+  rows in the book's tables.
+- Add verify:software-factory, the pack-contract check for chain frontmatter
+  and model pins, plugin registration, table rows, and dependency references,
+  wired into npm run verify.
+- Migrate the glossary to GLOSSARY.md, replacing CONTEXT.md.
+
 ## 1.1.0
 
 - Add copilot-review-smart v2.3.0's webhook-first Listener, Expectation
