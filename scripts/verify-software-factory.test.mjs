@@ -1,6 +1,8 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { verifySoftwareFactoryPack } from "./verify-software-factory.mjs";
@@ -275,4 +277,11 @@ test("rejects a skills:install that drops the Matt Pocock pack", () => {
       problem.includes("package.json: skills:install does not install mattpocock/skills")
     )
   );
+});
+
+test("the CLI reports the real pack as OK", () => {
+  const script = fileURLToPath(new URL("./verify-software-factory.mjs", import.meta.url));
+  const result = spawnSync(process.execPath, [script], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(result.stdout.includes("[OK  ] software-factory pack contract holds"));
 });

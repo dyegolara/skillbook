@@ -14,7 +14,8 @@
  *      and the skills:install command.
  */
 import { existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { parseFrontmatter } from "./verify-pstack.mjs";
 
 const DESCRIPTION_LIMIT = 1024;
@@ -175,4 +176,21 @@ function readRegisteredSkills(repoRoot, problems) {
     problems.push(`.claude-plugin/plugin.json: ${error.message}`);
     return new Set();
   }
+}
+
+function main() {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const packDir = resolve(here, "../skills/software-factory");
+  const problems = verifySoftwareFactoryPack(packDir);
+  for (const problem of problems) console.log(`[FAIL] ${problem}`);
+  if (problems.length === 0) {
+    console.log("[OK  ] software-factory pack contract holds");
+    return;
+  }
+  console.log(`\n${problems.length} problem(s) in the software-factory pack.`);
+  process.exitCode = 1;
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main();
 }
