@@ -1,0 +1,193 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { after, test } from "node:test";
+import assert from "node:assert/strict";
+import { verifySoftwareFactoryPack } from "./verify-software-factory.mjs";
+
+const CHAIN_PINS = {
+  "grill-with-spec": { model: "opencode-go/glm-5.3", thinking: "max" },
+  "dev-flow": { model: "opencode-go/glm-5.3", thinking: "max" },
+  "code-review-loop": { model: "opencode-go/mimo-2.6-pro", thinking: "none" },
+  "create-pr": { model: "opencode-go/muse-spark-1.3-contributor", thinking: "xhigh" },
+};
+
+const readme = [
+  "# Skillbook",
+  "",
+  "## What's inside",
+  "",
+  "| Skill | Source | Category | What it does |",
+  "|---|---|---|---|",
+  "| `software-factory` pack | **in-repo** (`./skills/software-factory`) | software-factory | Four chain skills. |",
+  "| Matt Pocock pack | [mattpocock/skills](https://github.com/mattpocock/skills) (skills.sh) | software-factory | Spec-driven pack. |",
+  "",
+  "## Installation",
+  "",
+].join("\n");
+
+const agents = [
+  "# Dojo Mojo Skillbook",
+  "",
+  "### Own skills",
+  "",
+  "| Skill | Category | What it does |",
+  "|---|---|---|",
+  "| `software-factory` pack | software-factory | Four chain skills. |",
+  "",
+  "### Referenced skills (published channels)",
+  "",
+  "| Skill | Source | Category | What it does |",
+  "|---|---|---|---|",
+  "| Matt Pocock pack | `mattpocock/skills` (skills.sh) | software-factory | Spec-driven pack. |",
+  "",
+].join("\n");
+
+const publishing = [
+  "const refs = [",
+  '  ["skills.sh page", "https://skills.sh/mattpocock/skills"],',
+  '  ["GitHub repo", "https://github.com/mattpocock/skills"],',
+  "];",
+  "",
+].join("\n");
+
+const roots = [];
+
+function write(root, rel, content) {
+  const full = join(root, rel);
+  mkdirSync(join(full, ".."), { recursive: true });
+  writeFileSync(full, content);
+}
+
+function skillFrontmatter(name, overrides = {}) {
+  const pin = CHAIN_PINS[name];
+  const fields = {
+    name,
+    description: `Chain skill ${name}.`,
+    model: pin.model,
+    thinking: pin.thinking,
+    ...overrides,
+  };
+  return [
+    "---",
+    `name: ${fields.name}`,
+    `description: "${fields.description}"`,
+    "disable-model-invocation: true",
+    "license: MIT",
+    "metadata:",
+    `  model: ${fields.model}`,
+    `  thinking: ${fields.thinking}`,
+    "---",
+    "",
+    `# ${name}`,
+    "",
+  ].join("\n");
+}
+
+function makeRepo({
+  skillOverrides = {},
+  omitSkill = null,
+  pluginSkills,
+  skipPackReadme = false,
+  readmeText = readme,
+  agentsText = agents,
+  publishingText = publishing,
+  skillsInstall = "npx skills@latest add mattpocock/skills",
+} = {}) {
+  const root = mkdtempSync(join(tmpdir(), "software-factory-verify-"));
+  roots.push(root);
+  for (const name of Object.keys(CHAIN_PINS)) {
+    if (name === omitSkill) continue;
+    write(root, `skills/software-factory/${name}/SKILL.md`, skillFrontmatter(name, skillOverrides[name]));
+  }
+  if (!skipPackReadme) write(root, "skills/software-factory/README.md", "# software-factory pack\n");
+  write(
+    root,
+    ".claude-plugin/plugin.json",
+    JSON.stringify({
+      skills:
+        pluginSkills ??
+        Object.keys(CHAIN_PINS).map((name) => `./skills/software-factory/${name}`),
+    })
+  );
+  write(root, "README.md", readmeText);
+  write(root, "AGENTS.md", agentsText);
+  write(root, "scripts/verify-publishing.mjs", publishingText);
+  write(root, "package.json", JSON.stringify({ scripts: { "skills:install": skillsInstall } }));
+  return join(root, "skills", "software-factory");
+}
+
+function verify(packDir) {
+  return verifySoftwareFactoryPack(packDir);
+}
+
+after(() => {
+  for (const root of roots) rmSync(root, { recursive: true, force: true });
+});
+
+test("a conforming fixture pack has no problems", () => {
+  assert.deepEqual(verify(makeRepo()), []);
+});
+
+test("rejects a missing chain skill", () => {
+  const problems = verify(makeRepo({ omitSkill: "dev-flow" }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes("skills/software-factory/dev-flow/SKILL.md: missing")
+    )
+  );
+});
+
+test("rejects a name that does not match its folder", () => {
+  const problems = verify(
+    makeRepo({ skillOverrides: { "dev-flow": { name: "tickets-flow" } } })
+  );
+  assert.ok(problems.some((problem) => problem.includes("does not match folder")));
+});
+
+test("rejects a missing description", () => {
+  const problems = verify(
+    makeRepo({ skillOverrides: { "create-pr": { description: "" } } })
+  );
+  assert.ok(problems.some((problem) => problem.includes("missing description")));
+});
+
+test("rejects a description longer than 1024 characters", () => {
+  const problems = verify(
+    makeRepo({ skillOverrides: { "grill-with-spec": { description: "x".repeat(1025) } } })
+  );
+  assert.ok(problems.some((problem) => problem.includes("longer than 1024 characters")));
+});
+
+test("rejects a model pin that does not match ADR-0006", () => {
+  const problems = verify(
+    makeRepo({ skillOverrides: { "grill-with-spec": { model: "opencode-go/gpt-9" } } })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes('model pin "opencode-go/gpt-9" does not match ADR-0006 "opencode-go/glm-5.3"')
+    )
+  );
+});
+
+test("rejects a thinking pin that does not match ADR-0006", () => {
+  const problems = verify(
+    makeRepo({ skillOverrides: { "create-pr": { thinking: "high" } } })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes('thinking pin "high" does not match ADR-0006 "xhigh"')
+    )
+  );
+});
+
+test("rejects a chain skill missing from the plugin manifest", () => {
+  const problems = verify(
+    makeRepo({ pluginSkills: ["./skills/software-factory/grill-with-spec"] })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes("skills/software-factory/dev-flow/SKILL.md: not registered in the plugin manifest")
+    )
+  );
+});
