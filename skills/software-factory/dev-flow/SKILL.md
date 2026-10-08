@@ -44,7 +44,7 @@ background pi terminal session from the shared worktree, launched by
 
    ```bash
    nohup pi --print --provider opencode-go --model opencode-go/deepseek-v4.1-flash --thinking max \
-     'Run the implement-spec skill in this worktree for spec #<n>. Read the handoff doc at <path>. Work the ticket frontier. When it completes, run the handoff skill for code-review-loop, then launch it per the chain rules in skills/software-factory/code-review-loop/SKILL.md.' \
+     'Run the implement-spec skill in this worktree for spec #<n>: load it with the Skill tool as `implement-spec`, or in this pi session read ~/.agents/skills/implement-spec/SKILL.md. Read the handoff doc at <path>. Work the ticket frontier. When it completes, run the handoff skill for code-review-loop, then launch it per the chain rules in skills/software-factory/code-review-loop/SKILL.md.' \
      > /tmp/skillbook-implement-spec-pi.log 2>&1 &
    ```
 

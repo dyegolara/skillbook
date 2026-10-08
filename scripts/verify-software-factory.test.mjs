@@ -168,24 +168,24 @@ test("rejects a description longer than 1024 characters", () => {
   assert.ok(problems.some((problem) => problem.includes("longer than 1024 characters")));
 });
 
-test("rejects a model pin that does not match ADR-0006", () => {
+test("rejects a model pin that does not match the pinned chain contract", () => {
   const problems = verify(
     makeRepo({ skillOverrides: { "grill-with-spec": { model: "opencode-go/gpt-9" } } })
   );
   assert.ok(
     problems.some((problem) =>
-      problem.includes('model pin "opencode-go/gpt-9" does not match ADR-0006 "opencode-go/glm-5.3"')
+      problem.includes('model pin "opencode-go/gpt-9" does not match the pinned chain contract "opencode-go/glm-5.3"')
     )
   );
 });
 
-test("rejects a thinking pin that does not match ADR-0006", () => {
+test("rejects a thinking pin that does not match the pinned chain contract", () => {
   const problems = verify(
     makeRepo({ skillOverrides: { "create-pr": { thinking: "high" } } })
   );
   assert.ok(
     problems.some((problem) =>
-      problem.includes('thinking pin "high" does not match ADR-0006 "xhigh"')
+      problem.includes('thinking pin "high" does not match the pinned chain contract "xhigh"')
     )
   );
 });

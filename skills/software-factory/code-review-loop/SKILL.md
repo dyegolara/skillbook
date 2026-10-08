@@ -74,7 +74,7 @@ It points at the review report, the spec issue, the tickets and the PR.
 
   ```bash
   nohup pi --print --provider opencode-go --model opencode-go/glm-5.3 --thinking max \
-    'Run the dev-flow skill for spec #<n>. Read the handoff doc at <path> and the review report at <path>. Publish the findings as fix tickets.' \
+    'Run the dev-flow skill for spec #<n>: read skills/software-factory/dev-flow/SKILL.md and follow it. Read the handoff doc at <path> and the review report at <path>. Publish the findings as fix tickets.' \
     > /tmp/skillbook-dev-flow-pi.log 2>&1 &
   ```
 
@@ -82,7 +82,7 @@ It points at the review report, the spec issue, the tickets and the PR.
 
   ```bash
   nohup pi --print --provider opencode-go --model opencode-go/muse-spark-1.3-contributor --thinking xhigh \
-    'Run the create-pr skill for spec #<n>. Read the handoff doc at <path> and the review report at <path>.' \
+    'Run the create-pr skill for spec #<n>: read skills/software-factory/create-pr/SKILL.md and follow it. Read the handoff doc at <path> and the review report at <path>.' \
     > /tmp/skillbook-create-pr-pi.log 2>&1 &
   ```
 

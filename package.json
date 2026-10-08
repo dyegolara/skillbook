@@ -2,7 +2,7 @@
   "name": "skillbook",
   "version": "1.2.0",
   "private": true,
-  "description": "Dojo Mojo's skillbook — agent skills: own skills, the ported pstack pack, and pointers to dyegolara's published auth skills.",
+  "description": "Dojo Mojo's skillbook — agent skills: own skills, the software-factory chain pack, the ported pstack pack, and referenced skills published to npm and skills.sh.",
   "type": "module",
   "scripts": {
     "skills:install": "npx skills@latest add dyegolara/lnurl-auth-agents --skill lnurl-auth && npx skills@latest add dyegolara/nostr-auth-agents --skill nostr-auth && npx skills@latest add mattpocock/skills",

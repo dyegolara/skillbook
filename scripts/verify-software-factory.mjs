@@ -20,6 +20,7 @@ import { parseFrontmatter } from "./verify-pstack.mjs";
 
 const DESCRIPTION_LIMIT = 1024;
 
+// Pins per ADR-0006 (the decision record); the check verifies the contract, not the ADR text.
 const CHAIN_SKILLS = [
   { name: "grill-with-spec", model: "opencode-go/glm-5.3", thinking: "max" },
   { name: "dev-flow", model: "opencode-go/glm-5.3", thinking: "max" },
@@ -55,12 +56,12 @@ export function verifySoftwareFactoryPack(packDir, options = {}) {
     }
     if (data.metadata?.model !== skill.model) {
       problems.push(
-        `${label}: model pin "${data.metadata?.model ?? ""}" does not match ADR-0006 "${skill.model}"`
+        `${label}: model pin "${data.metadata?.model ?? ""}" does not match the pinned chain contract "${skill.model}"`
       );
     }
     if (data.metadata?.thinking !== skill.thinking) {
       problems.push(
-        `${label}: thinking pin "${data.metadata?.thinking ?? ""}" does not match ADR-0006 "${skill.thinking}"`
+        `${label}: thinking pin "${data.metadata?.thinking ?? ""}" does not match the pinned chain contract "${skill.thinking}"`
       );
     }
     if (!registered.has(`skills/software-factory/${skill.name}`)) {

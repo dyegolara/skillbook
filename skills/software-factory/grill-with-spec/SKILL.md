@@ -54,7 +54,7 @@ background from the shared worktree, per [ADR-0006](../../../docs/adr/0006-chain
 
 ```bash
 nohup pi --print --provider opencode-go --model opencode-go/glm-5.3 --thinking max \
-  'Run the dev-flow skill on spec issue #<n> in this worktree. Read the handoff doc at <path> first.' \
+  'Run the dev-flow skill on spec issue #<n> in this worktree: read skills/software-factory/dev-flow/SKILL.md and follow it. Read the handoff doc at <path> first.' \
   > /tmp/skillbook-dev-flow-pi.log 2>&1 &
 ```
 
