@@ -12,7 +12,7 @@
     "verify:software-factory": "node scripts/verify-software-factory.mjs",
     "verify": "npm run verify:publishing && npm run verify:upstream -- --report-only && npm run verify:pstack && npm run verify:software-factory",
     "test:copilot-review-smart": "node --test skills/engineering/copilot-review-smart/decision.test.mjs skills/engineering/copilot-review-smart/pr_monitor.test.mjs skills/engineering/copilot-review-smart/harness.test.mjs skills/engineering/copilot-review-smart/listener/test/pr_monitor_webhook.test.mjs",
-    "test:scripts": "node --test scripts/verify-pstack.test.mjs scripts/verify-upstream.test.mjs scripts/verify-software-factory.test.mjs",
+    "test:scripts": "node --test scripts/verify-pstack.test.mjs scripts/verify-upstream.test.mjs scripts/verify-software-factory.test.mjs skills/software-factory/scripts/launch-stage.test.mjs",
     "install:pstack": "npm --prefix skills/pstack/poteto-mode/scripts ci --no-audit --no-fund && node --input-type=module -e \"import('./skills/pstack/poteto-mode/scripts/bootstrap.ts').then(({ writeInstallKey }) => writeInstallKey('full'))\"",
     "test:pstack": "npm run install:pstack && npm --prefix skills/pstack/poteto-mode/scripts test",
     "typecheck:pstack": "npm run install:pstack && npm --prefix skills/pstack/poteto-mode/scripts run typecheck",
