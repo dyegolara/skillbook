@@ -1,0 +1,11 @@
+{
+  "name": "@skillbook/pr-monitor-listener",
+  "version": "2.3.0",
+  "private": true,
+  "type": "module",
+  "description": "Webhook-first Listener for the copilot-review-smart skill: signed GitHub Deliveries in, one Tick at a time out, Expectations armed from the Tick report.",
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "license": "MIT"
+}
