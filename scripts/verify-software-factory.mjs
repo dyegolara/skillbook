@@ -8,7 +8,10 @@
  *      the model and thinking pins recorded in ADR-0006;
  *   2. every chain skill is registered in the plugin manifest;
  *   3. the pack README exists and the book's tables carry the pack's rows
- *      (README "What's inside", AGENTS "Own skills").
+ *      (README "What's inside", AGENTS "Own skills");
+ *   4. the referenced Matt Pocock pack is wired as a dependency: its row in
+ *      both books' referenced-skills tables, both published-channel checks,
+ *      and the skills:install command.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -21,6 +24,11 @@ const CHAIN_SKILLS = [
   { name: "dev-flow", model: "opencode-go/glm-5.3", thinking: "max" },
   { name: "code-review-loop", model: "opencode-go/mimo-2.6-pro", thinking: "none" },
   { name: "create-pr", model: "opencode-go/muse-spark-1.3-contributor", thinking: "xhigh" },
+];
+
+const DEPENDENCY_CHANNELS = [
+  "https://skills.sh/mattpocock/skills",
+  "https://github.com/mattpocock/skills",
 ];
 
 export function verifySoftwareFactoryPack(packDir, options = {}) {
@@ -87,8 +95,41 @@ export function verifySoftwareFactoryPack(packDir, options = {}) {
     prefix: "| Matt Pocock pack ",
     what: "Matt Pocock pack",
   });
+  checkPublishedChannels(problems, repoRoot);
+  checkInstallCommand(problems, repoRoot);
 
   return problems;
+}
+
+function checkPublishedChannels(problems, repoRoot) {
+  const path = join(repoRoot, "scripts", "verify-publishing.mjs");
+  if (!existsSync(path)) {
+    problems.push("scripts/verify-publishing.mjs: missing");
+    return;
+  }
+  const text = readFileSync(path, "utf8");
+  for (const url of DEPENDENCY_CHANNELS) {
+    if (!text.includes(url)) {
+      problems.push(`scripts/verify-publishing.mjs: missing published-channel check ${url}`);
+    }
+  }
+}
+
+function checkInstallCommand(problems, repoRoot) {
+  const path = join(repoRoot, "package.json");
+  if (!existsSync(path)) {
+    problems.push("package.json: missing");
+    return;
+  }
+  try {
+    const pkg = JSON.parse(readFileSync(path, "utf8"));
+    const install = pkg.scripts?.["skills:install"];
+    if (typeof install !== "string" || !install.includes("mattpocock/skills")) {
+      problems.push("package.json: skills:install does not install mattpocock/skills");
+    }
+  } catch (error) {
+    problems.push(`package.json: ${error.message}`);
+  }
 }
 
 function sectionLines(text, heading) {

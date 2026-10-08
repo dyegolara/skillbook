@@ -243,3 +243,36 @@ test("rejects a missing Matt Pocock row in AGENTS referenced skills", () => {
     )
   );
 });
+
+test("rejects a missing skills.sh channel check", () => {
+  const problems = verify(
+    makeRepo({ publishingText: publishing.replace("https://skills.sh/mattpocock/skills", "") })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes("scripts/verify-publishing.mjs: missing published-channel check https://skills.sh/mattpocock/skills")
+    )
+  );
+});
+
+test("rejects a missing GitHub channel check", () => {
+  const problems = verify(
+    makeRepo({ publishingText: publishing.replace("https://github.com/mattpocock/skills", "") })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes("scripts/verify-publishing.mjs: missing published-channel check https://github.com/mattpocock/skills")
+    )
+  );
+});
+
+test("rejects a skills:install that drops the Matt Pocock pack", () => {
+  const problems = verify(
+    makeRepo({ skillsInstall: "npx skills@latest add dyegolara/skillbook" })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes("package.json: skills:install does not install mattpocock/skills")
+    )
+  );
+});
