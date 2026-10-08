@@ -33,9 +33,9 @@ const DEPENDENCY_CHANNELS = [
   "https://github.com/mattpocock/skills",
 ];
 
-export function verifySoftwareFactoryPack(packDir, options = {}) {
+export function verifySoftwareFactoryPack(packDir) {
   const problems = [];
-  const repoRoot = options.repoRoot ?? resolve(packDir, "../..");
+  const repoRoot = resolve(packDir, "../..");
   const registered = readRegisteredSkills(repoRoot, problems);
 
   for (const skill of CHAIN_SKILLS) {
