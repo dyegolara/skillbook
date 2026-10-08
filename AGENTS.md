@@ -36,7 +36,7 @@ playbooks and the standalone skills (23 principles plus 23 standalone skills,
 |---|---|---|---|
 | `lnurl-auth` | `dyegolara/lnurl-auth-agents` (npm) | auth | LNURL-auth (LUD-04) signer — Sign in with Lightning for LLM agents. |
 | `nostr-auth` | `dyegolara/nostr-auth-agents` (npm) | auth | Nostr sign-in (NIP-07) for LLM coding agents — no wallet, no extension. |
-| Matt Pocock pack | `mattpocock/skills` (skills.sh) | software-factory | Matt Pocock's spec-driven engineering pack (55 skills) — grilling, domain modeling, to-spec, to-tickets, implement-spec, code-review, tdd, pr, handoff, and more. The `software-factory` chain's referenced dependency. |
+| Matt Pocock pack | `mattpocock/skills` (skills.sh) | software-factory | Matt Pocock's spec-driven engineering pack — grilling, domain modeling, to-spec, to-tickets, implement-spec, code-review, tdd, pr, handoff, and more. The `software-factory` chain's referenced dependency. |
 
 ## Commands
 

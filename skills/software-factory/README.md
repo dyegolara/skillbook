@@ -67,8 +67,9 @@ ln -s "$PWD/skills/software-factory/create-pr"         ~/.agents/skills/create-p
 ```
 
 Point the links at the shared worktree's copy — per-ticket worktrees are
-deleted after merge. The links dangle until the pack's PR lands on `main`;
-after that they resolve to the canonical source.
+deleted after merge. The links resolve as soon as the pack is on the shared
+worktree's branch; re-point them at a canonical checkout when that worktree
+is retired.
 
 ## Dependencies
 
