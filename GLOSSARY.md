@@ -40,7 +40,8 @@ _Avoid_: pipeline, workflow.
 
 **Model pin**:
 The agent, model and highest-available effort a chain stage is invoked
-with, fixed in the stage's `SKILL.md`.
+with, fixed in the own stage's `SKILL.md` frontmatter or, for the referenced
+implement-spec stage, recorded in ADR-0006.
 _Avoid_: model config, model setting.
 
 **Handoff doc**:
