@@ -70,20 +70,22 @@ Classify the findings, then take exactly one route:
 Always call the Skill tool for `handoff` first, tailored to the chosen stage.
 It points at the review report, the spec issue, the tickets and the PR.
 
-- **dev-flow** — launch a new background pi session:
+Launch the next pi stage through the pack helper from the shared worktree. The
+helper starts a visible `chain #<spec>: <stage>` Kepler terminal, injects the
+stage's pinned command and prints the terminal id. When the terminal API is
+unreachable it falls back to the detached `nohup pi` launch and reports which
+path it took.
+
+- **dev-flow** — launch a new pi session:
 
   ```bash
-  nohup pi --print --provider opencode-go --model opencode-go/glm-5.3 --thinking max \
-    'Run the dev-flow skill for spec #<n>: read skills/software-factory/dev-flow/SKILL.md and follow it. Read the handoff doc at <path> and the review report at <path>. Publish the findings as fix tickets.' \
-    > /tmp/skillbook-dev-flow-pi.log 2>&1 &
+  node skills/software-factory/scripts/launch-stage.mjs dev-flow 'Run the dev-flow skill for spec #<n>: read skills/software-factory/dev-flow/SKILL.md and follow it. Read the handoff doc at <path> and the review report at <path>. Publish the findings as fix tickets.'
   ```
 
-- **create-pr** — launch a new background pi session:
+- **create-pr** — launch a new pi session:
 
   ```bash
-  nohup pi --print --provider opencode-go --model opencode-go/muse-spark-1.3-contributor --thinking xhigh \
-    'Run the create-pr skill for spec #<n>: read skills/software-factory/create-pr/SKILL.md and follow it. Read the handoff doc at <path> and the review report at <path>.' \
-    > /tmp/skillbook-create-pr-pi.log 2>&1 &
+  node skills/software-factory/scripts/launch-stage.mjs create-pr 'Run the create-pr skill for spec #<n>: read skills/software-factory/create-pr/SKILL.md and follow it. Read the handoff doc at <path> and the review report at <path>.'
   ```
 
 - **grill-with-spec** — do not launch a session. The chain pauses on the

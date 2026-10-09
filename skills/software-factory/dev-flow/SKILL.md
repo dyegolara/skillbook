@@ -40,28 +40,30 @@ background pi terminal session from the shared worktree, launched by
 4. Call the Skill tool for `handoff` for the implement-spec stage. Pointers
    only: the spec issue, the tickets, the ADRs, the worktree.
 
-5. Launch implement-spec as a new background pi session:
+5. Launch implement-spec through the pack helper from the shared worktree:
 
    ```bash
-   nohup pi --print --provider opencode-go --model opencode-go/deepseek-v4.1-flash --thinking max \
-     'Run the implement-spec skill in this worktree for spec #<n>: load it with the Skill tool as `implement-spec`, or in this pi session read ~/.agents/skills/implement-spec/SKILL.md. Read the handoff doc at <path>. Work the ticket frontier. When it completes, run the handoff skill for code-review-loop, then launch it per the chain rules in skills/software-factory/code-review-loop/SKILL.md.' \
-     > /tmp/skillbook-implement-spec-pi.log 2>&1 &
+   node skills/software-factory/scripts/launch-stage.mjs implement-spec 'Run the implement-spec skill in this worktree for spec #<n>: load it with the Skill tool as `implement-spec`, or in this pi session read ~/.agents/skills/implement-spec/SKILL.md. Read the handoff doc at <path>. Work the ticket frontier. When it completes, run the handoff skill for code-review-loop, then launch it per the chain rules in skills/software-factory/code-review-loop/SKILL.md.'
    ```
 
-6. Report the ticket numbers and the log path, then stop. The implement-spec
-   session owns the rest: it runs the full skill in this same worktree,
-   including its inline review and the draft PR after the first merge, and at
-   the end launches `code-review-loop` with a fresh context and pointers only.
+6. Report the ticket numbers and the launch line the helper printed, then stop.
+   The implement-spec session owns the rest: it runs the full skill in this
+   same worktree, including its inline review and the draft PR after the first
+   merge, and at the end launches `code-review-loop` with a fresh context and
+   pointers only.
 
 ## Handoff rules
 
-The chain's rules apply at this hop and every later one:
+The chain's rules apply at this stage and every later one:
 
 - The `handoff` skill writes the compacted doc to the OS temp directory; the
   next session reads it by pointer.
 - Context travels as pointers to durable artifacts — the spec issue, tickets,
   ADRs, `GLOSSARY.md`, the review report — never as conversation.
-- Every hop is a new session. No stage inherits this session's context.
-- The pi stages run as background terminal sessions from the shared worktree:
-  `nohup pi --print --provider opencode-go --model <pin> --thinking <flag> '<thin pointers>' > /tmp/skillbook-<stage>-pi.log 2>&1 &`.
+- Every stage is a new session. No stage inherits this session's context.
+- The pi stages launch through the pack helper from the shared worktree:
+  `node skills/software-factory/scripts/launch-stage.mjs <stage> '<thin pointers>'`.
+  The helper starts a visible `chain #<spec>: <stage>` Kepler terminal and
+  prints the terminal id. When the terminal API is unreachable it falls back
+  to the detached `nohup pi` launch and reports which path it took.
 - Every stage shares one git worktree.

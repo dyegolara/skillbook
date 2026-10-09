@@ -1,7 +1,7 @@
 # software-factory pack
 
 Four own chain skills that wrap the referenced Matt Pocock skill pack into one
-path from a rough idea to a ready PR. Every hop is a new session on its pinned
+path from a rough idea to a ready PR. Every stage is a new session on its pinned
 agent and model; the chain pauses on the maintainer only for decision-forcing
 findings.
 
@@ -35,7 +35,7 @@ Routes out of `code-review-loop`:
 | Clean — nothing on either review axis | `create-pr` |
 | Decision-forcing — the fix is not obvious, or the decision is not in the code, task or spec | `grill-with-spec` (re-entry), which pauses the chain on the maintainer |
 
-## How a hop travels
+## How context travels between stages
 
 - Each stage runs the `handoff` skill before starting the next one. The
   compacted doc goes to the OS temp directory; the next session reads it by
@@ -43,13 +43,16 @@ Routes out of `code-review-loop`:
 - Context never travels as conversation. The durable artifacts are the spec
   issue, the tickets (sub-issues of the spec), the ADRs, `GLOSSARY.md`, the
   untracked review report, and the git worktree the whole chain shares.
-- Every hop is a new session, so no stage inherits another stage's context.
+- Every stage is a new session, so no stage inherits another stage's context.
   The reviewer in particular sees only pointers, never the implementer's
   reasoning.
-- The pi stages launch as background terminal sessions from the shared
-  worktree:
-  `nohup pi --print --provider opencode-go --model <pin> --thinking <flag> '<thin pointers>' > /tmp/skillbook-<stage>-pi.log 2>&1 &`.
-  `grill-with-spec` is the one interactive stage and runs as a Kepler session.
+- The pi stages launch through the pack helper from the shared worktree:
+  `node skills/software-factory/scripts/launch-stage.mjs <stage> '<thin pointers>'`.
+  The helper starts a visible `chain #<spec>: <stage>` Kepler terminal,
+  injects the stage's pinned command and prints the terminal id. When the
+  terminal API is unreachable it falls back to the detached `nohup pi` launch
+  and reports which path it took. `grill-with-spec` is the one interactive
+  stage and runs as a Kepler session.
 
 ## Runtime availability
 

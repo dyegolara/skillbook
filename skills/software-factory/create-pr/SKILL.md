@@ -47,6 +47,6 @@ shared worktree, launched by `code-review-loop` after a clean review.
 
 ## Handoff
 
-This is the terminal stage, so there is no hop: no `handoff` doc, no next
-session. The ready PR is the durable artifact, the review report is its
+This is the terminal stage, so there is no next stage: no `handoff` doc, no
+next session. The ready PR is the durable artifact, the review report is its
 evidence, and the maintainer takes it from there.
