@@ -4,7 +4,7 @@
 
 - Add the software-factory pack: grill-with-spec, dev-flow, code-review-loop,
   and create-pr, four chain skills that wrap the referenced Matt Pocock pack
-  into one path from a rough idea to a ready PR. Each hop is a new session on
+  into one path from a rough idea to a ready PR. Each stage is a new session on
   a pinned agent and model; the chain mechanism is recorded in ADR-0006.
 - Add the Matt Pocock pack as referenced skills (published from skills.sh):
   one install command in the book's skills:install script, two

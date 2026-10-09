@@ -49,13 +49,11 @@ Call the Skill tool for `handoff`, compacting this conversation for the
 dev-flow stage. The doc carries pointers only: the spec issue, the ADRs,
 `GLOSSARY.md`, the worktree.
 
-Start dev-flow in a new session. It is a pi stage, so launch it in the
-background from the shared worktree, per [ADR-0006](../../../docs/adr/0006-chain-skills-cross-model-handoffs.md):
+Start dev-flow in a new session. It is a pi stage, so launch it through the
+pack helper from the shared worktree, per [ADR-0006](../../../docs/adr/0006-chain-skills-cross-model-handoffs.md):
 
 ```bash
-nohup pi --print --provider opencode-go --model opencode-go/glm-5.3 --thinking max \
-  'Run the dev-flow skill on spec issue #<n> in this worktree: read skills/software-factory/dev-flow/SKILL.md and follow it. Read the handoff doc at <path> first.' \
-  > /tmp/skillbook-dev-flow-pi.log 2>&1 &
+node skills/software-factory/scripts/launch-stage.mjs dev-flow 'Run the dev-flow skill on spec issue #<n> in this worktree: read skills/software-factory/dev-flow/SKILL.md and follow it. Read the handoff doc at <path> first.'
 ```
 
 ## Re-entry form
@@ -90,12 +88,15 @@ to dev-flow.
 
 Both forms follow the same rules, and so does every later stage:
 
-- Run the `handoff` skill before the hop. It writes the compacted doc to the
-  OS temp directory; the next session reads it by pointer.
+- Run the `handoff` skill before launching the next stage. It writes the
+  compacted doc to the OS temp directory; the next session reads it by pointer.
 - Context travels as pointers to durable artifacts — the spec issue, tickets,
   ADRs, `GLOSSARY.md`, the review report — never as conversation.
-- Every hop is a new session. No stage inherits this session's context.
-- The pi stages run as background terminal sessions from the shared worktree:
-  `nohup pi --print --provider opencode-go --model <pin> --thinking <flag> '<thin pointers>' > /tmp/skillbook-<stage>-pi.log 2>&1 &`.
+- Every stage is a new session. No stage inherits this session's context.
+- The pi stages launch through the pack helper from the shared worktree:
+  `node skills/software-factory/scripts/launch-stage.mjs <stage> '<thin pointers>'`.
+  The helper starts a visible `chain #<spec>: <stage>` Kepler terminal and
+  prints the terminal id. When the terminal API is unreachable it falls back
+  to the detached `nohup pi` launch and reports which path it took.
 - Every stage shares one git worktree. The worktree outlives this session;
   the context does not.
