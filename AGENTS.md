@@ -46,7 +46,7 @@ playbooks and the standalone skills (23 principles plus 23 standalone skills,
 | `npm run verify:publishing` | Every referenced skill resolves on its published channel (network). |
 | `npm run verify:upstream` | Upstream drift against the pstack pin (network). Fails on drift; `npm run verify` runs it with `--report-only` so upstream movement is reported but does not break the health check. |
 | `npm run verify:pstack` | The pstack pack contract: frontmatter, cross-references, plugin registration, provenance, no required client couplings, Node smoke of the tooling. Offline except the tooling smoke, which may install tooling dependencies on first run (`npm run verify:pstack -- --skip-smoke` skips it). |
-| `npm run verify:software-factory` | The software-factory pack contract: the four chain skills' frontmatter and ADR-0006 model pins, plugin registration, the pack README and the book's table rows, and the Matt Pocock dependency references. Offline. |
+| `npm run verify:software-factory` | The software-factory pack contract: the four chain skills' frontmatter and ADR-0006 model pins, plugin registration, the pack README and the book's table rows, the Matt Pocock dependency references, and the launch mechanism (helper exists, launch snippets reference it, its pins table matches the recorded pins, spawn snippets are pinned). Offline. |
 | `npm test` | All suites: this repo's scripts and skills, then the ported tooling suite. |
 | `npm run test:pstack` | The ported tooling's upstream `bun:test` suite (Bun is a dev dependency). |
 | `npm run typecheck:pstack` | TypeScript over the ported tooling (`verbatimModuleSyntax`, `erasableSyntaxOnly`). |

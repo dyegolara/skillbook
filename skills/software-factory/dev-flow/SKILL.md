@@ -64,9 +64,10 @@ The chain's rules apply at this stage and every later one:
 - Every stage is a new session. No stage inherits this session's context.
 - The pi stages launch through the pack helper from the shared worktree:
   `node skills/software-factory/scripts/launch-stage.mjs <stage> '<thin pointers>'`.
-  The helper starts a visible `chain #<spec>: <stage>` Kepler terminal and
-  prints the terminal id. When the terminal API is unreachable it falls back
-  to the detached `nohup pi` launch and reports which path it took.
+  The helper starts a visible `chain #<spec>: <stage>` Kepler terminal, injects
+  the stage's pinned command and prints the terminal id. When the terminal API
+  is unreachable it falls back to the detached `nohup pi` launch and reports
+  which path it took.
 - Every spawned `pi` command — the stage launch and each sub-agent — carries
   an explicit `--provider`, `--model` and `--thinking`; never rely on pi's
   ambient default (the kimi-k3 incident: three un-pinned spawns burned the

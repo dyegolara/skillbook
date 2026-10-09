@@ -22,7 +22,8 @@ import { pathToFileURL } from "node:url";
 
 const KEPLER_DATA_DIR = "/config/.kepler-server/data";
 
-// Pins per ADR-0006; keep in lockstep with the four SKILL.md frontmatter pins.
+// Pins per ADR-0006: the three own pi stages are mirrored from their SKILL.md
+// frontmatter; implement-spec is referenced and its pin is recorded in ADR-0006.
 export const STAGE_PINS = {
   "dev-flow": { provider: "opencode-go", model: "opencode-go/glm-5.3", thinking: "max" },
   "implement-spec": { provider: "opencode-go", model: "opencode-go/deepseek-v4.1-flash", thinking: "max" },
@@ -144,7 +145,7 @@ export async function launchStage({ stage, pointers, deps = {} }) {
 
   let reason;
   try {
-    const apiBase = deps.apiBase ?? process.env.LAUNCH_STAGE_API_BASE ?? readKeplerApiBase();
+    const apiBase = deps.apiBase ?? readKeplerApiBase();
     const launched = await launchInTerminal({ stage, pointers, apiBase, fetchImpl, worktreePath });
     return { path: "api", ...launched };
   } catch (error) {

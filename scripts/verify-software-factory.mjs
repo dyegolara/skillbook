@@ -41,7 +41,8 @@ const DEPENDENCY_CHANNELS = [
 const HELPER_FILE = "skills/software-factory/scripts/launch-stage.mjs";
 const ADR_FILE = "docs/adr/0006-chain-skills-cross-model-handoffs.md";
 const LAUNCH_STAGES = ["dev-flow", "implement-spec", "code-review-loop", "create-pr"];
-const PI_STAGE_SKILLS = ["dev-flow", "code-review-loop", "create-pr"];
+// The three own pi stages carry frontmatter pins; implement-spec is referenced and pinned via ADR-0006.
+const OWN_PI_STAGE_SKILLS = ["dev-flow", "code-review-loop", "create-pr"];
 
 export function verifySoftwareFactoryPack(packDir) {
   const problems = [];
@@ -266,7 +267,7 @@ function checkLaunchMechanism(problems, packDir, repoRoot, frontmatter) {
   }
 
   const expected = {};
-  for (const stage of PI_STAGE_SKILLS) {
+  for (const stage of OWN_PI_STAGE_SKILLS) {
     const data = frontmatter.get(stage);
     if (!data) continue;
     expected[stage] = {
