@@ -11,7 +11,12 @@
  *      (README "What's inside", AGENTS "Own skills");
  *   4. the referenced Matt Pocock pack is wired as a dependency: its row in
  *      both books' referenced-skills tables, both published-channel checks,
- *      and the skills:install command.
+ *      and the skills:install command;
+ *   5. the launch mechanism: the pack helper exists, every SKILL.md launch
+ *      snippet goes through it, its STAGE_PINS table matches the recorded
+ *      model pins (the own pi stages' SKILL.md frontmatter and ADR-0006's
+ *      implement-spec pin), and every inline `pi` spawn snippet carries an
+ *      explicit --model.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -33,10 +38,16 @@ const DEPENDENCY_CHANNELS = [
   "https://github.com/mattpocock/skills",
 ];
 
+const HELPER_FILE = "skills/software-factory/scripts/launch-stage.mjs";
+const ADR_FILE = "docs/adr/0006-chain-skills-cross-model-handoffs.md";
+const LAUNCH_STAGES = ["dev-flow", "implement-spec", "code-review-loop", "create-pr"];
+const PI_STAGE_SKILLS = ["dev-flow", "code-review-loop", "create-pr"];
+
 export function verifySoftwareFactoryPack(packDir) {
   const problems = [];
   const repoRoot = resolve(packDir, "../..");
   const registered = readRegisteredSkills(repoRoot, problems);
+  const frontmatter = new Map();
 
   for (const skill of CHAIN_SKILLS) {
     const label = `skills/software-factory/${skill.name}/SKILL.md`;
@@ -45,7 +56,10 @@ export function verifySoftwareFactoryPack(packDir) {
       problems.push(`${label}: missing`);
       continue;
     }
-    const { data } = parseFrontmatter(readFileSync(file, "utf8"));
+    const text = readFileSync(file, "utf8");
+    const { data } = parseFrontmatter(text);
+    frontmatter.set(skill.name, data);
+    checkLaunchSnippets(problems, label, text);
     if (data.name !== skill.name) {
       problems.push(`${label}: name "${data.name ?? ""}" does not match folder "${skill.name}"`);
     }
@@ -68,6 +82,8 @@ export function verifySoftwareFactoryPack(packDir) {
       problems.push(`${label}: not registered in the plugin manifest`);
     }
   }
+
+  checkLaunchMechanism(problems, packDir, repoRoot, frontmatter);
 
   if (!existsSync(join(packDir, "README.md"))) {
     problems.push("skills/software-factory/README.md: missing");
@@ -131,6 +147,148 @@ function checkInstallCommand(problems, repoRoot) {
     }
   } catch (error) {
     problems.push(`package.json: ${error.message}`);
+  }
+}
+
+function fencedCodeBlocks(text) {
+  const blocks = [];
+  let current = null;
+  for (const line of text.split("\n")) {
+    if (current === null) {
+      if (/^\s*```/.test(line)) current = [];
+    } else if (/^\s*```\s*$/.test(line)) {
+      blocks.push(current.join("\n"));
+      current = null;
+    } else {
+      current.push(line);
+    }
+  }
+  return blocks;
+}
+
+function piSpawnCommands(block) {
+  const commands = [];
+  for (const line of block.replace(/\\\n\s*/g, " ").split("\n")) {
+    for (const segment of line.split(/&&|\|\||[;|]/)) {
+      const command = segment.trim().replace(/^nohup\s+/, "");
+      if (/^pi(?:\s|$)/.test(command)) commands.push(command);
+    }
+  }
+  return commands;
+}
+
+function isNodeStageLaunch(block) {
+  return block
+    .replace(/\\\n\s*/g, " ")
+    .split("\n")
+    .some(
+      (line) => /(?:^|[\s;&|])node\s/.test(line) && LAUNCH_STAGES.some((stage) => line.includes(stage))
+    );
+}
+
+function checkLaunchSnippets(problems, label, text) {
+  for (const block of fencedCodeBlocks(text)) {
+    const spawns = piSpawnCommands(block);
+    if ((spawns.length > 0 || isNodeStageLaunch(block)) && !block.includes("launch-stage.mjs")) {
+      problems.push(`${label}: launch snippet does not reference ${HELPER_FILE}`);
+    }
+    if (spawns.length > 0 && !spawns.every((command) => command.includes("--model"))) {
+      problems.push(`${label}: spawn snippet lacks an explicit --model`);
+    }
+  }
+}
+
+/**
+ * Read STAGE_PINS from the helper's source text — the verifier must not import
+ * the module it verifies, because fixtures mutate the file. Contract: a plain
+ * `export const STAGE_PINS` object literal of `"<stage>": { provider: "...",
+ * model: "...", thinking: "..." }` entries with quoted string fields.
+ */
+function parseStagePins(text) {
+  const declaration = text.indexOf("export const STAGE_PINS");
+  if (declaration === -1) return null;
+  const open = text.indexOf("{", declaration);
+  if (open === -1) return null;
+  let depth = 0;
+  let close = -1;
+  for (let i = open; i < text.length; i += 1) {
+    if (text[i] === "{") depth += 1;
+    else if (text[i] === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        close = i;
+        break;
+      }
+    }
+  }
+  if (close === -1) return null;
+
+  const pins = {};
+  const entries = text.slice(open + 1, close);
+  const entryPattern = /"([^"]+)"\s*:\s*\{([^}]*)\}/g;
+  let entry;
+  while ((entry = entryPattern.exec(entries)) !== null) {
+    const pin = {};
+    const fieldPattern = /(\w+)\s*:\s*"([^"]*)"/g;
+    let field;
+    while ((field = fieldPattern.exec(entry[2])) !== null) pin[field[1]] = field[2];
+    pins[entry[1]] = pin;
+  }
+  return Object.keys(pins).length > 0 ? pins : null;
+}
+
+function readAdrPin(repoRoot, problems) {
+  const path = join(repoRoot, ADR_FILE);
+  if (!existsSync(path)) {
+    problems.push(`${ADR_FILE}: missing`);
+    return null;
+  }
+  const match = /-\s+implement-spec\s+[-—–]\s+`([^`]+)`\s+\(`--thinking\s+([\w-]+)`/.exec(
+    readFileSync(path, "utf8")
+  );
+  if (!match) {
+    problems.push(`${ADR_FILE}: cannot read the implement-spec pin`);
+    return null;
+  }
+  return { model: match[1], thinking: match[2] };
+}
+
+function checkLaunchMechanism(problems, packDir, repoRoot, frontmatter) {
+  const helperPath = join(packDir, "scripts", "launch-stage.mjs");
+  if (!existsSync(helperPath)) {
+    problems.push(`${HELPER_FILE}: missing`);
+    return;
+  }
+  const pins = parseStagePins(readFileSync(helperPath, "utf8"));
+  if (pins === null) {
+    problems.push(`${HELPER_FILE}: cannot read the STAGE_PINS table`);
+    return;
+  }
+
+  const expected = {};
+  for (const stage of PI_STAGE_SKILLS) {
+    const data = frontmatter.get(stage);
+    if (!data) continue;
+    expected[stage] = {
+      model: data.metadata?.model,
+      thinking: data.metadata?.thinking,
+      source: `skills/software-factory/${stage}/SKILL.md frontmatter`,
+    };
+  }
+  const adrPin = readAdrPin(repoRoot, problems);
+  if (adrPin) expected["implement-spec"] = { ...adrPin, source: ADR_FILE };
+
+  for (const [stage, record] of Object.entries(expected)) {
+    const pin = pins[stage];
+    if (!pin) {
+      problems.push(`${HELPER_FILE}: missing pin for stage "${stage}"`);
+      continue;
+    }
+    if (pin.model !== record.model || pin.thinking !== record.thinking) {
+      problems.push(
+        `${HELPER_FILE}: ${stage} pin "model ${pin.model ?? ""}, thinking ${pin.thinking ?? ""}" does not match ${record.source} "model ${record.model}, thinking ${record.thinking}"`
+      );
+    }
   }
 }
 

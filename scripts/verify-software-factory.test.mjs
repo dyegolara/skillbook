@@ -14,6 +14,42 @@ const CHAIN_PINS = {
   "create-pr": { model: "opencode-go/muse-spark-1.3-contributor", thinking: "xhigh" },
 };
 
+const IMPLEMENT_SPEC_PIN = { model: "opencode-go/deepseek-v4.1-flash", thinking: "max" };
+
+function helperEntry(stage, pin) {
+  return `  "${stage}": { provider: "opencode-go", model: "${pin.model}", thinking: "${pin.thinking}" },`;
+}
+
+const helper = [
+  "export const STAGE_PINS = {",
+  helperEntry("dev-flow", CHAIN_PINS["dev-flow"]),
+  helperEntry("implement-spec", IMPLEMENT_SPEC_PIN),
+  helperEntry("code-review-loop", CHAIN_PINS["code-review-loop"]),
+  helperEntry("create-pr", CHAIN_PINS["create-pr"]),
+  "};",
+  "",
+].join("\n");
+
+const adr = [
+  "# 0006 — Chain skills hand off across pinned agent/model sessions",
+  "",
+  "- Each stage's `SKILL.md` pins its model, invoked at the model's highest",
+  "  available effort/thinking:",
+  "  - grill-with-spec — `opencode-go/glm-5.3` (effort max)",
+  "  - dev-flow — `opencode-go/glm-5.3` (`--thinking max`)",
+  "  - implement-spec — `opencode-go/deepseek-v4.1-flash` (`--thinking max`)",
+  "  - code-review-loop — `opencode-go/mimo-v2.6-pro` (`--thinking high`)",
+  "  - create-pr — `opencode-go/muse-spark-1.3-contributor` (`--thinking xhigh`)",
+  "",
+].join("\n");
+
+const SKILL_LAUNCHES = {
+  "grill-with-spec": ["dev-flow"],
+  "dev-flow": ["implement-spec"],
+  "code-review-loop": ["dev-flow", "create-pr"],
+  "create-pr": [],
+};
+
 const readme = [
   "# Skillbook",
   "",
@@ -86,6 +122,28 @@ function skillFrontmatter(name, overrides = {}) {
   ].join("\n");
 }
 
+function skillContent(name, overrides = {}) {
+  const { body, ...frontmatterOverrides } = overrides;
+  return `${skillFrontmatter(name, frontmatterOverrides)}\n${body ?? defaultSkillBody(name)}`;
+}
+
+function defaultSkillBody(name) {
+  const stages = SKILL_LAUNCHES[name];
+  if (stages.length === 0) return "The terminal stage launches nothing.\n";
+  return stages
+    .map((stage) =>
+      [
+        `Launch ${stage}:`,
+        "",
+        "```bash",
+        `node skills/software-factory/scripts/launch-stage.mjs ${stage} 'Run the ${stage} skill.'`,
+        "```",
+        "",
+      ].join("\n")
+    )
+    .join("\n");
+}
+
 function makeRepo({
   skillOverrides = {},
   omitSkill = null,
@@ -95,13 +153,19 @@ function makeRepo({
   agentsText = agents,
   publishingText = publishing,
   skillsInstall = "npx skills@latest add mattpocock/skills",
+  omitHelper = false,
+  helperText = helper,
+  omitAdr = false,
+  adrText = adr,
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), "software-factory-verify-"));
   roots.push(root);
   for (const name of Object.keys(CHAIN_PINS)) {
     if (name === omitSkill) continue;
-    write(root, `skills/software-factory/${name}/SKILL.md`, skillFrontmatter(name, skillOverrides[name]));
+    write(root, `skills/software-factory/${name}/SKILL.md`, skillContent(name, skillOverrides[name]));
   }
+  if (!omitHelper) write(root, "skills/software-factory/scripts/launch-stage.mjs", helperText);
+  if (!omitAdr) write(root, "docs/adr/0006-chain-skills-cross-model-handoffs.md", adrText);
   if (!skipPackReadme) write(root, "skills/software-factory/README.md", "# software-factory pack\n");
   write(
     root,
@@ -275,6 +339,124 @@ test("rejects a skills:install that drops the Matt Pocock pack", () => {
   assert.ok(
     problems.some((problem) =>
       problem.includes("package.json: skills:install does not install mattpocock/skills")
+    )
+  );
+});
+
+test("rejects a missing launch helper", () => {
+  const problems = verify(makeRepo({ omitHelper: true }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes("skills/software-factory/scripts/launch-stage.mjs: missing")
+    )
+  );
+});
+
+test("rejects a launch snippet that does not reference the helper", () => {
+  const problems = verify(
+    makeRepo({
+      skillOverrides: {
+        "dev-flow": {
+          body: [
+            "Launch the next stage:",
+            "",
+            "```bash",
+            "pi --print --provider opencode-go --model opencode-go/glm-5.3 --thinking max 'Run implement-spec.'",
+            "```",
+            "",
+          ].join("\n"),
+        },
+      },
+    })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        "skills/software-factory/dev-flow/SKILL.md: launch snippet does not reference skills/software-factory/scripts/launch-stage.mjs"
+      )
+    )
+  );
+});
+
+test("rejects a helper pins table that diverges from the SKILL.md frontmatter", () => {
+  const problems = verify(
+    makeRepo({ helperText: helper.replace("opencode-go/glm-5.3", "opencode-go/gpt-9") })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        'skills/software-factory/scripts/launch-stage.mjs: dev-flow pin "model opencode-go/gpt-9, thinking max" does not match skills/software-factory/dev-flow/SKILL.md frontmatter "model opencode-go/glm-5.3, thinking max"'
+      )
+    )
+  );
+});
+
+test("rejects a helper pins table that diverges from ADR-0006", () => {
+  const problems = verify(
+    makeRepo({
+      helperText: helper.replace("opencode-go/deepseek-v4.1-flash", "opencode-go/deepseek-v4.1"),
+    })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        'skills/software-factory/scripts/launch-stage.mjs: implement-spec pin "model opencode-go/deepseek-v4.1, thinking max" does not match docs/adr/0006-chain-skills-cross-model-handoffs.md "model opencode-go/deepseek-v4.1-flash, thinking max"'
+      )
+    )
+  );
+});
+
+test("reads the implement-spec pin from ADR-0006, not a hardcoded copy", () => {
+  const problems = verify(
+    makeRepo({ adrText: adr.replace("opencode-go/deepseek-v4.1-flash", "opencode-go/deepseek-v4.1") })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        'skills/software-factory/scripts/launch-stage.mjs: implement-spec pin "model opencode-go/deepseek-v4.1-flash, thinking max" does not match docs/adr/0006-chain-skills-cross-model-handoffs.md "model opencode-go/deepseek-v4.1, thinking max"'
+      )
+    )
+  );
+});
+
+test("rejects a spawn snippet without an explicit --model", () => {
+  const problems = verify(
+    makeRepo({
+      skillOverrides: {
+        "dev-flow": {
+          body: [
+            "Launch the next stage:",
+            "",
+            "```bash",
+            "pi --print --provider opencode-go --thinking max 'Run implement-spec.'",
+            "```",
+            "",
+          ].join("\n"),
+        },
+      },
+    })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes("skills/software-factory/dev-flow/SKILL.md: spawn snippet lacks an explicit --model")
+    )
+  );
+});
+
+test("rejects a helper whose STAGE_PINS table cannot be read", () => {
+  const problems = verify(makeRepo({ helperText: "export const STAGE_PINS = {};\n" }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes("skills/software-factory/scripts/launch-stage.mjs: cannot read the STAGE_PINS table")
+    )
+  );
+});
+
+test("rejects a missing ADR-0006 pin source", () => {
+  const problems = verify(makeRepo({ omitAdr: true }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes("docs/adr/0006-chain-skills-cross-model-handoffs.md: missing")
     )
   );
 });
