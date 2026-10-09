@@ -77,6 +77,13 @@ stage's pinned command and prints the terminal id. When the terminal API is
 unreachable it falls back to the detached `nohup pi` launch and reports which
 path it took.
 
+Every spawned `pi` command — the stage launch and each sub-agent — carries an
+explicit `--provider`, `--model` and `--thinking`; never rely on pi's ambient
+default (the kimi-k3 incident: three un-pinned spawns burned the most
+expensive model in the account — the ambient default is an environment fact,
+not a chain decision). Sub-agents run headless inside their stage's terminal —
+one terminal per stage, none per sub-agent — carrying the stage's pin.
+
 - **dev-flow** — launch a new pi session:
 
   ```bash
