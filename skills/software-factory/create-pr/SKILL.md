@@ -14,8 +14,9 @@ Ship verified work: push the integration branch and open — or finish — a rea
 PR against `main` that closes the spec and its tickets.
 
 **Model pin**: `opencode-go/muse-spark-1.3-contributor`, `--thinking xhigh`
-(the provider's cap). It runs as a background pi terminal session from the
-shared worktree, launched by `code-review-loop` after a clean review.
+(the provider's cap). It runs headless as a pi session that the pack helper
+launches into a visible Kepler terminal from the shared worktree, started by
+`code-review-loop` after a clean review.
 
 ## Process
 

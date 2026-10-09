@@ -14,9 +14,10 @@ Turn a published spec into tracer-bullet tickets and hand off to
 implementation. The stage is non-interactive: the spec is the authority, the
 blocking edges are the review, and there is no granularity quiz.
 
-**Model pin**: `opencode-go/glm-5.3`, `--thinking max`. It runs as a
-background pi terminal session from the shared worktree, launched by
-`grill-with-spec` or directly with `/dev-flow` on a spec issue.
+**Model pin**: `opencode-go/glm-5.3`, `--thinking max`. It runs headless as a
+pi session that the pack helper launches into a visible Kepler terminal from
+the shared worktree, started by `grill-with-spec` or directly with `/dev-flow`
+on a spec issue.
 
 ## Process
 

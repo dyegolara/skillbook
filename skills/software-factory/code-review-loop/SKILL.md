@@ -15,8 +15,9 @@ You did not write this code. Read durable artifacts only; do not reconstruct
 the implementer's reasoning from the handoff doc.
 
 **Model pin**: `opencode-go/mimo-v2.6-pro`, `--thinking high` — the model's
-highest available effort (`max` clamps to it). It runs as a background pi terminal session from the
-shared worktree, launched at the end of the implement-spec session or
+highest available effort (`max` clamps to it). It runs headless as a pi
+session that the pack helper launches into a visible Kepler terminal from the
+shared worktree, started at the end of the implement-spec session or
 standalone with `/code-review-loop`.
 
 ## Process
