@@ -29,9 +29,9 @@ code-review-loop → (dev-flow | create-pr | this skill)`. The full map is in
 A pi stage prints nothing until it finishes, so the chain keeps a live view in
 its own Kepler terminal: `chain #<spec>: status` runs a plain bash loop —
 branch log, fix tickets, chain terminals — refreshed every 30 seconds. The
-fresh form launches it when the chain starts; the re-entry form makes sure it
-is alive when the chain resumes. The check reuses an existing live terminal on
-the worktree and never creates a duplicate.
+fresh form launches it once the spec is published; the re-entry form makes
+sure it is alive when the chain resumes. The check reuses an existing live
+terminal on the worktree and never creates a duplicate.
 
 The repo/worktree/task ids come from this grilling session's own Kepler
 metadata: `GET /agent/sessions` filtered by the worktree exposes `repoId`,
@@ -88,19 +88,14 @@ fi
 
 ## Fresh form
 
-### 1. Status terminal
-
-Launch the `chain #<spec>: status` terminal per [Status terminal](#status-terminal)
-when the chain starts; it is the live view of the headless stages.
-
-### 2. Grill
+### 1. Grill
 
 Call the Skill tool for `grill-with-docs`. It runs `grilling` and
 `domain-modeling`, so glossary terms and ADRs are written down as decisions
 land, not after. Work the design tree in rounds until the frontier is empty
 and the user confirms shared understanding.
 
-### 3. Spec
+### 2. Spec
 
 Call the Skill tool for `to-spec`. The chain removes to-spec's seam
 confirmation question — grilling already settled it. Accept the seams and
@@ -112,6 +107,11 @@ Publish the spec to the project issue tracker with the `ready-for-agent`
 label. Do not ask questions after grilling. A question at this point means a
 decision was missed, and its answer is another grilling round, not a spec
 comment thread.
+
+### 3. Status terminal
+
+Launch the `chain #<spec>: status` terminal per [Status terminal](#status-terminal)
+once the spec is published; it is the live view of the headless stages.
 
 ### 4. Hand off
 
