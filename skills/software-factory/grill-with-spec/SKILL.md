@@ -146,8 +146,11 @@ the whole design. Write new ADRs with `domain-modeling` as decisions land.
 ### 3. Refine scope
 
 Refine the scope as comments on the original spec issue. Name the finding,
-settle the decision, and say what changes in scope. Do not run `to-spec` and
-do not write a new spec.
+settle the decision, and say what changes in scope. List the decision's
+**open gaps** — what it deliberately leaves undecided — so the implementer
+fills them in-ticket and records them in the ADR; an unnamed gap becomes the
+implementer's own design call, and a later review reads it as a deviation. Do
+not run `to-spec` and do not write a new spec.
 
 ### 4. Resume
 

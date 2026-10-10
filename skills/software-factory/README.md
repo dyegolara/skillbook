@@ -53,6 +53,11 @@ Routes out of `code-review-loop`:
   terminal API is unreachable it falls back to the detached `nohup pi` launch
   and reports which path it took. `grill-with-spec` is the one interactive
   stage and runs as a Kepler session.
+- The local Kepler API behind the helpers — every verified endpoint of the
+  terminal and agent APIs, its request/response shape, and the probe recipe
+  that settles a new endpoint — is documented in
+  [`docs/kepler-api.md`](docs/kepler-api.md); reach it before building a new
+  chain capability on Kepler's surface.
 
 ## Where to watch a chain run
 

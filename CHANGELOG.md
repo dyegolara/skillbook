@@ -26,6 +26,12 @@
   snippet carries the exact `<stage> <spec> '<thin pointers>'` arity, and that
   every spawn snippet carries an explicit --model — checked separately from
   the launch snippets.
+- Document the Kepler local API the helpers wrap in the pack's
+  `docs/kepler-api.md`: verified terminal and agent endpoints, their
+  request/response shapes, and the probe recipe that settles a new endpoint.
+- Teach the grill-with-spec re-entry form to list a decision's open gaps in
+  its scope comment, so the implementer fills them in-ticket and records them
+  in the ADR instead of making its own design call.
 - Migrate the glossary to GLOSSARY.md, replacing CONTEXT.md.
 
 ## 1.1.0
