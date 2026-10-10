@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.2.0
+
+- Add the software-factory pack: grill-with-spec, dev-flow, code-review-loop,
+  and create-pr, four chain skills that wrap the referenced Matt Pocock pack
+  into one path from a rough idea to a ready PR. Each stage is a new session on
+  a pinned agent and model; the chain mechanism is recorded in ADR-0006.
+- Add the chain's launch mechanism under the four-piece contract:
+  `launch-stage.mjs` starts each pi stage in a visible
+  `chain #<spec>: <stage>` Kepler terminal (explicit spec argument,
+  chain-labeled anchor preference, explicit id flags for fresh runs,
+  connection-level-only `nohup` fallback), and `open-grill-session.mjs`
+  actuates the decision-forcing pause by opening and pinning a fresh
+  grilling session on the task. grill-with-spec keeps a live
+  `chain #<spec>: status` terminal (a plain bash loop refreshed every
+  30 seconds).
+- Add the Matt Pocock pack as referenced skills (published from skills.sh):
+  one install command in the book's skills:install script, two
+  published-channel checks in the publishing verify, and referenced-skills
+  rows in the book's tables.
+- Add verify:software-factory, the pack-contract check for chain frontmatter
+  and model pins, plugin registration, table rows, and dependency references,
+  wired into npm run verify. It also checks that both pack helpers exist and
+  are referenced, that both pin tables match their records, that every launch
+  snippet carries the exact `<stage> <spec> '<thin pointers>'` arity, and that
+  every spawn snippet carries an explicit --model — checked separately from
+  the launch snippets.
+- Document the Kepler local API the helpers wrap in the pack's
+  `docs/kepler-api.md`: verified terminal and agent endpoints, their
+  request/response shapes, and the probe recipe that settles a new endpoint.
+- Teach the grill-with-spec re-entry form to list a decision's open gaps in
+  its scope comment, so the implementer fills them in-ticket and records them
+  in the ADR instead of making its own design call.
+- Migrate the glossary to GLOSSARY.md, replacing CONTEXT.md.
+
 ## 1.1.0
 
 - Add copilot-review-smart v2.3.0's webhook-first Listener, Expectation

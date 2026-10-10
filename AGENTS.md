@@ -10,10 +10,6 @@
 
 Issues are tracked on GitHub Issues. See `docs/agents/issue-tracker.md`.
 
-### Triage labels
-
-N/A — triage skill not installed in this repo.
-
 ### Domain docs
 
 Single-context layout. See `docs/agents/domain.md` and `docs/adr/`.
@@ -23,6 +19,7 @@ Single-context layout. See `docs/agents/domain.md` and `docs/adr/`.
 | Skill | Category | What it does |
 |---|---|---|
 | `copilot-review-smart` | engineering | Smart Copilot PR-review watchdog: reads review state + full comment transcript, checks merge conflicts first, and lets an LLM decide (rebase / review / fix / notify / wait) instead of pinging `@copilot code review` on a loop. Multi-repo. |
+| `software-factory` pack | software-factory | Four chain skills — `grill-with-spec`, `dev-flow`, `code-review-loop`, `create-pr` — wrapping the referenced Matt Pocock pack into one path from idea to ready PR. Entry point: `grill-with-spec`. See `skills/software-factory/README.md`. |
 
 ### Ported skills
 
@@ -33,12 +30,13 @@ rules are described in `skills/pstack/README.md`, `docs/adr/0003`, and
 playbooks and the standalone skills (23 principles plus 23 standalone skills,
 47 skills in all).
 
-### Referenced skills (npm deps)
+### Referenced skills (published channels)
 
 | Skill | Source | Category | What it does |
 |---|---|---|---|
 | `lnurl-auth` | `dyegolara/lnurl-auth-agents` (npm) | auth | LNURL-auth (LUD-04) signer — Sign in with Lightning for LLM agents. |
 | `nostr-auth` | `dyegolara/nostr-auth-agents` (npm) | auth | Nostr sign-in (NIP-07) for LLM coding agents — no wallet, no extension. |
+| Matt Pocock pack | `mattpocock/skills` (skills.sh) | software-factory | Matt Pocock's spec-driven engineering pack — grilling, domain modeling, to-spec, to-tickets, implement-spec, code-review, tdd, pr, handoff, and more. The `software-factory` chain's referenced dependency. |
 
 ## Commands
 
@@ -48,6 +46,7 @@ playbooks and the standalone skills (23 principles plus 23 standalone skills,
 | `npm run verify:publishing` | Every referenced skill resolves on its published channel (network). |
 | `npm run verify:upstream` | Upstream drift against the pstack pin (network). Fails on drift; `npm run verify` runs it with `--report-only` so upstream movement is reported but does not break the health check. |
 | `npm run verify:pstack` | The pstack pack contract: frontmatter, cross-references, plugin registration, provenance, no required client couplings, Node smoke of the tooling. Offline except the tooling smoke, which may install tooling dependencies on first run (`npm run verify:pstack -- --skip-smoke` skips it). |
+| `npm run verify:software-factory` | The software-factory pack contract: the four chain skills' frontmatter and ADR-0006 model pins, plugin registration, the pack README and the book's table rows, the Matt Pocock dependency references, both pack helpers (`launch-stage.mjs` referenced by every stage launch with the exact `<stage> <spec> '<thin pointers>'` arity, `open-grill-session.mjs` by code-review-loop's decision-forcing route), both pin tables against their records, and the explicit `--model` on spawn snippets checked separately from launch snippets. Offline. |
 | `npm test` | All suites: this repo's scripts and skills, then the ported tooling suite. |
 | `npm run test:pstack` | The ported tooling's upstream `bun:test` suite (Bun is a dev dependency). |
 | `npm run typecheck:pstack` | TypeScript over the ported tooling (`verbatimModuleSyntax`, `erasableSyntaxOnly`). |

@@ -1,8 +1,8 @@
 # Dojo Mojo Skillbook
 
-A collection of agent skills in the standard Agent Skills format. Markdown
-first; the only code is small reference scripts shipped inside skill folders
-so agents can run them directly.
+Agent skills in the standard Agent Skills format. Markdown first; the only
+code is small reference scripts shipped inside skill folders so agents can
+run them directly.
 
 ## Language
 
@@ -29,6 +29,42 @@ ESM JavaScript (`.mjs`), run directly by Node, with no build step. Ported
 tooling keeps its upstream TypeScript and runs on Node's native type
 stripping. See `docs/adr/0002` and `docs/adr/0004`.
 _Avoid_: (do not call it "the TS standard" — earlier drafts did)
+
+### Skill chains
+
+**Chain**:
+A sequence of own skills where each, on completing, starts the next as a
+new session on its pinned agent and model. The user enters at the first
+skill only.
+_Avoid_: pipeline, workflow.
+
+**Model pin**:
+The agent, model and highest-available effort a chain stage is invoked
+with, fixed in the own stage's `SKILL.md` frontmatter or, for the referenced
+implement-spec stage, recorded in ADR-0006.
+_Avoid_: model config, model setting.
+
+**Handoff doc**:
+The compacted-conversation document the `handoff` skill writes to the OS
+temp directory; the next chain stage's session reads it by pointer.
+_Avoid_: handoff file, handoff note.
+
+**Review report**:
+The two-axis findings document `code-review-loop` writes to an untracked
+local file for the next stage to read.
+_Avoid_: review comment, findings note.
+
+**Decision-forcing finding**:
+A review finding whose resolution cannot be derived from the code, the
+task or the spec — the fix is not obvious or it overturns what the user
+already decided. Routes the loop to `grill-with-spec`.
+_Avoid_: blocking finding, critical finding.
+
+**Loop pause**:
+The state of a chain while `grill-with-spec` waits on the user over
+decision-forcing findings. The chain resumes when grill-with-spec hands
+off to dev-flow.
+_Avoid_: loop stop, halt.
 
 ### pstack pack
 

@@ -44,7 +44,7 @@ export function createListener({
   let effectiveLogin = config.login || "";
   const startedAt = now();
 
-  // Flows and Expectations (see CONTEXT.md).
+  // Flows and Expectations (see GLOSSARY.md).
   const flows = new Set();
   const closedFlows = new Set();
   const expectations = new Map(); // key -> { timer, deadlineMs, backoffIndex }
