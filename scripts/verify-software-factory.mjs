@@ -197,18 +197,18 @@ function launchPositionals(text) {
 /**
  * Scan the shell-ish argument tokens after a command name: quoted strings are
  * single tokens (backticks inside them are literal), and the scan stops at an
- * unquoted newline, backtick, or end of text.
+ * unquoted newline, backtick, shell operator, or end of text.
  */
 function scanShellArgs(text) {
   const tokens = [];
   let i = 0;
   while (i < text.length) {
     const ch = text[i];
+    if (ch === "\n" || ch === "`" || ch === ";" || ch === "&" || ch === "|") break;
     if (/\s/.test(ch)) {
       i += 1;
       continue;
     }
-    if (ch === "`") break;
     if (ch === "'" || ch === '"') {
       const quote = ch;
       let j = i + 1;
@@ -221,29 +221,43 @@ function scanShellArgs(text) {
       continue;
     }
     let j = i;
-    while (j < text.length && !/[\s`]/.test(text[j])) j += 1;
+    while (j < text.length && !/[\s`;&|]/.test(text[j])) j += 1;
     tokens.push(text.slice(i, j));
     i = j;
   }
   return tokens;
 }
 
-/** Positionals only: a flag and its value are not stage/spec/pointers. */
+const LAUNCH_VALUE_FLAGS = new Set(["--repo-id", "--worktree-id", "--task-id"]);
+
+/** Positionals only: the known id flags consume their value; other flags are ignored. */
 function positionalCount(tokens) {
   let count = 0;
-  let skipValue = false;
-  for (const token of tokens) {
-    if (skipValue) {
-      skipValue = false;
+  for (let i = 0; i < tokens.length; i += 1) {
+    const token = tokens[i];
+    if (LAUNCH_VALUE_FLAGS.has(token)) {
+      i += 1;
       continue;
     }
-    if (token.startsWith("-")) {
-      skipValue = true;
-      continue;
-    }
+    if (token.startsWith("-")) continue;
     count += 1;
   }
   return count;
+}
+
+/** Fenced code blocks and inline code spans — where launch snippets live, prose excluded. */
+function codeSegments(text) {
+  const segments = fencedCodeBlocks(text);
+  let inFence = false;
+  for (const line of text.split("\n")) {
+    if (/^\s*```/.test(line)) {
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    for (const match of line.matchAll(/`([^`]+)`/g)) segments.push(match[1]);
+  }
+  return segments;
 }
 
 function piSpawnCommands(block) {
@@ -290,11 +304,13 @@ function checkLaunchSnippets(problems, label, text) {
       problems.push(`${label}: spawn snippet lacks an explicit --model`);
     }
   }
-  for (const count of launchPositionals(text)) {
-    if (count < 3) {
-      problems.push(
-        `${label}: launch snippet invokes ${HELPER_FILE} with ${count} positional(s) — expected <stage> <spec> '<thin pointers>'`
-      );
+  for (const segment of codeSegments(text)) {
+    for (const count of launchPositionals(segment)) {
+      if (count !== 3) {
+        problems.push(
+          `${label}: launch snippet invokes ${HELPER_FILE} with ${count} positional(s) — expected <stage> <spec> '<thin pointers>'`
+        );
+      }
     }
   }
 }
