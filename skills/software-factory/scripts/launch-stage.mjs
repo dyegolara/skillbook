@@ -138,7 +138,7 @@ export function isConnectionError(error) {
   return error?.code === "TERMINAL_API_UNREACHABLE";
 }
 
-async function requestJson(fetchImpl, url, init) {
+export async function requestJson(fetchImpl, url, init) {
   let response;
   try {
     response = await fetchImpl(url, init);

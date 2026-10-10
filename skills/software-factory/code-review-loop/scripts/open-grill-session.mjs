@@ -33,10 +33,10 @@
  */
 import { pathToFileURL } from "node:url";
 import {
-  ConnectionError,
   isConnectionError,
   parseIdFlags,
   readKeplerApiBase,
+  requestJson,
   resolveIds,
   stageLabel,
 } from "./launch-stage.mjs";
@@ -47,30 +47,6 @@ export const GRILL_PIN = { model: "opencode-go/glm-5.3", effort: "max" };
 
 export function grillSessionLabel(spec) {
   return stageLabel(spec, "grill-with-spec");
-}
-
-/**
- * The agent API and the terminal API share Kepler's loopback server, so a
- * failure to reach it classifies the same way (`isConnectionError`). Kept
- * local because the launch helper does not export its requestJson.
- */
-async function requestJson(fetchImpl, url, init) {
-  let response;
-  try {
-    response = await fetchImpl(url, init);
-  } catch (cause) {
-    throw new ConnectionError(cause?.message ?? String(cause), { cause });
-  }
-  if (!response.ok) {
-    throw new Error(`${init?.method ?? "GET"} ${url} -> HTTP ${response.status}`);
-  }
-  let text;
-  try {
-    text = await response.text();
-  } catch (cause) {
-    throw new ConnectionError(cause?.message ?? String(cause), { cause });
-  }
-  return text === "" ? null : JSON.parse(text);
 }
 
 /**
