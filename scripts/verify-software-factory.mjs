@@ -68,6 +68,7 @@ export function verifySoftwareFactoryPack(packDir) {
     const { data } = parseFrontmatter(text);
     frontmatter.set(skill.name, data);
     checkLaunchSnippets(problems, label, text);
+    checkPackagedHelpers(problems, packDir, skill.name, text);
     if (
       skill.name === "code-review-loop" &&
       !fencedCodeBlocks(text).some((block) => block.includes("open-grill-session.mjs"))
@@ -183,7 +184,7 @@ function fencedCodeBlocks(text) {
 
 function launchPositionals(text) {
   const counts = [];
-  const pattern = /launch-stage\.mjs/g;
+  const pattern = /launch-stage\.mjs["']?/g;
   let match;
   while ((match = pattern.exec(text)) !== null) {
     const rest = text.slice(match.index + match[0].length);
@@ -311,6 +312,28 @@ function checkLaunchSnippets(problems, label, text) {
           `${label}: launch snippet invokes ${HELPER_FILE} with ${count} positional(s) — expected <stage> <spec> '<thin pointers>'`
         );
       }
+    }
+  }
+}
+
+function checkPackagedHelpers(problems, packDir, skill, text) {
+  const helpers = skill === "create-pr" ? [] : ["launch-stage.mjs"];
+  if (skill === "code-review-loop") helpers.push("open-grill-session.mjs");
+  for (const helper of helpers) {
+    const label = `skills/software-factory/${skill}/scripts/${helper}`;
+    const file = join(packDir, skill, "scripts", helper);
+    if (!existsSync(file)) {
+      problems.push(`${label}: missing packaged helper`);
+    } else {
+      const source = join(packDir, "scripts", helper);
+      if (existsSync(source) && readFileSync(file, "utf8") !== readFileSync(source, "utf8")) {
+        problems.push(`${label}: differs from the shared helper source`);
+      }
+    }
+  }
+  for (const segment of codeSegments(text)) {
+    if (/node\s+(?:["']?skills\/software-factory\/scripts\/|["']?\.\.\/)/.test(segment)) {
+      problems.push(`skills/software-factory/${skill}/SKILL.md: helper invocation escapes the installed skill folder`);
     }
   }
 }

@@ -1,8 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   KEPLER_DATA_DIR,
   STAGE_PINS,
@@ -60,6 +62,44 @@ test("pointers with an embedded single quote are shell-quoted safely", () => {
 
 test("buildTerminalInput terminates the injected command with a newline", () => {
   assert.equal(buildTerminalInput("dev-flow", "pointers"), `${buildPiCommand("dev-flow", "pointers")}\n`);
+});
+
+test("each launching skill runs its helpers from an isolated installed folder", async () => {
+  const installed = mkdtempSync(join(tmpdir(), "software-factory-installed-"));
+  try {
+    for (const skill of ["grill-with-spec", "dev-flow", "code-review-loop"]) {
+      const folder = join(installed, skill);
+      cpSync(new URL(`../${skill}/`, import.meta.url), folder, { recursive: true });
+      const { main: installedMain } = await import(pathToFileURL(join(folder, "scripts/launch-stage.mjs")));
+      const { fetchImpl, calls } = mockKeplerApi({ terminals: [] });
+      await installedMain(
+        ["dev-flow", "55", "pointers", "--repo-id", "r", "--worktree-id", "w", "--task-id", "t"],
+        { apiBase: "http://api.test", fetchImpl, worktreePath: "/work/tree", write: () => {} }
+      );
+      assert.equal(calls[0].body.worktreePath, "/work/tree");
+      if (skill === "code-review-loop") {
+        const grill = await import(pathToFileURL(join(folder, "scripts/open-grill-session.mjs")));
+        assert.equal(typeof grill.main, "function");
+      }
+    }
+  } finally {
+    rmSync(installed, { recursive: true, force: true });
+  }
+});
+
+test("the shared fresh/re-entry status request encodes all required fields safely", () => {
+  const text = readFileSync(new URL("../grill-with-spec/SKILL.md", import.meta.url), "utf8");
+  const command = /-d "\$\((jq -n[\s\S]*?)\)" \\/.exec(text)?.[1];
+  assert.ok(command, "the status terminal body must be constructed with jq");
+  const worktreePath = '/work/a "quoted"\\tree';
+  const result = spawnSync("bash", ["-c", command], {
+    encoding: "utf8",
+    env: { ...process.env, REPO_ID: "r", WORKTREE_ID: "w", TASK_ID: "t", WORKTREE: worktreePath, SPEC: "55" },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), {
+    repoId: "r", worktreeId: "w", taskId: "t", worktreePath, label: "chain #55: status",
+  });
 });
 
 test("stageLabel builds chain #<spec>: <stage> from the explicit spec argument", () => {
@@ -184,6 +224,7 @@ test("the spec argument builds the label — never the anchor terminal's label",
     repoId: "repo-55",
     worktreeId: "worktree-55",
     taskId: "task-55",
+    worktreePath,
     label: "chain #77: code-review-loop",
   });
   assert.equal(input.url, "http://api.test/terminal/input");
@@ -229,6 +270,7 @@ test("the API path prefers the chain-labeled terminal on the worktree", async ()
     repoId: "repo-chain",
     worktreeId: "worktree-chain",
     taskId: "task-chain",
+    worktreePath,
     label: "chain #55: create-pr",
   });
 });
@@ -252,7 +294,7 @@ test("a reachable API with a non-chain terminal on the worktree uses it as the a
   assert.equal(result.label, "chain #55: create-pr");
   assert.equal(spawnCalls.length, 0);
   const start = calls.find((call) => call.url.endsWith("/terminal/start"));
-  assert.deepEqual(start.body, { repoId: "r", worktreeId: "w", taskId: "t", label: "chain #55: create-pr" });
+  assert.deepEqual(start.body, { repoId: "r", worktreeId: "w", taskId: "t", worktreePath: "/work/tree", label: "chain #55: create-pr" });
 });
 
 test("a reachable API with no anchor and no flags is a hard error — no fallback", async () => {
@@ -288,7 +330,7 @@ test("explicit id flags bootstrap a fresh run with no anchor and no list call", 
 
   const result = await main(
     ["dev-flow", "55", "pointers", "--repo-id", "r", "--worktree-id", "w", "--task-id", "t"],
-    { apiBase: "http://api.test", fetchImpl, write: (line) => lines.push(line) }
+    { apiBase: "http://api.test", fetchImpl, worktreePath: '/work/a "quoted"\\tree', write: (line) => lines.push(line) }
   );
 
   assert.equal(result.path, "api");
@@ -298,7 +340,7 @@ test("explicit id flags bootstrap a fresh run with no anchor and no list call", 
     calls.map((call) => call.url),
     ["http://api.test/terminal/start", "http://api.test/terminal/input"]
   );
-  assert.deepEqual(calls[0].body, { repoId: "r", worktreeId: "w", taskId: "t", label: "chain #55: dev-flow" });
+  assert.deepEqual(calls[0].body, { repoId: "r", worktreeId: "w", taskId: "t", worktreePath: '/work/a "quoted"\\tree', label: "chain #55: dev-flow" });
 });
 
 test("a partial id set is a hard usage error before any fetch or spawn", async () => {

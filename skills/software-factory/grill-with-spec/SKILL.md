@@ -10,6 +10,9 @@ metadata:
 
 # grill-with-spec
 
+In helper commands, replace `<skill-dir>` with the absolute directory containing
+this loaded `SKILL.md`; keep the shared worktree as the working directory.
+
 The software-factory chain starts and resumes here. It is the only interactive
 stage: every other stage runs headless and comes back when a finding cannot be
 resolved from the code, the task or the spec.
@@ -50,7 +53,9 @@ if [ -z "$EXISTING" ]; then
 
   # Start the labeled terminal, then run the loop in it.
   TERMINAL_ID=$(curl -s -X POST "$API/terminal/start" -H 'content-type: application/json' \
-    -d "{\"repoId\":\"$REPO_ID\",\"worktreeId\":\"$WORKTREE_ID\",\"taskId\":\"$TASK_ID\",\"label\":\"chain #$SPEC: status\"}" \
+    -d "$(jq -n --arg repoId "$REPO_ID" --arg worktreeId "$WORKTREE_ID" --arg taskId "$TASK_ID" \
+      --arg worktreePath "$WORKTREE" --arg label "chain #$SPEC: status" \
+      '{repoId: $repoId, worktreeId: $worktreeId, taskId: $taskId, worktreePath: $worktreePath, label: $label}')" \
     | jq -r .terminalId)
 
   LOOP=$(cat <<'LOOP_BODY'
@@ -118,7 +123,7 @@ Start dev-flow in a new session. It is a pi stage, so launch it through the
 pack helper from the shared worktree, per [ADR-0006](../../../docs/adr/0006-chain-skills-cross-model-handoffs.md):
 
 ```bash
-node skills/software-factory/scripts/launch-stage.mjs dev-flow <spec> 'Run the dev-flow skill on spec issue #<spec> in this worktree: read skills/software-factory/dev-flow/SKILL.md and follow it. Read the handoff doc at <path> first.'
+node "<skill-dir>/scripts/launch-stage.mjs" dev-flow <spec> 'Run the dev-flow skill on spec issue #<spec> in this worktree: load the dev-flow skill and follow it. Read the handoff doc at <path> first.'
 ```
 
 ## Re-entry form
@@ -168,7 +173,7 @@ Both forms follow the same rules, and so does every later stage:
   ADRs, `GLOSSARY.md`, the review report — never as conversation.
 - Every stage is a new session. No stage inherits this session's context.
 - The pi stages launch through the pack helper from the shared worktree:
-  `node skills/software-factory/scripts/launch-stage.mjs <stage> <spec> '<thin pointers>'`.
+  `node "<skill-dir>/scripts/launch-stage.mjs" <stage> <spec> '<thin pointers>'`.
   The helper starts a visible `chain #<spec>: <stage>` Kepler terminal, injects
   the stage's pinned command and prints the terminal id. When the terminal API
   is unreachable it falls back to the detached `nohup pi` launch and reports

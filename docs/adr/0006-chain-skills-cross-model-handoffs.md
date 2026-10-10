@@ -14,7 +14,7 @@ context is not independent.
 - Every stage runs as a new session; the finishing stage launches the next
   one. The pi stages (dev-flow, implement-spec, code-review-loop, create-pr)
   run inside a visible Kepler terminal, launched from the shared worktree
-  with the pack helper: `node skills/software-factory/scripts/launch-stage.mjs
+  with the packaged helper: `node "<skill-dir>/scripts/launch-stage.mjs"
   <stage> <spec> '<thin pointers>'`. The helper calls Kepler's local
   terminal API (loopback HTTP, no auth), derives the terminal's
   repo/worktree/task ids from an existing terminal on the same worktree

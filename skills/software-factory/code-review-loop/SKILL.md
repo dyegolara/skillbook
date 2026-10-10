@@ -10,6 +10,9 @@ metadata:
 
 # code-review-loop
 
+In helper commands, replace `<skill-dir>` with the absolute directory containing
+this loaded `SKILL.md`; keep the shared worktree as the working directory.
+
 Independent review of the integration branch, then route to the next stage.
 You did not write this code. Read durable artifacts only; do not reconstruct
 the implementer's reasoning from the handoff doc.
@@ -72,7 +75,7 @@ Always call the Skill tool for `handoff` first, tailored to the chosen stage.
 It points at the review report, the spec issue, the tickets and the PR.
 
 Launch the next pi stage through the pack helper from the shared worktree:
-`node skills/software-factory/scripts/launch-stage.mjs <stage> <spec> '<thin pointers>'`.
+`node "<skill-dir>/scripts/launch-stage.mjs" <stage> <spec> '<thin pointers>'`.
 The helper starts a visible `chain #<spec>: <stage>` Kepler terminal, injects
 the stage's pinned command and prints the terminal id. When the terminal API is
 unreachable it falls back to the detached `nohup pi` launch and reports which
@@ -88,20 +91,20 @@ one terminal per stage, none per sub-agent — carrying the stage's pin.
 - **dev-flow** — launch a new pi session:
 
   ```bash
-  node skills/software-factory/scripts/launch-stage.mjs dev-flow <spec> 'Run the dev-flow skill for spec #<n>: read skills/software-factory/dev-flow/SKILL.md and follow it. Read the handoff doc at <path> and the review report at <path>. Publish the findings as fix tickets.'
+  node "<skill-dir>/scripts/launch-stage.mjs" dev-flow <spec> 'Run the dev-flow skill for spec #<n>: load the dev-flow skill and follow it. Read the handoff doc at <path> and the review report at <path>. Publish the findings as fix tickets.'
   ```
 
 - **create-pr** — launch a new pi session:
 
   ```bash
-  node skills/software-factory/scripts/launch-stage.mjs create-pr <spec> 'Run the create-pr skill for spec #<n>: read skills/software-factory/create-pr/SKILL.md and follow it. Read the handoff doc at <path> and the review report at <path>.'
+  node "<skill-dir>/scripts/launch-stage.mjs" create-pr <spec> 'Run the create-pr skill for spec #<n>: load the create-pr skill and follow it. Read the handoff doc at <path> and the review report at <path>.'
   ```
 
 - **grill-with-spec** — actuate the pause instead of waiting to be noticed.
   Run:
 
   ```bash
-  node skills/software-factory/scripts/open-grill-session.mjs <spec> '<re-entry prompt>'
+  node "<skill-dir>/scripts/open-grill-session.mjs" <spec> '<re-entry prompt>'
   ```
 
   The helper creates the opencode session on the task, labels it `chain

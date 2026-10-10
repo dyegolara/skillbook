@@ -41,7 +41,7 @@ const GRILL_ROUTE = [
   "Decision-forcing findings open the grilling session instead of waiting:",
   "",
   "```bash",
-  "node skills/software-factory/scripts/open-grill-session.mjs <spec> '<re-entry prompt>'",
+  'node "<skill-dir>/scripts/open-grill-session.mjs" <spec> \'<re-entry prompt>\'',
   "```",
   "",
 ].join("\n");
@@ -154,7 +154,7 @@ function defaultSkillBody(name, { includeGrillRoute = true } = {}) {
               `Launch ${stage}:`,
               "",
               "```bash",
-              `node skills/software-factory/scripts/launch-stage.mjs ${stage} <spec> 'Run the ${stage} skill.'`,
+              `node "<skill-dir>/scripts/launch-stage.mjs" ${stage} <spec> 'Run the ${stage} skill.'`,
               "```",
               "",
             ].join("\n")
@@ -190,6 +190,12 @@ function makeRepo({
         ? { ...skillOverrides[name], body: "The route prints a pause and waits.\n" }
         : skillOverrides[name];
     write(root, `skills/software-factory/${name}/SKILL.md`, skillContent(name, overrides));
+    if (name !== "create-pr" && !omitHelper) {
+      write(root, `skills/software-factory/${name}/scripts/launch-stage.mjs`, helperText);
+    }
+    if (name === "code-review-loop" && !omitGrillHelper) {
+      write(root, `skills/software-factory/${name}/scripts/open-grill-session.mjs`, grillHelperText);
+    }
   }
   if (!omitHelper) write(root, "skills/software-factory/scripts/launch-stage.mjs", helperText);
   if (!omitGrillHelper) {
@@ -230,6 +236,27 @@ after(() => {
 
 test("a conforming fixture pack has no problems", () => {
   assert.deepEqual(verify(makeRepo()), []);
+});
+
+test("rejects a registered skill missing its local launch helper", () => {
+  const pack = makeRepo();
+  rmSync(join(pack, "dev-flow/scripts/launch-stage.mjs"));
+  assert.ok(verify(pack).some((problem) => problem.includes("dev-flow/scripts/launch-stage.mjs: missing packaged helper")));
+});
+
+test("rejects a packaged helper that drifts from its shared source", () => {
+  const pack = makeRepo();
+  writeFileSync(join(pack, "code-review-loop/scripts/launch-stage.mjs"), "export const STAGE_PINS = {};\n");
+  assert.ok(verify(pack).some((problem) => problem.includes("code-review-loop/scripts/launch-stage.mjs: differs")));
+});
+
+test("rejects an invocation of a helper outside the installed skill folder", () => {
+  const pack = makeRepo({
+    skillOverrides: {
+      "dev-flow": { body: "```bash\nnode skills/software-factory/scripts/launch-stage.mjs implement-spec <spec> 'pointers'\n```\n" },
+    },
+  });
+  assert.ok(verify(pack).some((problem) => problem.includes("helper invocation escapes")));
 });
 
 test("rejects a missing chain skill", () => {
@@ -521,7 +548,7 @@ test("accepts the three-position launch form", () => {
             "Launch the next stage:",
             "",
             "```bash",
-            "node skills/software-factory/scripts/launch-stage.mjs implement-spec <spec> 'Run the implement-spec skill.'",
+            'node "<skill-dir>/scripts/launch-stage.mjs" implement-spec <spec> \'Run the implement-spec skill.\'',
             "```",
             "",
           ].join("\n"),
@@ -541,7 +568,7 @@ test("accepts the three-position form followed by id flags", () => {
             "Launch the next stage:",
             "",
             "```bash",
-            "node skills/software-factory/scripts/launch-stage.mjs dev-flow <spec> 'Run the dev-flow skill.' --repo-id r --worktree-id w --task-id t",
+            'node "<skill-dir>/scripts/launch-stage.mjs" dev-flow <spec> \'Run the dev-flow skill.\' --repo-id r --worktree-id w --task-id t',
             "```",
             "",
           ].join("\n"),

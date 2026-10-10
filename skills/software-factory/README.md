@@ -47,7 +47,10 @@ Routes out of `code-review-loop`:
   The reviewer in particular sees only pointers, never the implementer's
   reasoning.
 - The pi stages launch through the pack helper from the shared worktree:
-  `node skills/software-factory/scripts/launch-stage.mjs <stage> <spec> '<thin pointers>'`.
+  `node "<skill-dir>/scripts/launch-stage.mjs" <stage> <spec> '<thin pointers>'`.
+  `<skill-dir>` is the absolute directory of the loaded skill, not the shared
+  worktree. Each launching skill ships its own standalone helper; the copies
+  match the shared sources in `scripts/`, enforced by the pack verifier.
   The helper starts a visible `chain #<spec>: <stage>` Kepler terminal,
   injects the stage's pinned command and prints the terminal id. When the
   terminal API is unreachable it falls back to the detached `nohup pi` launch
