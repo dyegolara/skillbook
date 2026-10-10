@@ -82,7 +82,7 @@ The helper starts a visible `chain #<spec>: <stage>` Kepler terminal, injects
 the stage's pinned command and prints the terminal id. The detached `nohup pi`
 fallback fires only on a connection-level failure to the terminal API and never
 after `POST /terminal/start` succeeded — a reachable API never silently
-degrades — and it reports which path it took.
+degrades — and it preserves `error.message` while reporting which path it took.
 
 Every spawned `pi` command — the stage launch and each sub-agent — carries an
 explicit `--provider`, `--model` and `--thinking`; never rely on pi's ambient
