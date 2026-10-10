@@ -15,25 +15,34 @@ context is not independent.
   one. The pi stages (dev-flow, implement-spec, code-review-loop, create-pr)
   run inside a visible Kepler terminal, launched from the shared worktree
   with the pack helper: `node skills/software-factory/scripts/launch-stage.mjs
-  <stage> '<thin pointers>'`. The helper calls Kepler's local terminal API
-  (loopback HTTP, no auth), derives the terminal's repo/worktree/task ids
-  from an existing terminal on the same worktree (`GET /terminal/list`),
-  creates a terminal labeled `chain #<spec>: <stage>`, injects the stage's
-  pinned command — `pi --print --provider opencode-go --model <pin>
+  <stage> <spec> '<thin pointers>'`. The helper calls Kepler's local
+  terminal API (loopback HTTP, no auth), derives the terminal's
+  repo/worktree/task ids from an existing terminal on the same worktree
+  (`GET /terminal/list`, preferring a chain-labeled one so the terminal
+  attaches to the chain's own task) or from explicit
+  `--repo-id/--worktree-id/--task-id` arguments — the fresh-run bootstrap,
+  where grill-with-spec is the one stage holding the ids — creates a
+  terminal labeled `chain #<spec>: <stage>` with the spec number taken from
+  the explicit argument, never parsed from another label, injects the
+  stage's pinned command — `pi --print --provider opencode-go --model <pin>
   --thinking <flag> '<thin pointers>'` — and prints the terminal id. The
   terminal stays open after the stage exits; its buffer is the stage log.
-  When the API is unreachable the helper falls back to the detached
-  `nohup pi --print --provider opencode-go --model <pin> --thinking <flag>
-  '<thin pointers>' > /tmp/skillbook-<stage>-pi.log 2>&1 &` launch and
-  reports which path it took. The opencode stage (grill-with-spec, the one
-  interactive stage) runs as a Kepler session for rich input/output.
-  Amended during the dogfood run: Kepler's `create_session` refuses
-  model/effort pins on `pi` until its catalog is cached; pi is lighter and
-  runs headless in the background. Amended 2026-10-08, maintainer decision
-  after the Kepler terminal-API discovery: the detached `nohup` launch is
-  replaced by visible Kepler terminals — the same pinned `pi` command and
-  handoff doc, now live in the Kepler UI; `nohup` survives only as the
-  helper's fallback.
+  The `nohup` fallback fires only on a connection-level failure to the API
+  and never after `POST /terminal/start` succeeded — a reachable API never
+  silently degrades — and it preserves `error.message` while reporting which
+  path it took. The opencode stage (grill-with-spec, the one interactive
+  stage) runs as a Kepler session for rich input/output. Amended during the
+  dogfood run: Kepler's `create_session` refuses model/effort pins on `pi`
+  until its catalog is cached; pi is lighter and runs headless in the
+  background. Amended 2026-10-08, maintainer decision after the Kepler
+  terminal-API discovery: the detached `nohup` launch is replaced by
+  visible Kepler terminals — the same pinned `pi` command and handoff doc,
+  now live in the Kepler UI; `nohup` survives only as the helper's
+  fallback. Amended 2026-10-10, maintainer decision after the first
+  terminal-mechanism review: the spec number is an explicit helper
+  argument, the id anchor prefers a chain-labeled terminal but accepts any
+  terminal on the worktree, fresh runs bootstrap with explicit id flags,
+  and the fallback is connection-level only.
 - Each stage's `SKILL.md` pins its model, invoked at the model's highest
   available effort/thinking (whatever the model exposes — max, xhigh or
   high):
@@ -51,8 +60,22 @@ context is not independent.
   sub-agent — carrying the stage's pin.
 - The pause path needs no MCP (pi has none configured): on a
   decision-forcing finding the terminal chain stops with a durable review
-  report and handoff doc, and the maintainer re-enters via `/grill-with-spec`
-  in Kepler.
+  report and handoff doc, and the pausing stage opens the grilling session
+  itself. `open-grill-session.mjs` creates an opencode session on the task
+  through Kepler's agent API (the same loopback server): create the
+  session, label it `chain #<spec>: grill-with-spec`, pin its model to the
+  grill pin, send the re-entry prompt — so a fresh grilling session sits
+  waiting on the maintainer instead of waiting to be noticed. If the agent
+  API is unreachable, the stage prints the pause and the maintainer
+  re-enters via `/grill-with-spec` manually. Amended 2026-10-10, maintainer
+  decision: the pause actuates the grilling session; a passive pause once
+  left a settled chain stopped and unnoticed overnight.
+- grill-with-spec launches a `chain #<spec>: status` terminal when it
+  starts or resumes a chain: a plain bash loop (branch log, fix tickets,
+  chain terminals) refreshed every 30 seconds — live progress in the
+  Kepler UI, because `pi --print` is silent until a stage finishes. Each
+  stage's transcript lives in the pi session files under
+  `~/.pi/agent/sessions/<worktree>`.
 - Context travels by pointers, never by conversation: each stage runs the
   `handoff` skill (compacted doc in the OS temp dir) and the next session reads
   durable artifacts — the spec issue, tickets, ADRs, `GLOSSARY.md`, the
@@ -89,6 +112,8 @@ Rejected options:
   (`create_session`)" phrasing in spec #55's Implementation Decisions —
   every stage is still a new session, now a visible terminal one; the
   scope-refining comment on the spec records the decision.
+- A pause no longer waits to be noticed: the grilling session opens pinned
+  and labeled, and sits `unread` on the task waiting for the maintainer.
 - Kepler's `create_session` naming a model or effort for `pi` is refused
   until pi's catalog is cached — moot for the chain, whose pi stages launch
   via the terminal per the launch mechanism above.
