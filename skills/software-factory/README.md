@@ -56,6 +56,9 @@ Routes out of `code-review-loop`:
   terminal API is unreachable it falls back to the detached `nohup pi` launch
   and reports which path it took. `grill-with-spec` is the one interactive
   stage and runs as a Kepler session.
+  [ADR-0006](../../docs/adr/0006-chain-skills-cross-model-handoffs.md) is the
+  canonical record of the shared chain rules and the pins they carry; this copy
+  stays for self-containment.
 - The local Kepler API behind the helpers — every verified endpoint of the
   terminal and agent APIs, its request/response shape, and the probe recipe
   that settles a new endpoint — is documented in

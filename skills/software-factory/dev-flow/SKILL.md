@@ -79,3 +79,7 @@ The chain's rules apply at this stage and every later one:
 - Sub-agents run headless inside their stage's terminal — one terminal per
   stage, none per sub-agent — carrying the stage's pin.
 - Every stage shares one git worktree.
+
+[ADR-0006](../../../docs/adr/0006-chain-skills-cross-model-handoffs.md) is the
+canonical record of the shared chain rules and the pins they carry; this copy
+stays for self-containment.
