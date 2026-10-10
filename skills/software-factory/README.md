@@ -55,8 +55,9 @@ Routes out of `code-review-loop`:
   injects the stage's pinned command and prints the terminal id. The detached
   `nohup pi` fallback fires only on a connection-level failure to the terminal
   API and never after `POST /terminal/start` succeeded — a reachable API never
-  silently degrades — and it reports which path it took. `grill-with-spec` is
-  the one interactive stage and runs as a Kepler session.
+  silently degrades —
+  and it preserves `error.message` while reporting which path it took.
+  `grill-with-spec` is the one interactive stage and runs as a Kepler session.
   [ADR-0006](../../docs/adr/0006-chain-skills-cross-model-handoffs.md) is the
   canonical record of the shared chain rules and the pins they carry; this copy
   stays for self-containment.
