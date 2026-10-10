@@ -54,7 +54,7 @@ if [ -z "$EXISTING" ]; then
     | jq -r .terminalId)
 
   LOOP=$(cat <<'LOOP_BODY'
-for i in $(seq 1 240); do
+while true; do
   clear
   date
   echo "== chain #__SPEC__ (software-factory) =="
