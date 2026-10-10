@@ -532,6 +532,84 @@ test("accepts the three-position launch form", () => {
   assert.deepEqual(problems, []);
 });
 
+test("accepts the three-position form followed by id flags", () => {
+  const problems = verify(
+    makeRepo({
+      skillOverrides: {
+        "dev-flow": {
+          body: [
+            "Launch the next stage:",
+            "",
+            "```bash",
+            "node skills/software-factory/scripts/launch-stage.mjs dev-flow <spec> 'Run the dev-flow skill.' --repo-id r --worktree-id w --task-id t",
+            "```",
+            "",
+          ].join("\n"),
+        },
+      },
+    })
+  );
+  assert.deepEqual(problems, []);
+});
+
+test("rejects a stale launch line even when a following line has more words", () => {
+  const problems = verify(
+    makeRepo({
+      skillOverrides: {
+        "dev-flow": {
+          body: [
+            "Launch the next stage:",
+            "",
+            "```bash",
+            "node skills/software-factory/scripts/launch-stage.mjs implement-spec 'Run the implement-spec skill.'",
+            "# launch it now",
+            "```",
+            "",
+          ].join("\n"),
+        },
+      },
+    })
+  );
+  assert.ok(
+    problems.some((problem) => problem.includes("with 2 positional(s)"))
+  );
+});
+
+test("rejects a launch snippet with more positionals than the contract", () => {
+  const problems = verify(
+    makeRepo({
+      skillOverrides: {
+        "dev-flow": {
+          body: [
+            "Launch the next stage:",
+            "",
+            "```bash",
+            "node skills/software-factory/scripts/launch-stage.mjs implement-spec <spec> 'Run the implement-spec skill.' stray",
+            "```",
+            "",
+          ].join("\n"),
+        },
+      },
+    })
+  );
+  assert.ok(
+    problems.some((problem) => problem.includes("with 4 positional(s)"))
+  );
+});
+
+test("ignores a prose mention of the helper", () => {
+  const problems = verify(
+    makeRepo({
+      skillOverrides: {
+        "dev-flow": {
+          body: "The launch-stage.mjs helper takes the stage, the spec and the pointers.\n",
+        },
+      },
+    })
+  );
+  assert.deepEqual(problems, []);
+});
+
 test("rejects a helper pins table that diverges from the SKILL.md frontmatter", () => {
   const problems = verify(
     makeRepo({ helperText: helper.replace("opencode-go/glm-5.3", "opencode-go/gpt-9") })

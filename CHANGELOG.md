@@ -13,7 +13,8 @@
   connection-level-only `nohup` fallback), and `open-grill-session.mjs`
   actuates the decision-forcing pause by opening and pinning a fresh
   grilling session on the task. grill-with-spec keeps a live
-  `chain #<spec>: status` terminal while a chain runs.
+  `chain #<spec>: status` terminal (a plain bash loop refreshed every
+  30 seconds).
 - Add the Matt Pocock pack as referenced skills (published from skills.sh):
   one install command in the book's skills:install script, two
   published-channel checks in the publishing verify, and referenced-skills
@@ -21,9 +22,10 @@
 - Add verify:software-factory, the pack-contract check for chain frontmatter
   and model pins, plugin registration, table rows, and dependency references,
   wired into npm run verify. It also checks that both pack helpers exist and
-  are referenced, that both pin tables match their records, and that every
-  spawn snippet carries an explicit --model — checked separately from the
-  launch snippets.
+  are referenced, that both pin tables match their records, that every launch
+  snippet carries the exact `<stage> <spec> '<thin pointers>'` arity, and that
+  every spawn snippet carries an explicit --model — checked separately from
+  the launch snippets.
 - Migrate the glossary to GLOSSARY.md, replacing CONTEXT.md.
 
 ## 1.1.0
