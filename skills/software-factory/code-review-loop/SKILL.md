@@ -62,18 +62,19 @@ Classify the findings, then take exactly one route:
   ships the verified branch.
 - **Decision-forcing findings** — the fix is not obvious, or the needed
   decision cannot be derived from the code, the task or the spec. Route to
-  `grill-with-spec`, which pauses the chain on the maintainer. Classify
-  conservatively: if the resolution would overturn a decision the user
-  already made, it is decision-forcing.
+  `grill-with-spec`, which opens the grilling session on the task and pauses
+  the chain on the maintainer. Classify conservatively: if the resolution
+  would overturn a decision the user already made, it is decision-forcing.
 
 ### 5. Hand off
 
 Always call the Skill tool for `handoff` first, tailored to the chosen stage.
 It points at the review report, the spec issue, the tickets and the PR.
 
-Launch the next pi stage through the pack helper from the shared worktree. The
-helper starts a visible `chain #<spec>: <stage>` Kepler terminal, injects the
-stage's pinned command and prints the terminal id. When the terminal API is
+Launch the next pi stage through the pack helper from the shared worktree:
+`node skills/software-factory/scripts/launch-stage.mjs <stage> <spec> '<thin pointers>'`.
+The helper starts a visible `chain #<spec>: <stage>` Kepler terminal, injects
+the stage's pinned command and prints the terminal id. When the terminal API is
 unreachable it falls back to the detached `nohup pi` launch and reports which
 path it took.
 
@@ -96,12 +97,25 @@ one terminal per stage, none per sub-agent — carrying the stage's pin.
   node skills/software-factory/scripts/launch-stage.mjs create-pr 'Run the create-pr skill for spec #<n>: read skills/software-factory/create-pr/SKILL.md and follow it. Read the handoff doc at <path> and the review report at <path>.'
   ```
 
-- **grill-with-spec** — do not launch a session. The chain pauses on the
-  maintainer, who re-enters with `/grill-with-spec` in Kepler. Print the pause
-  clearly, with the handoff doc path, the review report path, the spec issue
-  and the decision-forcing finding. The pause ends when grill-with-spec hands
-  off to dev-flow.
+- **grill-with-spec** — actuate the pause instead of waiting to be noticed.
+  Run:
 
-Every route but the last starts the next stage as a new session; the route to
-grill-with-spec spends its pause waiting on the maintainer, and the durable
-report plus the handoff doc are the state it resumes from.
+  ```bash
+  node skills/software-factory/scripts/open-grill-session.mjs <spec> '<re-entry prompt>'
+  ```
+
+  The helper creates the opencode session on the task, labels it `chain
+  #<spec>: grill-with-spec`, pins its model and effort, and sends the re-entry
+  prompt — so a fresh grilling session lands `unread` on the maintainer's
+  task. The re-entry prompt carries the thin pointers: the handoff doc path,
+  the review report path, the spec issue and the decision-forcing finding.
+  When the helper reports a connection-level failure it prints the pause — the
+  manual re-entry route — with those pointers in the prompt; the maintainer
+  re-enters with `/grill-with-spec` in Kepler. The pause ends when
+  grill-with-spec hands off to dev-flow.
+
+Every route but the last starts the next stage as a new session. The route to
+grill-with-spec opens the pause itself: the grilling session is created on the
+task, and the durable report plus the handoff doc are the state it resumes
+from. Only when the helper cannot reach the API does the pause fall back to a
+printed notice waiting on a manual `/grill-with-spec` re-entry.
