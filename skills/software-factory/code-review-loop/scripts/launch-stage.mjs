@@ -81,16 +81,60 @@ export function readKeplerApiBase({ dataDir = KEPLER_DATA_DIR } = {}) {
 const CHAIN_LABEL = /^chain #\d+: /;
 const ID_FLAG_HINT = "--repo-id/--worktree-id/--task-id";
 
+// The bootstrap flags, and the one place the three field names are spelled:
+// `toTaskIds` reads them from this table to construct the named triple.
+const ID_FIELD_BY_FLAG = {
+  "--repo-id": "repoId",
+  "--worktree-id": "worktreeId",
+  "--task-id": "taskId",
+};
+
 /**
- * The repo/worktree/task id triple identifying the task a stage acts on. All
- * three fields travel together: the bootstrap flags fill all three or none
- * (undefined), and a resolved triple is fully populated before any launch.
+ * The bootstrap flags as given: the three named fields travel together, so
+ * each is `undefined` only when no flags were passed at all.
  *
- * @typedef {Object} TaskIds
+ * @typedef {Object} IdFlags
  * @property {string|undefined} repoId
  * @property {string|undefined} worktreeId
  * @property {string|undefined} taskId
  */
+
+/**
+ * The repo/worktree/task id triple identifying the task a stage acts on.
+ * Every triple is built by `toTaskIds`; a resolved triple is fully populated
+ * before any launch.
+ *
+ * @typedef {Object} TaskIds
+ * @property {string} repoId
+ * @property {string} worktreeId
+ * @property {string} taskId
+ */
+
+/**
+ * Construct the named triple from a bootstrap flags object or an anchor
+ * terminal entry: exactly the three fields, strangers discarded. A missing
+ * field stays `undefined`.
+ *
+ * @param {IdFlags|TaskIds|Object} source
+ * @returns {IdFlags}
+ */
+function toTaskIds(source) {
+  return Object.fromEntries(Object.values(ID_FIELD_BY_FLAG).map((field) => [field, source?.[field]]));
+}
+
+/**
+ * The 0-or-3 rule: all three bootstrap flags together, or none. A partial
+ * set is a hard usage error. `parseIdFlags` and `resolveIds` share this one
+ * guard, so the rule and its message live in one place.
+ *
+ * @param {IdFlags} ids
+ */
+function assertCompleteIdFlags(ids) {
+  const present = Object.values(ids).filter((value) => value !== undefined);
+  if (present.length !== 0 && present.length !== 3) {
+    throw new Error(`id flags must be given together: ${ID_FLAG_HINT}`);
+  }
+}
 
 /**
  * Pick the terminal whose repo/worktree/task ids the new terminal reuses: a
@@ -106,20 +150,15 @@ export function pickAnchor(terminals, worktreePath) {
 
 /**
  * Parse the fresh-run bootstrap ids from argv. All three flags together or
- * none: a partial set is a hard usage error. Returns a `TaskIds` value with
+ * none: a partial set is a hard usage error. Returns an `IdFlags` value with
  * the three keys present — undefined when no flags were given.
  *
- * @returns {TaskIds}
+ * @returns {IdFlags}
  */
 export function parseIdFlags(argv = []) {
-  const idFlags = {
-    "--repo-id": "repoId",
-    "--worktree-id": "worktreeId",
-    "--task-id": "taskId",
-  };
   const flags = {};
   for (let i = 0; i < argv.length; i += 1) {
-    const field = idFlags[argv[i]];
+    const field = ID_FIELD_BY_FLAG[argv[i]];
     if (!field) continue;
     const value = argv[i + 1];
     if (value === undefined || value.startsWith("--")) {
@@ -131,11 +170,9 @@ export function parseIdFlags(argv = []) {
     flags[field] = value;
     i += 1;
   }
-  const present = Object.values(flags).filter((value) => value !== undefined);
-  if (present.length !== 0 && present.length !== 3) {
-    throw new Error(`id flags must be given together: ${ID_FLAG_HINT}`);
-  }
-  return Object.fromEntries(Object.values(idFlags).map((field) => [field, flags[field]]));
+  const ids = toTaskIds(flags);
+  assertCompleteIdFlags(ids);
+  return ids;
 }
 
 /** A failure to reach the terminal API at the connection level. */
@@ -176,25 +213,22 @@ export async function requestJson(fetchImpl, url, init) {
  * neither yields ids. Connection-level failures are tagged so callers can
  * classify them; every other failure is a hard error.
  *
- * @param {{ apiBase: string, fetchImpl?: typeof fetch, worktreePath: string, flags?: TaskIds }} options
+ * @param {{ apiBase: string, fetchImpl?: typeof fetch, worktreePath: string, flags?: IdFlags }} options
  * @returns {Promise<TaskIds>}
  */
 export async function resolveIds({ apiBase, fetchImpl = fetch, worktreePath, flags = {} }) {
-  const explicit = flags ?? {};
-  const present = Object.values(explicit).filter((value) => value !== undefined);
-  if (present.length === 3) return explicit;
-  if (present.length !== 0) {
-    throw new Error(`id flags must be given together: ${ID_FLAG_HINT}`);
-  }
+  const explicit = toTaskIds(flags);
+  assertCompleteIdFlags(explicit);
+  if (Object.values(explicit).some((value) => value !== undefined)) return explicit;
 
   const terminals = await requestJson(fetchImpl, `${apiBase}/terminal/list`);
   const anchor = pickAnchor(terminals, worktreePath);
   if (!anchor) {
     throw new Error(`no terminal on ${worktreePath} and no ${ID_FLAG_HINT} flags — cannot derive ids`);
   }
-  // The anchor is an external `GET /terminal/list` entry: this is the one
-  // place the triple is read off it.
-  return { repoId: anchor.repoId, worktreeId: anchor.worktreeId, taskId: anchor.taskId };
+  // The anchor is an external `GET /terminal/list` entry: construct it like
+  // every other triple.
+  return toTaskIds(anchor);
 }
 
 /**
