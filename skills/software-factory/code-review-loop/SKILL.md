@@ -36,7 +36,9 @@ git fetch origin
 git merge-base origin/main HEAD
 ```
 
-When a PR exists, its base is the fixed point (`gh pr view --json baseRefName`).
+When a PR exists, its base ref names the base branch. Read it with
+`gh pr view --json baseRefName`; the fixed point is the merge-base with it:
+`git merge-base origin/<baseRefName> HEAD`.
 Confirm the ref resolves and `git diff <fixed-point>...HEAD` is non-empty
 before spawning reviewers.
 
