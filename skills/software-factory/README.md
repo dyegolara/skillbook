@@ -52,10 +52,11 @@ Routes out of `code-review-loop`:
   worktree. Each launching skill ships its own standalone helper; the copies
   match the shared sources in `scripts/`, enforced by the pack verifier.
   The helper starts a visible `chain #<spec>: <stage>` Kepler terminal,
-  injects the stage's pinned command and prints the terminal id. When the
-  terminal API is unreachable it falls back to the detached `nohup pi` launch
-  and reports which path it took. `grill-with-spec` is the one interactive
-  stage and runs as a Kepler session.
+  injects the stage's pinned command and prints the terminal id. The detached
+  `nohup pi` fallback fires only on a connection-level failure to the terminal
+  API and never after `POST /terminal/start` succeeded — a reachable API never
+  silently degrades — and it reports which path it took. `grill-with-spec` is
+  the one interactive stage and runs as a Kepler session.
   [ADR-0006](../../docs/adr/0006-chain-skills-cross-model-handoffs.md) is the
   canonical record of the shared chain rules and the pins they carry; this copy
   stays for self-containment.
