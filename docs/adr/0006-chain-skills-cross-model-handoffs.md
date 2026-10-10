@@ -71,11 +71,21 @@ context is not independent.
   decision: the pause actuates the grilling session; a passive pause once
   left a settled chain stopped and unnoticed overnight.
 - grill-with-spec launches a `chain #<spec>: status` terminal when it
-  starts or resumes a chain: a plain bash loop (branch log, fix tickets,
-  chain terminals) refreshed every 30 seconds — live progress in the
-  Kepler UI, because `pi --print` is silent until a stage finishes. Each
-  stage's transcript lives in the pi session files under
-  `~/.pi/agent/sessions/<worktree>`.
+  resumes a chain, and in the fresh form once the spec is published: a
+  plain bash loop (branch log, fix tickets, chain terminals) refreshed
+  every 30 seconds — live progress in the Kepler UI, because
+  `pi --print` is silent until a stage finishes. Each stage's transcript
+  lives in the pi session files under `~/.pi/agent/sessions/<worktree>`.
+  Amended 2026-10-10, maintainer decision on the review of `52f6c84`
+  (spec #55 finding S3): the timing was decided "when it starts or
+  resumes a chain"; amended to the shipped timing — the label and the
+  loop's fix-ticket filter both need the spec number, which exists only
+  once `to-spec` publishes, and the fresh form's grilling phase is the
+  one interactive stage (the maintainer in the conversation is its live
+  view; the headless stages the terminal watches begin after
+  publication). Open gaps, left undecided: mid-chain liveness — nothing
+  re-launches an exited status terminal between the start/resume
+  checkpoints — and the label key assumes one chain per worktree.
 - Context travels by pointers, never by conversation: each stage runs the
   `handoff` skill (compacted doc in the OS temp dir) and the next session reads
   durable artifacts — the spec issue, tickets, ADRs, `GLOSSARY.md`, the

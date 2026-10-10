@@ -76,9 +76,9 @@ watched in three places:
   files under `~/.pi/agent/sessions/<worktree>`.
 - **The live view.** Live progress is the artifacts — commits on the shared
   worktree and the spec's tickets — plus a status terminal
-  `chain #<spec>: status`. `grill-with-spec` launches it when the chain starts
-  and makes sure it is alive on re-entry; the status terminal refreshes every
-  30 seconds.
+  `chain #<spec>: status`. `grill-with-spec` launches it once the spec is
+  published in the fresh form and makes sure it is alive when the chain
+  resumes; the status terminal refreshes every 30 seconds.
 
 ## Runtime availability
 
