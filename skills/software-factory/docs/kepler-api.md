@@ -38,7 +38,12 @@ bottom when Kepler's build moves.
 - `POST /agent/rename-session` — body `{sessionId, name}` — sets the label
   the Kepler UI shows.
 - `POST /agent/session-config-option` — body `{sessionId, configId, value}`
-  — `configId: "model"` pins the model (verified with `opencode-go/glm-5.3`).
+  — `configId: "model"` pins the model (verified with `opencode-go/glm-5.3`);
+  `configId: "effort"` pins the thought level (verified 2026-10-10 with the
+  helper's exact sequence: a fresh session defaults to `effort: "low"`; after
+  `model` then `effort: "max"`, GET `/agent/sessions` reports
+  `effort.currentValue: "max"` among `low`/`high`/`max`, category
+  `thought_level`).
 - `POST /agent/send-prompt` — body `{sessionId, prompt}` (also
   `attachments`, `promptId`) — delivers the first prompt; the session
   processes it and then sits waiting on the user.
