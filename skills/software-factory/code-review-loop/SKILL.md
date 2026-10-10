@@ -88,13 +88,13 @@ one terminal per stage, none per sub-agent — carrying the stage's pin.
 - **dev-flow** — launch a new pi session:
 
   ```bash
-  node skills/software-factory/scripts/launch-stage.mjs dev-flow 'Run the dev-flow skill for spec #<n>: read skills/software-factory/dev-flow/SKILL.md and follow it. Read the handoff doc at <path> and the review report at <path>. Publish the findings as fix tickets.'
+  node skills/software-factory/scripts/launch-stage.mjs dev-flow <spec> 'Run the dev-flow skill for spec #<n>: read skills/software-factory/dev-flow/SKILL.md and follow it. Read the handoff doc at <path> and the review report at <path>. Publish the findings as fix tickets.'
   ```
 
 - **create-pr** — launch a new pi session:
 
   ```bash
-  node skills/software-factory/scripts/launch-stage.mjs create-pr 'Run the create-pr skill for spec #<n>: read skills/software-factory/create-pr/SKILL.md and follow it. Read the handoff doc at <path> and the review report at <path>.'
+  node skills/software-factory/scripts/launch-stage.mjs create-pr <spec> 'Run the create-pr skill for spec #<n>: read skills/software-factory/create-pr/SKILL.md and follow it. Read the handoff doc at <path> and the review report at <path>.'
   ```
 
 - **grill-with-spec** — actuate the pause instead of waiting to be noticed.

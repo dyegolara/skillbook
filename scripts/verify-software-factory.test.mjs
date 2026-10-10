@@ -154,7 +154,7 @@ function defaultSkillBody(name, { includeGrillRoute = true } = {}) {
               `Launch ${stage}:`,
               "",
               "```bash",
-              `node skills/software-factory/scripts/launch-stage.mjs ${stage} 'Run the ${stage} skill.'`,
+              `node skills/software-factory/scripts/launch-stage.mjs ${stage} <spec> 'Run the ${stage} skill.'`,
               "```",
               "",
             ].join("\n")
@@ -465,6 +465,71 @@ test("rejects a launch snippet that does not reference the helper", () => {
       )
     )
   );
+});
+
+test("rejects a launch snippet that omits the explicit spec positional", () => {
+  const problems = verify(
+    makeRepo({
+      skillOverrides: {
+        "dev-flow": {
+          body: [
+            "Launch the next stage:",
+            "",
+            "```bash",
+            "node skills/software-factory/scripts/launch-stage.mjs implement-spec 'Run the implement-spec skill.'",
+            "```",
+            "",
+          ].join("\n"),
+        },
+      },
+    })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        "skills/software-factory/dev-flow/SKILL.md: launch snippet invokes skills/software-factory/scripts/launch-stage.mjs with 2 positional(s)"
+      )
+    )
+  );
+});
+
+test("rejects an inline launch rule that omits the explicit spec positional", () => {
+  const problems = verify(
+    makeRepo({
+      skillOverrides: {
+        "dev-flow": {
+          body: "Launch through `node skills/software-factory/scripts/launch-stage.mjs <stage> '<thin pointers>'`.\n",
+        },
+      },
+    })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        "skills/software-factory/dev-flow/SKILL.md: launch snippet invokes skills/software-factory/scripts/launch-stage.mjs with 2 positional(s)"
+      )
+    )
+  );
+});
+
+test("accepts the three-position launch form", () => {
+  const problems = verify(
+    makeRepo({
+      skillOverrides: {
+        "dev-flow": {
+          body: [
+            "Launch the next stage:",
+            "",
+            "```bash",
+            "node skills/software-factory/scripts/launch-stage.mjs implement-spec <spec> 'Run the implement-spec skill.'",
+            "```",
+            "",
+          ].join("\n"),
+        },
+      },
+    })
+  );
+  assert.deepEqual(problems, []);
 });
 
 test("rejects a helper pins table that diverges from the SKILL.md frontmatter", () => {

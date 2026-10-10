@@ -13,7 +13,8 @@
  *      both books' referenced-skills tables, both published-channel checks,
  *      and the skills:install command;
  *   5. both pack helpers exist and are referenced: every SKILL.md stage
- *      launch goes through launch-stage.mjs and code-review-loop's
+ *      launch goes through launch-stage.mjs with the explicit `<stage> <spec>
+ *      '<thin pointers>'` positionals and code-review-loop's
  *      decision-forcing route goes through open-grill-session.mjs;
  *   6. both pin tables match their records: the launch helper's STAGE_PINS
  *      against the own pi stages' SKILL.md frontmatter and ADR-0006's
@@ -180,6 +181,71 @@ function fencedCodeBlocks(text) {
   return blocks;
 }
 
+function launchPositionals(text) {
+  const counts = [];
+  const pattern = /launch-stage\.mjs/g;
+  let match;
+  while ((match = pattern.exec(text)) !== null) {
+    const rest = text.slice(match.index + match[0].length);
+    if (!/^\s/.test(rest)) continue; // a bare mention, not an invocation
+    const tokens = scanShellArgs(rest);
+    if (tokens.length > 0) counts.push(positionalCount(tokens));
+  }
+  return counts;
+}
+
+/**
+ * Scan the shell-ish argument tokens after a command name: quoted strings are
+ * single tokens (backticks inside them are literal), and the scan stops at an
+ * unquoted newline, backtick, or end of text.
+ */
+function scanShellArgs(text) {
+  const tokens = [];
+  let i = 0;
+  while (i < text.length) {
+    const ch = text[i];
+    if (/\s/.test(ch)) {
+      i += 1;
+      continue;
+    }
+    if (ch === "`") break;
+    if (ch === "'" || ch === '"') {
+      const quote = ch;
+      let j = i + 1;
+      while (j < text.length && text[j] !== quote) {
+        if (quote === '"' && text[j] === "\\") j += 1;
+        j += 1;
+      }
+      tokens.push(text.slice(i, Math.min(j + 1, text.length)));
+      i = j + 1;
+      continue;
+    }
+    let j = i;
+    while (j < text.length && !/[\s`]/.test(text[j])) j += 1;
+    tokens.push(text.slice(i, j));
+    i = j;
+  }
+  return tokens;
+}
+
+/** Positionals only: a flag and its value are not stage/spec/pointers. */
+function positionalCount(tokens) {
+  let count = 0;
+  let skipValue = false;
+  for (const token of tokens) {
+    if (skipValue) {
+      skipValue = false;
+      continue;
+    }
+    if (token.startsWith("-")) {
+      skipValue = true;
+      continue;
+    }
+    count += 1;
+  }
+  return count;
+}
+
 function piSpawnCommands(block) {
   const commands = [];
   for (const line of block.replace(/\\\n\s*/g, " ").split("\n")) {
@@ -222,6 +288,13 @@ function checkLaunchSnippets(problems, label, text) {
     }
     if (spawns.length > 0 && !spawns.every((command) => command.includes("--model"))) {
       problems.push(`${label}: spawn snippet lacks an explicit --model`);
+    }
+  }
+  for (const count of launchPositionals(text)) {
+    if (count < 3) {
+      problems.push(
+        `${label}: launch snippet invokes ${HELPER_FILE} with ${count} positional(s) — expected <stage> <spec> '<thin pointers>'`
+      );
     }
   }
 }
