@@ -79,9 +79,10 @@ It points at the review report, the spec issue, the tickets and the PR.
 Launch the next pi stage through the pack helper from the shared worktree:
 `node "<skill-dir>/scripts/launch-stage.mjs" <stage> <spec> '<thin pointers>'`.
 The helper starts a visible `chain #<spec>: <stage>` Kepler terminal, injects
-the stage's pinned command and prints the terminal id. When the terminal API is
-unreachable it falls back to the detached `nohup pi` launch and reports which
-path it took.
+the stage's pinned command and prints the terminal id. The detached `nohup pi`
+fallback fires only on a connection-level failure to the terminal API and never
+after `POST /terminal/start` succeeded — a reachable API never silently
+degrades — and it reports which path it took.
 
 Every spawned `pi` command — the stage launch and each sub-agent — carries an
 explicit `--provider`, `--model` and `--thinking`; never rely on pi's ambient
