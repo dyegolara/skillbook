@@ -41,6 +41,8 @@ import {
   stageLabel,
 } from "./launch-stage.mjs";
 
+/** @typedef {import("./launch-stage.mjs").TaskIds} TaskIds */
+
 // Pins per ADR-0006 and grill-with-spec/SKILL.md frontmatter: the grill model
 // at its highest available effort.
 export const GRILL_PIN = { model: "opencode-go/glm-5.3", effort: "max" };
@@ -55,13 +57,15 @@ export function grillSessionLabel(spec) {
  * connection-level failure on the create call leaves no session id and may
  * still fall back to the pause; every failure after the session exists
  * carries its id and is a hard error.
+ *
+ * @param {{ spec: number|string, prompt: string, ids: TaskIds, worktreePath: string, apiBase: string, fetchImpl?: typeof fetch }} options
  */
 export async function createGrillSession({ spec, prompt, ids, worktreePath, apiBase, fetchImpl = fetch }) {
   const label = grillSessionLabel(spec);
   const created = await requestJson(fetchImpl, `${apiBase}/agent/sessions`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ adapterId: "opencode", worktreePath, repoId: ids.repoId, worktreeId: ids.worktreeId, taskId: ids.taskId }),
+    body: JSON.stringify({ adapterId: "opencode", worktreePath, ...ids }),
   });
   const sessionId = created?.sessionId;
   if (!sessionId) throw new Error("Kepler agent session start returned no sessionId");
