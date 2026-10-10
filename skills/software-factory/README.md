@@ -47,12 +47,27 @@ Routes out of `code-review-loop`:
   The reviewer in particular sees only pointers, never the implementer's
   reasoning.
 - The pi stages launch through the pack helper from the shared worktree:
-  `node skills/software-factory/scripts/launch-stage.mjs <stage> '<thin pointers>'`.
+  `node skills/software-factory/scripts/launch-stage.mjs <stage> <spec> '<thin pointers>'`.
   The helper starts a visible `chain #<spec>: <stage>` Kepler terminal,
   injects the stage's pinned command and prints the terminal id. When the
   terminal API is unreachable it falls back to the detached `nohup pi` launch
   and reports which path it took. `grill-with-spec` is the one interactive
   stage and runs as a Kepler session.
+
+## Where to watch a chain run
+
+A `pi --print` stage prints nothing until it finishes, so a running chain is
+watched in three places:
+
+- **The terminal buffer.** A stage terminal stays open after the stage exits:
+  its buffer holds the launch command plus the stage's final response.
+- **The transcripts.** Each stage's full transcript lives in the pi session
+  files under `~/.pi/agent/sessions/<worktree>`.
+- **The live view.** Live progress is the artifacts — commits on the shared
+  worktree and the spec's tickets — plus a status terminal
+  `chain #<spec>: status`. `grill-with-spec` launches it when the chain starts
+  and makes sure it is alive on re-entry; the status terminal refreshes every
+  30 seconds.
 
 ## Runtime availability
 
