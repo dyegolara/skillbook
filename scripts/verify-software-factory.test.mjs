@@ -30,6 +30,22 @@ const helper = [
   "",
 ].join("\n");
 
+const GRILL_PIN = { model: "opencode-go/glm-5.3", effort: "max" };
+
+const grillHelper = [
+  `export const GRILL_PIN = { model: "${GRILL_PIN.model}", effort: "${GRILL_PIN.effort}" };`,
+  "",
+].join("\n");
+
+const GRILL_ROUTE = [
+  "Decision-forcing findings open the grilling session instead of waiting:",
+  "",
+  "```bash",
+  "node skills/software-factory/scripts/open-grill-session.mjs <spec> '<re-entry prompt>'",
+  "```",
+  "",
+].join("\n");
+
 const adr = [
   "# 0006 — Chain skills hand off across pinned agent/model sessions",
   "",
@@ -127,21 +143,25 @@ function skillContent(name, overrides = {}) {
   return `${skillFrontmatter(name, frontmatterOverrides)}\n${body ?? defaultSkillBody(name)}`;
 }
 
-function defaultSkillBody(name) {
+function defaultSkillBody(name, { includeGrillRoute = true } = {}) {
   const stages = SKILL_LAUNCHES[name];
-  if (stages.length === 0) return "The terminal stage launches nothing.\n";
-  return stages
-    .map((stage) =>
-      [
-        `Launch ${stage}:`,
-        "",
-        "```bash",
-        `node skills/software-factory/scripts/launch-stage.mjs ${stage} 'Run the ${stage} skill.'`,
-        "```",
-        "",
-      ].join("\n")
-    )
-    .join("\n");
+  const launches =
+    stages.length === 0
+      ? "The terminal stage launches nothing.\n"
+      : stages
+          .map((stage) =>
+            [
+              `Launch ${stage}:`,
+              "",
+              "```bash",
+              `node skills/software-factory/scripts/launch-stage.mjs ${stage} 'Run the ${stage} skill.'`,
+              "```",
+              "",
+            ].join("\n")
+          )
+          .join("\n");
+  if (name !== "code-review-loop" || !includeGrillRoute) return launches;
+  return `${launches}\n${GRILL_ROUTE}`;
 }
 
 function makeRepo({
@@ -155,6 +175,9 @@ function makeRepo({
   skillsInstall = "npx skills@latest add mattpocock/skills",
   omitHelper = false,
   helperText = helper,
+  omitGrillHelper = false,
+  grillHelperText = grillHelper,
+  omitGrillRoute = false,
   omitAdr = false,
   adrText = adr,
 } = {}) {
@@ -162,9 +185,16 @@ function makeRepo({
   roots.push(root);
   for (const name of Object.keys(CHAIN_PINS)) {
     if (name === omitSkill) continue;
-    write(root, `skills/software-factory/${name}/SKILL.md`, skillContent(name, skillOverrides[name]));
+    const overrides =
+      name === "code-review-loop" && omitGrillRoute
+        ? { ...skillOverrides[name], body: "The route prints a pause and waits.\n" }
+        : skillOverrides[name];
+    write(root, `skills/software-factory/${name}/SKILL.md`, skillContent(name, overrides));
   }
   if (!omitHelper) write(root, "skills/software-factory/scripts/launch-stage.mjs", helperText);
+  if (!omitGrillHelper) {
+    write(root, "skills/software-factory/scripts/open-grill-session.mjs", grillHelperText);
+  }
   if (!omitAdr) write(root, "docs/adr/0006-chain-skills-cross-model-handoffs.md", adrText);
   if (!skipPackReadme) write(root, "skills/software-factory/README.md", "# software-factory pack\n");
   write(
@@ -352,6 +382,50 @@ test("rejects a missing launch helper", () => {
   );
 });
 
+test("rejects a missing grill-session helper", () => {
+  const problems = verify(makeRepo({ omitGrillHelper: true }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes("skills/software-factory/scripts/open-grill-session.mjs: missing")
+    )
+  );
+});
+
+test("rejects a code-review-loop whose decision-forcing route does not reference the grill-session helper", () => {
+  const problems = verify(makeRepo({ omitGrillRoute: true }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        "skills/software-factory/code-review-loop/SKILL.md: decision-forcing route does not reference skills/software-factory/scripts/open-grill-session.mjs"
+      )
+    )
+  );
+});
+
+test("rejects a grill pin that diverges from the grill-with-spec frontmatter", () => {
+  const problems = verify(
+    makeRepo({ grillHelperText: grillHelper.replace("opencode-go/glm-5.3", "opencode-go/gpt-9") })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        'skills/software-factory/scripts/open-grill-session.mjs: grill pin "model opencode-go/gpt-9, effort max" does not match skills/software-factory/grill-with-spec/SKILL.md frontmatter "model opencode-go/glm-5.3, thinking max"'
+      )
+    )
+  );
+});
+
+test("rejects a grill helper whose GRILL_PIN table cannot be read", () => {
+  const problems = verify(makeRepo({ grillHelperText: "export const GRILL_PIN = {};\n" }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        "skills/software-factory/scripts/open-grill-session.mjs: cannot read the GRILL_PIN table"
+      )
+    )
+  );
+});
+
 test("rejects a launch snippet that does not reference the helper", () => {
   const problems = verify(
     makeRepo({
@@ -441,6 +515,26 @@ test("rejects a spawn snippet without an explicit --model", () => {
       problem.includes("skills/software-factory/dev-flow/SKILL.md: spawn snippet lacks an explicit --model")
     )
   );
+});
+
+test("accepts a pinned sub-agent spawn that is not a stage launch", () => {
+  const problems = verify(
+    makeRepo({
+      skillOverrides: {
+        "dev-flow": {
+          body: [
+            "Run the test author as a sub-agent:",
+            "",
+            "```bash",
+            "pi --print --provider opencode-go --model opencode-go/glm-5.3 --thinking max 'Run the tdd skill.'",
+            "```",
+            "",
+          ].join("\n"),
+        },
+      },
+    })
+  );
+  assert.deepEqual(problems, []);
 });
 
 test("rejects a helper whose STAGE_PINS table cannot be read", () => {
