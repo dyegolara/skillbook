@@ -44,7 +44,7 @@ on a spec issue.
 5. Launch implement-spec through the pack helper from the shared worktree:
 
    ```bash
-   node skills/software-factory/scripts/launch-stage.mjs implement-spec 'Run the implement-spec skill in this worktree for spec #<n>: load it with the Skill tool as `implement-spec`, or in this pi session read ~/.agents/skills/implement-spec/SKILL.md. Read the handoff doc at <path>. Work the ticket frontier. When it completes, run the handoff skill for code-review-loop, then launch it per the chain rules in skills/software-factory/code-review-loop/SKILL.md.'
+   node skills/software-factory/scripts/launch-stage.mjs implement-spec <spec> 'Run the implement-spec skill in this worktree for spec #<n>: load it with the Skill tool as `implement-spec`, or in this pi session read ~/.agents/skills/implement-spec/SKILL.md. Read the handoff doc at <path>. Work the ticket frontier. When it completes, run the handoff skill for code-review-loop, then launch it per the chain rules in skills/software-factory/code-review-loop/SKILL.md.'
    ```
 
 6. Report the ticket numbers and the launch line the helper printed, then stop.
@@ -63,7 +63,7 @@ The chain's rules apply at this stage and every later one:
   ADRs, `GLOSSARY.md`, the review report — never as conversation.
 - Every stage is a new session. No stage inherits this session's context.
 - The pi stages launch through the pack helper from the shared worktree:
-  `node skills/software-factory/scripts/launch-stage.mjs <stage> '<thin pointers>'`.
+  `node skills/software-factory/scripts/launch-stage.mjs <stage> <spec> '<thin pointers>'`.
   The helper starts a visible `chain #<spec>: <stage>` Kepler terminal, injects
   the stage's pinned command and prints the terminal id. When the terminal API
   is unreachable it falls back to the detached `nohup pi` launch and reports
