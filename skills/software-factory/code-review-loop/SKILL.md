@@ -88,6 +88,10 @@ expensive model in the account — the ambient default is an environment fact,
 not a chain decision). Sub-agents run headless inside their stage's terminal —
 one terminal per stage, none per sub-agent — carrying the stage's pin.
 
+[ADR-0006](../../../docs/adr/0006-chain-skills-cross-model-handoffs.md) is the
+canonical record of the shared chain rules and the pins they carry; this copy
+stays for self-containment.
+
 - **dev-flow** — launch a new pi session:
 
   ```bash

@@ -187,3 +187,7 @@ Both forms follow the same rules, and so does every later stage:
   stage, none per sub-agent — carrying the stage's pin.
 - Every stage shares one git worktree. The worktree outlives this session;
   the context does not.
+
+[ADR-0006](../../../docs/adr/0006-chain-skills-cross-model-handoffs.md) is the
+canonical record of the shared chain rules and the pins they carry; this copy
+stays for self-containment.
