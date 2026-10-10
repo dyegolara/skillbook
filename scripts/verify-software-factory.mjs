@@ -338,6 +338,15 @@ function checkPackagedHelpers(problems, packDir, skill, text) {
   }
 }
 
+/** Parse the quoted `key: "value"` string fields from an entry's source text. */
+function parseQuotedFields(fieldsText) {
+  const fields = {};
+  const fieldPattern = /(\w+)\s*:\s*"([^"]*)"/g;
+  let field;
+  while ((field = fieldPattern.exec(fieldsText)) !== null) fields[field[1]] = field[2];
+  return fields;
+}
+
 /**
  * Read STAGE_PINS from the helper's source text — the verifier must not import
  * the module it verifies, because fixtures mutate the file. Contract: a plain
@@ -368,11 +377,7 @@ function parseStagePins(text) {
   const entryPattern = /"([^"]+)"\s*:\s*\{([^}]*)\}/g;
   let entry;
   while ((entry = entryPattern.exec(entries)) !== null) {
-    const pin = {};
-    const fieldPattern = /(\w+)\s*:\s*"([^"]*)"/g;
-    let field;
-    while ((field = fieldPattern.exec(entry[2])) !== null) pin[field[1]] = field[2];
-    pins[entry[1]] = pin;
+    pins[entry[1]] = parseQuotedFields(entry[2]);
   }
   return Object.keys(pins).length > 0 ? pins : null;
 }
@@ -395,17 +400,15 @@ function readAdrPin(repoRoot, problems) {
 
 /**
  * Read GRILL_PIN from the grill helper's source text — same fixture-friendly
- * approach as parseStagePins, so the verifier never imports the module it
- * verifies. Contract: a plain `export const GRILL_PIN` object literal with
- * quoted `model` and `effort` string fields.
+ * approach as parseStagePins (both read an entry's string fields through
+ * parseQuotedFields), so the verifier never imports the module it verifies.
+ * Contract: a plain `export const GRILL_PIN` object literal with quoted `model`
+ * and `effort` string fields.
  */
 function parseGrillPin(text) {
   const match = /export const GRILL_PIN\s*=\s*\{([^}]*)\}/.exec(text);
   if (!match) return null;
-  const pin = {};
-  const fieldPattern = /(\w+)\s*:\s*"([^"]*)"/g;
-  let field;
-  while ((field = fieldPattern.exec(match[1])) !== null) pin[field[1]] = field[2];
+  const pin = parseQuotedFields(match[1]);
   return Object.keys(pin).length > 0 ? pin : null;
 }
 
