@@ -67,7 +67,10 @@ export function verifySoftwareFactoryPack(packDir) {
     const { data } = parseFrontmatter(text);
     frontmatter.set(skill.name, data);
     checkLaunchSnippets(problems, label, text);
-    if (skill.name === "code-review-loop" && !text.includes("open-grill-session.mjs")) {
+    if (
+      skill.name === "code-review-loop" &&
+      !fencedCodeBlocks(text).some((block) => block.includes("open-grill-session.mjs"))
+    ) {
       problems.push(`${label}: decision-forcing route does not reference ${GRILL_HELPER_FILE}`);
     }
     if (data.name !== skill.name) {
