@@ -47,10 +47,6 @@ import {
 // at its highest available effort.
 export const GRILL_PIN = { model: "opencode-go/glm-5.3", effort: "max" };
 
-export function grillSessionLabel(spec) {
-  return stageLabel(spec, "grill-with-spec");
-}
-
 /**
  * The reachable-API path: create the opencode session on the task, rename it,
  * pin model and effort, then send the re-entry prompt verbatim. A
@@ -61,7 +57,7 @@ export function grillSessionLabel(spec) {
  * @param {{ spec: number|string, prompt: string, ids: TaskIds, worktreePath: string, apiBase: string, fetchImpl?: typeof fetch }} options
  */
 export async function createGrillSession({ spec, prompt, ids, worktreePath, apiBase, fetchImpl = fetch }) {
-  const label = grillSessionLabel(spec);
+  const label = stageLabel(spec, "grill-with-spec");
   const created = await requestJson(fetchImpl, `${apiBase}/agent/sessions`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -102,7 +98,7 @@ export async function createGrillSession({ spec, prompt, ids, worktreePath, apiB
 
 export async function openGrillSession({ spec, prompt, flags, deps = {} }) {
   const { fetchImpl = fetch, worktreePath = process.cwd() } = deps;
-  const label = grillSessionLabel(spec); // a bad spec is a hard error before any fetch
+  const label = stageLabel(spec, "grill-with-spec"); // a bad spec is a hard error before any fetch
   const fallback = (error) => ({ path: "pause", label, reason: error.message });
 
   let apiBase;
