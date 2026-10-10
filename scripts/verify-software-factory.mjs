@@ -12,11 +12,16 @@
  *   4. the referenced Matt Pocock pack is wired as a dependency: its row in
  *      both books' referenced-skills tables, both published-channel checks,
  *      and the skills:install command;
- *   5. the launch mechanism: the pack helper exists, every SKILL.md launch
- *      snippet goes through it, its STAGE_PINS table matches the recorded
- *      model pins (the own pi stages' SKILL.md frontmatter and ADR-0006's
- *      implement-spec pin), and every inline `pi` spawn snippet carries an
- *      explicit --model.
+ *   5. both pack helpers exist and are referenced: every SKILL.md stage
+ *      launch goes through launch-stage.mjs and code-review-loop's
+ *      decision-forcing route goes through open-grill-session.mjs;
+ *   6. both pin tables match their records: the launch helper's STAGE_PINS
+ *      against the own pi stages' SKILL.md frontmatter and ADR-0006's
+ *      implement-spec pin, the grill helper's GRILL_PIN against
+ *      grill-with-spec's SKILL.md frontmatter;
+ *   7. every inline `pi` spawn snippet carries an explicit --model — checked
+ *      separately from the launch check, so a pinned sub-agent spawn is not
+ *      mistaken for a stage launch.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -39,6 +44,7 @@ const DEPENDENCY_CHANNELS = [
 ];
 
 const HELPER_FILE = "skills/software-factory/scripts/launch-stage.mjs";
+const GRILL_HELPER_FILE = "skills/software-factory/scripts/open-grill-session.mjs";
 const ADR_FILE = "docs/adr/0006-chain-skills-cross-model-handoffs.md";
 const LAUNCH_STAGES = ["dev-flow", "implement-spec", "code-review-loop", "create-pr"];
 // The three own pi stages carry frontmatter pins; implement-spec is referenced and pinned via ADR-0006.
@@ -61,6 +67,9 @@ export function verifySoftwareFactoryPack(packDir) {
     const { data } = parseFrontmatter(text);
     frontmatter.set(skill.name, data);
     checkLaunchSnippets(problems, label, text);
+    if (skill.name === "code-review-loop" && !text.includes("open-grill-session.mjs")) {
+      problems.push(`${label}: decision-forcing route does not reference ${GRILL_HELPER_FILE}`);
+    }
     if (data.name !== skill.name) {
       problems.push(`${label}: name "${data.name ?? ""}" does not match folder "${skill.name}"`);
     }
@@ -85,6 +94,7 @@ export function verifySoftwareFactoryPack(packDir) {
   }
 
   checkLaunchMechanism(problems, packDir, repoRoot, frontmatter);
+  checkGrillMechanism(problems, packDir, frontmatter);
 
   if (!existsSync(join(packDir, "README.md"))) {
     problems.push("skills/software-factory/README.md: missing");
@@ -187,10 +197,24 @@ function isNodeStageLaunch(block) {
     );
 }
 
+/**
+ * A block is a stage launch when it invokes the helper, runs a node command
+ * naming a stage, or contains a `pi` command naming a stage. Any other `pi`
+ * spawn is a sub-agent spawn: it passes the launch check and is subject only
+ * to the explicit --model check.
+ */
+function isStageLaunch(block, spawns) {
+  return (
+    block.includes("launch-stage.mjs") ||
+    isNodeStageLaunch(block) ||
+    spawns.some((command) => LAUNCH_STAGES.some((stage) => command.includes(stage)))
+  );
+}
+
 function checkLaunchSnippets(problems, label, text) {
   for (const block of fencedCodeBlocks(text)) {
     const spawns = piSpawnCommands(block);
-    if ((spawns.length > 0 || isNodeStageLaunch(block)) && !block.includes("launch-stage.mjs")) {
+    if (isStageLaunch(block, spawns) && !block.includes("launch-stage.mjs")) {
       problems.push(`${label}: launch snippet does not reference ${HELPER_FILE}`);
     }
     if (spawns.length > 0 && !spawns.every((command) => command.includes("--model"))) {
@@ -252,6 +276,43 @@ function readAdrPin(repoRoot, problems) {
     return null;
   }
   return { model: match[1], thinking: match[2] };
+}
+
+/**
+ * Read GRILL_PIN from the grill helper's source text — same fixture-friendly
+ * approach as parseStagePins, so the verifier never imports the module it
+ * verifies. Contract: a plain `export const GRILL_PIN` object literal with
+ * quoted `model` and `effort` string fields.
+ */
+function parseGrillPin(text) {
+  const match = /export const GRILL_PIN\s*=\s*\{([^}]*)\}/.exec(text);
+  if (!match) return null;
+  const pin = {};
+  const fieldPattern = /(\w+)\s*:\s*"([^"]*)"/g;
+  let field;
+  while ((field = fieldPattern.exec(match[1])) !== null) pin[field[1]] = field[2];
+  return Object.keys(pin).length > 0 ? pin : null;
+}
+
+function checkGrillMechanism(problems, packDir, frontmatter) {
+  const helperPath = join(packDir, "scripts", "open-grill-session.mjs");
+  if (!existsSync(helperPath)) {
+    problems.push(`${GRILL_HELPER_FILE}: missing`);
+    return;
+  }
+  const pin = parseGrillPin(readFileSync(helperPath, "utf8"));
+  if (pin === null) {
+    problems.push(`${GRILL_HELPER_FILE}: cannot read the GRILL_PIN table`);
+    return;
+  }
+  const data = frontmatter.get("grill-with-spec");
+  if (!data) return; // its SKILL.md is already reported missing
+  const label = "skills/software-factory/grill-with-spec/SKILL.md";
+  if (pin.model !== data.metadata?.model || pin.effort !== data.metadata?.thinking) {
+    problems.push(
+      `${GRILL_HELPER_FILE}: grill pin "model ${pin.model ?? ""}, effort ${pin.effort ?? ""}" does not match ${label} frontmatter "model ${data.metadata?.model ?? ""}, thinking ${data.metadata?.thinking ?? ""}"`
+    );
+  }
 }
 
 function checkLaunchMechanism(problems, packDir, repoRoot, frontmatter) {
