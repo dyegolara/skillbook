@@ -76,7 +76,7 @@ settle a new endpoint:
 
 ## Pinned-model effort caps — probed
 
-Story 20 pins each stage's model at its highest available effort; two pins
+Spec #55's story 20 pins each stage's model at its highest available effort; two pins
 carry a cap claim. Both were probed 2026-10-10 (pi 1.1.0, Kepler build
 0.12.0) — each pin sits at its model's cap, so no re-pin moved.
 
@@ -122,4 +122,4 @@ opencode session, model set, then deleted:
   like `/terminal/resize`; probe A settles it.
 
 Together the probes prove both pins invoke their models at the highest effort
-those models expose (spec story 20), so no re-pin was needed.
+those models expose (spec #55 story 20), so no re-pin was needed.
