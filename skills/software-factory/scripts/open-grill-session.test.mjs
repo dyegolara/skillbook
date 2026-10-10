@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GRILL_PIN, buildPauseLines, failureLines, grillSessionLabel, main } from "./open-grill-session.mjs";
+import { GRILL_PIN, buildPauseLines, failureLines, main } from "./open-grill-session.mjs";
 
 // Independent source of truth: grill-with-spec/SKILL.md frontmatter and ADR-0006's grill pin.
 const RECORDED_GRILL_PIN = { model: "opencode-go/glm-5.3", effort: "max" };
@@ -12,12 +12,6 @@ const RE_ENTRY_PROMPT =
 
 test("the grill pin matches the recorded grill-with-spec pin", () => {
   assert.deepEqual(GRILL_PIN, RECORDED_GRILL_PIN);
-});
-
-test("grillSessionLabel builds chain #<spec>: grill-with-spec from the explicit spec argument", () => {
-  assert.equal(grillSessionLabel(55), "chain #55: grill-with-spec");
-  assert.equal(grillSessionLabel("77"), "chain #77: grill-with-spec");
-  assert.throws(() => grillSessionLabel("spec-55"), /spec/i);
 });
 
 test("the grill-session helper reuses the launch helper's id anchor and flags", () => {
