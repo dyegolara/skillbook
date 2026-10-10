@@ -5,8 +5,8 @@ read its address from `~/.kepler-server/data/server.host` and `server.port`
 (`readKeplerApiBase()` in
 [`../scripts/launch-stage.mjs`](../scripts/launch-stage.mjs)). This surface
 is internal to Kepler, not a published contract: everything below was verified
-by probe (2026-10-08/10, build 0.12.0); re-verify with the recipe at the
-bottom when Kepler's build moves.
+by probe (2026-10-08/10, build 0.12.0); re-verify with the probe
+recipe when Kepler's build moves.
 
 ## Terminal API — `launch-stage.mjs`
 
@@ -73,3 +73,53 @@ settle a new endpoint:
 4. Never assume a create-body field worked — extra fields are silently
    ignored (the label and model on `/agent/sessions`). Verify with the
    corresponding GET or set them through their own endpoint.
+
+## Pinned-model effort caps — probed
+
+Story 20 pins each stage's model at its highest available effort; two pins
+carry a cap claim. Both were probed 2026-10-10 (pi 1.1.0, Kepler build
+0.12.0) — each pin sits at its model's cap, so no re-pin moved.
+
+**Probe A — pi RPC, the surface the pins run under.** The level is set at
+startup, then read back (`--thinking max` asks for the highest; the harness
+clamps to what the model exposes):
+
+```bash
+printf '{"id":"s1","type":"get_state"}\n{"id":"q1","type":"get_available_thinking_levels"}\n' \
+  | pi --mode rpc --no-session --no-tools --provider opencode-go --model opencode-go/mimo-v2.6-pro --thinking max
+printf '{"id":"s1","type":"get_state"}\n{"id":"q1","type":"get_available_thinking_levels"}\n' \
+  | pi --mode rpc --no-session --no-tools --provider opencode-go --model opencode-go/muse-spark-1.3-contributor --thinking max
+```
+
+Observed:
+
+- `mimo-v2.6-pro` (code-review-loop, `--thinking high`) — `get_state` reports
+  `"thinkingLevel":"high"`; `get_available_thinking_levels` reports
+  `{"levels":["off","minimal","low","medium","high"]}` → `high` is the cap;
+  `max` clamps to it.
+- `muse-spark-1.3-contributor` (create-pr, `--thinking xhigh`) — `get_state`
+  reports `"thinkingLevel":"xhigh"` and the model's
+  `"thinkingLevelMap":{"off":null,"minimal":"minimal","low":"low","medium":"medium","high":"high","xhigh":"xhigh","max":null}`;
+  `get_available_thinking_levels` reports
+  `{"levels":["minimal","low","medium","high","xhigh"]}` → `xhigh` is the cap;
+  `max` is not exposed.
+- Set-then-verify at the pins: the same command with `--thinking high`
+  (mimo) and `--thinking xhigh` (muse) reports `"thinkingLevel":"high"` and
+  `"thinkingLevel":"xhigh"` — the pinned level is accepted exactly.
+
+**Probe B — Kepler config options (corroboration, recipe above).** A scratch
+opencode session, model set, then deleted:
+
+- `muse-spark-1.3-contributor` — after the model set, the `effort` option's
+  `options` are `["minimal","low","medium","high","xhigh"]`; setting
+  `effort: "xhigh"` verifies as `effort.currentValue: "xhigh"`; setting
+  `"max"` returns `{"error":"Invalid params: effort not found: max"}` and
+  leaves `xhigh` selected. Corroborates the cap.
+- `mimo-v2.6-pro` — after the model set, `configOptions` carry `model` and
+  `mode` only: no `effort` option appears, and setting it returns
+  `{"error":"Invalid params: effort not found: high"}` (`max` likewise).
+  This surface cannot read mimo's cap — probe B is a gap for mimo, recorded
+  like `/terminal/resize`; probe A settles it.
+
+Together the probes prove both pins invoke their models at the highest effort
+those models expose (spec story 20), so no re-pin was needed.
