@@ -101,9 +101,9 @@ is retired.
 
 The chain calls skills from the referenced Matt Pocock pack, installed from
 skills.sh and never copied: `grill-with-docs` (`grilling` + `domain-modeling`),
-`to-spec`, `to-tickets`, `handoff`, `implement-spec`, `code-review`, `pr`, and
-`tdd`. The book's install command and publishing check cover the pack; see the
-referenced-skills rows in the [root README](../../README.md).
+`to-spec`, `to-tickets`, `handoff`, `implement-spec` (`tdd`), `code-review`,
+and `pr`. The book's install command and publishing check cover the pack; see
+the referenced-skills rows in the [root README](../../README.md).
 
 What is own: the four chain skills in this folder. What is referenced:
 everything else the chain calls.
