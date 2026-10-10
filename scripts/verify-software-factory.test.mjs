@@ -402,6 +402,21 @@ test("rejects a code-review-loop whose decision-forcing route does not reference
   );
 });
 
+test("rejects a decision-forcing route that mentions the grill-session helper only in prose", () => {
+  const problems = verify(
+    makeRepo({
+      skillOverrides: {
+        "code-review-loop": {
+          body: "Decision-forcing findings route to skills/software-factory/scripts/open-grill-session.mjs.\n",
+        },
+      },
+    })
+  );
+  assert.deepEqual(problems, [
+    "skills/software-factory/code-review-loop/SKILL.md: decision-forcing route does not reference skills/software-factory/scripts/open-grill-session.mjs",
+  ]);
+});
+
 test("rejects a grill pin that diverges from the grill-with-spec frontmatter", () => {
   const problems = verify(
     makeRepo({ grillHelperText: grillHelper.replace("opencode-go/glm-5.3", "opencode-go/gpt-9") })

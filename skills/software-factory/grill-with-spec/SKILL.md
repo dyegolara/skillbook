@@ -27,8 +27,8 @@ A pi stage prints nothing until it finishes, so the chain keeps a live view in
 its own Kepler terminal: `chain #<spec>: status` runs a plain bash loop —
 branch log, fix tickets, chain terminals — refreshed every 30 seconds. The
 fresh form launches it when the chain starts; the re-entry form makes sure it
-is alive when the chain resumes. The check reuses an existing terminal on the
-worktree and never creates a duplicate.
+is alive when the chain resumes. The check reuses an existing live terminal on
+the worktree and never creates a duplicate.
 
 The repo/worktree/task ids come from this grilling session's own Kepler
 metadata: `GET /agent/sessions` filtered by the worktree exposes `repoId`,
@@ -39,9 +39,9 @@ SPEC=<spec>             # the chain's spec issue number
 WORKTREE=$(pwd)         # the shared worktree of this session
 API="http://$(cat ~/.kepler-server/data/server.host):$(cat ~/.kepler-server/data/server.port)"
 
-# Reuse an existing status terminal; never create a duplicate.
+# Reuse an existing live status terminal; never create a duplicate.
 EXISTING=$(curl -s "$API/terminal/list" | jq -r --arg wt "$WORKTREE" --arg want "chain #$SPEC: status" \
-  '.[] | select(.worktreePath == $wt and .label == $want) | .id')
+  '.[] | select(.worktreePath == $wt and .label == $want and (.exited == false)) | .id')
 if [ -z "$EXISTING" ]; then
   # The ids: this session's own metadata on the same worktree.
   ids=$(curl -s "$API/agent/sessions" | jq -r --arg wt "$WORKTREE" \
@@ -135,8 +135,8 @@ tickets and the PR.
 ### 1. Status terminal
 
 Make sure the `chain #<spec>: status` terminal is alive on resume, per
-[Status terminal](#status-terminal); the check reuses the running terminal and
-starts one only if it is gone.
+[Status terminal](#status-terminal); the check reuses the live terminal and
+starts one only if it has exited or is gone.
 
 ### 2. Grill the decision
 
