@@ -54,8 +54,8 @@ if [ -z "$EXISTING" ]; then
   # Start the labeled terminal, then run the loop in it.
   TERMINAL_ID=$(curl -s -X POST "$API/terminal/start" -H 'content-type: application/json' \
     -d "$(jq -n --arg repoId "$REPO_ID" --arg worktreeId "$WORKTREE_ID" --arg taskId "$TASK_ID" \
-      --arg worktreePath "$WORKTREE" --arg label "chain #$SPEC: status" \
-      '{repoId: $repoId, worktreeId: $worktreeId, taskId: $taskId, worktreePath: $worktreePath, label: $label}')" \
+      --arg worktreePath "$WORKTREE" --arg terminalLabel "chain #$SPEC: status" \
+      '{repoId: $repoId, worktreeId: $worktreeId, taskId: $taskId, worktreePath: $worktreePath, label: $terminalLabel}')" \
     | jq -r .terminalId)
 
   LOOP=$(cat <<'LOOP_BODY'
