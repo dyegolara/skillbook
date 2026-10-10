@@ -103,6 +103,12 @@ Rejected options:
 - **npm dependency on the Matt Pocock skills**: they are not on npm;
   skills.sh is their published channel, so they join as referenced skills —
   porting is reserved for skills with no published channel.
+- **Helper-packaging registry (one source plus a sync step)**: every skill
+  folder must ship its helpers runnable as-is in any agentic environment
+  (AGENTS.md: "Skills are self-contained"), so the byte-identical copies
+  stand and the pack verifier enforces byte identity against the shared
+  sources instead — the accepted cost is a helper fix hand-applied across
+  the copies, with drift caught only when `verify` runs.
 
 **Consequences**:
 
