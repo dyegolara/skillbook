@@ -82,6 +82,17 @@ const CHAIN_LABEL = /^chain #\d+: /;
 const ID_FLAG_HINT = "--repo-id/--worktree-id/--task-id";
 
 /**
+ * The repo/worktree/task id triple identifying the task a stage acts on. All
+ * three fields travel together: the bootstrap flags fill all three or none
+ * (undefined), and a resolved triple is fully populated before any launch.
+ *
+ * @typedef {Object} TaskIds
+ * @property {string|undefined} repoId
+ * @property {string|undefined} worktreeId
+ * @property {string|undefined} taskId
+ */
+
+/**
  * Pick the terminal whose repo/worktree/task ids the new terminal reuses: a
  * chain-labeled entry on the same worktree is preferred (task-correctness),
  * any other entry on that worktree is accepted, and an unrelated worktree is
@@ -95,8 +106,10 @@ export function pickAnchor(terminals, worktreePath) {
 
 /**
  * Parse the fresh-run bootstrap ids from argv. All three flags together or
- * none: a partial set is a hard usage error. Returns `{ repoId, worktreeId,
- * taskId }` with undefined fields when no flags are present.
+ * none: a partial set is a hard usage error. Returns a `TaskIds` value with
+ * the three keys present — undefined when no flags were given.
+ *
+ * @returns {TaskIds}
  */
 export function parseIdFlags(argv = []) {
   const idFlags = {
@@ -118,11 +131,11 @@ export function parseIdFlags(argv = []) {
     flags[field] = value;
     i += 1;
   }
-  const present = [flags.repoId, flags.worktreeId, flags.taskId].filter((value) => value !== undefined);
+  const present = Object.values(flags).filter((value) => value !== undefined);
   if (present.length !== 0 && present.length !== 3) {
     throw new Error(`id flags must be given together: ${ID_FLAG_HINT}`);
   }
-  return { repoId: flags.repoId, worktreeId: flags.worktreeId, taskId: flags.taskId };
+  return Object.fromEntries(Object.values(idFlags).map((field) => [field, flags[field]]));
 }
 
 /** A failure to reach the terminal API at the connection level. */
@@ -162,9 +175,12 @@ export async function requestJson(fetchImpl, url, init) {
  * them from an anchor terminal on the worktree. Throws a clear error when
  * neither yields ids. Connection-level failures are tagged so callers can
  * classify them; every other failure is a hard error.
+ *
+ * @param {{ apiBase: string, fetchImpl?: typeof fetch, worktreePath: string, flags?: TaskIds }} options
+ * @returns {Promise<TaskIds>}
  */
 export async function resolveIds({ apiBase, fetchImpl = fetch, worktreePath, flags = {} }) {
-  const explicit = { repoId: flags?.repoId, worktreeId: flags?.worktreeId, taskId: flags?.taskId };
+  const explicit = flags ?? {};
   const present = Object.values(explicit).filter((value) => value !== undefined);
   if (present.length === 3) return explicit;
   if (present.length !== 0) {
@@ -176,6 +192,8 @@ export async function resolveIds({ apiBase, fetchImpl = fetch, worktreePath, fla
   if (!anchor) {
     throw new Error(`no terminal on ${worktreePath} and no ${ID_FLAG_HINT} flags — cannot derive ids`);
   }
+  // The anchor is an external `GET /terminal/list` entry: this is the one
+  // place the triple is read off it.
   return { repoId: anchor.repoId, worktreeId: anchor.worktreeId, taskId: anchor.taskId };
 }
 
@@ -184,6 +202,8 @@ export async function resolveIds({ apiBase, fetchImpl = fetch, worktreePath, fla
  * then inject the pinned command. Any failure here is a hard error — once
  * `POST /terminal/start` may have created a terminal, the caller must never
  * fall back to `nohup` (that would double-launch the stage).
+ *
+ * @param {{ stage: string, label: string, pointers: string, ids: TaskIds, worktreePath: string, apiBase: string, fetchImpl?: typeof fetch }} options
  */
 export async function launchInTerminal({ stage, label, pointers, ids, worktreePath, apiBase, fetchImpl = fetch }) {
   const started = await requestJson(fetchImpl, `${apiBase}/terminal/start`, {
