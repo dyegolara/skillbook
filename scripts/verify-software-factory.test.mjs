@@ -20,6 +20,8 @@ function helperEntry(stage, pin) {
   return `  "${stage}": { provider: "opencode-go", model: "${pin.model}", thinking: "${pin.thinking}" },`;
 }
 
+const RETRY_ATTEMPTS = 5;
+
 const helper = [
   "export const STAGE_PINS = {",
   helperEntry("dev-flow", CHAIN_PINS["dev-flow"]),
@@ -27,6 +29,33 @@ const helper = [
   helperEntry("code-review-loop", CHAIN_PINS["code-review-loop"]),
   helperEntry("create-pr", CHAIN_PINS["create-pr"]),
   "};",
+  "",
+  `export const RETRY_ATTEMPTS = ${RETRY_ATTEMPTS};`,
+  "",
+  "export function stagePin(stage) {",
+  "  return STAGE_PINS[stage];",
+  "}",
+  "",
+  "export function buildPiCommand(stage, pointers) {",
+  "  const pin = stagePin(stage);",
+  "  return `pi --print --provider ${pin.provider} --model ${pin.model} --thinking ${pin.thinking} '${pointers}'`;",
+  "}",
+  "",
+  "export function wakeHelperPath() {",
+  '  return new URL("./open-wake-session.mjs", import.meta.url);',
+  "}",
+  "",
+  "export function buildRetryWrapper(stage, spec, pointers) {",
+  "  const command = buildPiCommand(stage, pointers);",
+  "  const marker = `FAILED: chain #${spec} ${stage} gave up after ${RETRY_ATTEMPTS} attempts`;",
+  "  return (",
+  '    `while [ "$attempt" -le ${RETRY_ATTEMPTS} ]; do ` +',
+  "    `${command}; chain_status=$?; [ $chain_status -eq 0 ] && break; ` +",
+  "    `chain_attempt=$((chain_attempt+1)); done; ` +",
+  "    `[ $chain_status -ne 0 ] && echo ${marker}; ` +",
+  "    `node ${wakeHelperPath()} ${stage} ${spec} ${command}`",
+  "  );",
+  "}",
   "",
 ].join("\n");
 
@@ -58,6 +87,10 @@ const adr = [
   "  - implement-spec — `opencode-go/deepseek-v4.1-flash` (`--thinking max`)",
   "  - code-review-loop — `opencode-go/mimo-v2.6-pro` (`--thinking high`)",
   "  - create-pr — `opencode-go/muse-spark-1.3-contributor` (`--thinking xhigh`)",
+  "",
+  "- A stage that gives up actuates the wake: a new sibling helper,",
+  "  `open-wake-session.mjs`, packaged beside `launch-stage.mjs`,",
+  '  actuated by the wrapper as `node "<skill-dir>/scripts/open-wake-session.mjs" <stage> <spec> \'<resume command>\'`.',
   "",
 ].join("\n");
 
@@ -775,6 +808,47 @@ test("rejects a missing ADR-0006 pin source", () => {
       problem.includes("docs/adr/0006-chain-skills-cross-model-handoffs.md: missing")
     )
   );
+});
+
+test("rejects a launch helper whose injected command is not the retry wrapper", () => {
+  const problems = verify(
+    makeRepo({ helperText: helper.slice(0, helper.indexOf("export function buildRetryWrapper")) })
+  );
+  assert.deepEqual(problems, [
+    "skills/software-factory/scripts/launch-stage.mjs: missing the buildRetryWrapper retry wrapper around the pinned command",
+  ]);
+});
+
+test("rejects a retry wrapper whose give-up path drops the wake reference", () => {
+  const problems = verify(
+    makeRepo({
+      helperText: helper.replace(
+        "    `node ${wakeHelperPath()} ${stage} ${spec} ${command}`",
+        "    `echo done`"
+      ),
+    })
+  );
+  assert.deepEqual(problems, [
+    "skills/software-factory/scripts/launch-stage.mjs: give-up path does not reference the wake helper open-wake-session.mjs",
+  ]);
+});
+
+test("rejects a pinned-command builder that drops an explicit pin flag", () => {
+  const problems = verify(
+    makeRepo({ helperText: helper.replace("--model ${pin.model} ", "") })
+  );
+  assert.deepEqual(problems, [
+    "skills/software-factory/scripts/launch-stage.mjs: pinned command drops the explicit --model",
+  ]);
+});
+
+test("reads the wake helper name from ADR-0006, not a hardcoded copy", () => {
+  const problems = verify(
+    makeRepo({ adrText: adr.replaceAll("open-wake-session.mjs", "open-sleep-session.mjs") })
+  );
+  assert.deepEqual(problems, [
+    "skills/software-factory/scripts/launch-stage.mjs: give-up path resolves a different wake helper than open-sleep-session.mjs",
+  ]);
 });
 
 test("the CLI reports the real pack as OK", () => {
