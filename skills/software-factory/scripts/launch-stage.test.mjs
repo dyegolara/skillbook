@@ -145,6 +145,22 @@ test("the shared fresh/re-entry status request encodes all required fields safel
   });
 });
 
+test("the status loop surfaces printed FAILED markers and ignores the wrapper's quoted echo", () => {
+  const text = readFileSync(new URL("../grill-with-spec/SKILL.md", import.meta.url), "utf8");
+  assert.ok(text.includes("terminal/buffer?terminalId=$tid"), "the loop reads each chain terminal's buffer");
+  const pattern = /\| grep -Eq "([^"]+)"/.exec(text)?.[1];
+  assert.ok(pattern, "the loop must grep the stripped buffer for the FAILED marker");
+  assert.ok(text.includes("and .label != $status"), "the loop must skip the status terminal's own buffer");
+  const marker = pattern.replace("__SPEC__", "55");
+  const matches = (sample) => spawnSync("grep", ["-Eq", marker], { input: sample }).status === 0;
+  assert.equal(matches("\rFAILED: chain #55 dev-flow gave up after 5 attempts\r\n"), true);
+  assert.equal(
+    matches("$ printf '%s\\n' 'FAILED: chain #55 dev-flow gave up after 5 attempts' 'FAILED: resume with: pi --print ...'\n"),
+    false
+  );
+  assert.equal(matches("FAILED: resume with: pi --print ...\n"), false);
+});
+
 test("stageLabel builds chain #<spec>: <stage> from the explicit spec argument", () => {
   assert.equal(stageLabel(77, "code-review-loop"), "chain #77: code-review-loop");
   assert.equal(stageLabel("55", "dev-flow"), "chain #55: dev-flow");
