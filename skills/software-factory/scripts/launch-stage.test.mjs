@@ -1,14 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   KEPLER_DATA_DIR,
+  RETRY_ATTEMPTS,
+  RETRY_SLEEPS_SECONDS,
   STAGE_PINS,
   buildPiCommand,
+  buildRetryWrapper,
   buildTerminalInput,
   main,
   parseIdFlags,
@@ -18,6 +21,7 @@ import {
   shellQuote,
   stageLabel,
   stagePin,
+  wakeHelperPath,
 } from "./launch-stage.mjs";
 
 // Independent source of truth: ADR-0006's pi-stage pins.
@@ -60,8 +64,45 @@ test("pointers with an embedded single quote are shell-quoted safely", () => {
   );
 });
 
-test("buildTerminalInput terminates the injected command with a newline", () => {
-  assert.equal(buildTerminalInput("dev-flow", "pointers"), `${buildPiCommand("dev-flow", "pointers")}\n`);
+test("buildTerminalInput terminates the injected retry wrapper with a newline", () => {
+  assert.equal(buildTerminalInput("dev-flow", "55", "pointers"), `${buildRetryWrapper("dev-flow", "55", "pointers")}\n`);
+});
+
+// --- the retry wrapper ---
+
+test("the retry wrapper attempts the command 5 times with doubling sleeps over a 10-minute window", () => {
+  const wrapper = buildRetryWrapper("dev-flow", "55", "pointers");
+  assert.equal(RETRY_ATTEMPTS, 5);
+  assert.deepEqual(RETRY_SLEEPS_SECONDS, [40, 80, 160, 320]);
+  assert.equal(RETRY_SLEEPS_SECONDS.reduce((total, seconds) => total + seconds, 0), 600);
+  assert.ok(wrapper.includes('chain_attempt=1; chain_status=0; while [ "$chain_attempt" -le 5 ]; do '));
+  assert.ok(
+    wrapper.includes('case "$chain_attempt" in 1) sleep 40;; 2) sleep 80;; 3) sleep 160;; 4) sleep 320;; esac;')
+  );
+});
+
+test("the pinned command sits inside the wrapper unchanged", () => {
+  const wrapper = buildRetryWrapper("dev-flow", "55", "pointers");
+  assert.ok(wrapper.includes(`do ${buildPiCommand("dev-flow", "pointers")}; chain_status=$?;`));
+});
+
+test("the give-up marker names the spec, the stage and the exact resume command on one line each", () => {
+  const wrapper = buildRetryWrapper("code-review-loop", "55", "pointers");
+  assert.ok(wrapper.includes(shellQuote("FAILED: chain #55 code-review-loop gave up after 5 attempts")));
+  assert.ok(
+    wrapper.includes(
+      shellQuote("FAILED: resume with: pi --print --provider opencode-go --model opencode-go/mimo-v2.6-pro --thinking high 'pointers'")
+    )
+  );
+});
+
+test("the wrapper actuates the wake through the sibling helper's absolute path", () => {
+  const wrapper = buildRetryWrapper("dev-flow", "55", "pointers");
+  const wakePath = wakeHelperPath();
+  assert.equal(wakePath, fileURLToPath(new URL("./open-wake-session.mjs", import.meta.url)));
+  assert.ok(
+    wrapper.includes(`node ${shellQuote(wakePath)} dev-flow 55 ${shellQuote(buildPiCommand("dev-flow", "pointers"))};`)
+  );
 });
 
 test("each launching skill runs its helpers from an isolated installed folder", async () => {
@@ -232,7 +273,7 @@ test("the spec argument builds the label — never the anchor terminal's label",
   assert.equal(input.url, "http://api.test/terminal/input");
   assert.deepEqual(input.body, {
     terminalId: "term-new",
-    input: buildTerminalInput("code-review-loop", "the maintainer's pointers"),
+    input: buildTerminalInput("code-review-loop", "77", "the maintainer's pointers"),
   });
 });
 
@@ -572,6 +613,106 @@ test("the Kepler data dir is derived home-relative, not hardcoded", () => {
   const source = readFileSync(new URL("./launch-stage.mjs", import.meta.url), "utf8");
   assert.match(source, /homedir\(\)/);
   assert.ok(!source.includes('"/config/.kepler-server'));
+});
+
+// --- the wrapper executes: the give-up path against a stubbed environment ---
+
+function writeStub(dir, name, body) {
+  const file = join(dir, name);
+  writeFileSync(file, body);
+  chmodSync(file, 0o755);
+  return file;
+}
+
+/**
+ * A PATH whose `pi`, `sleep` and `node` are stubs: every invocation lands in
+ * one event log, sleeps return immediately, and `pi` fails its first
+ * `failTimes` calls. `node` (the wake helper) is stubbed too, so the wrapper's
+ * wake line is observable without creating a Kepler session.
+ */
+function stubEnvironment({ failTimes = 0, wakeStatus = 0 } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "launch-stage-stub-"));
+  const log = join(dir, "events.log");
+  const count = join(dir, "pi.count");
+  writeStub(
+    dir,
+    "pi",
+    `#!/bin/sh\nn=0\n[ -f ${shellQuote(count)} ] && n=$(cat ${shellQuote(count)})\nn=$((n + 1))\necho "$n" > ${shellQuote(count)}\necho "pi attempt $n" >> ${shellQuote(log)}\n[ "$n" -le ${failTimes} ] && exit 1\nexit 0\n`
+  );
+  writeStub(dir, "sleep", `#!/bin/sh\necho "sleep $1" >> ${shellQuote(log)}\nexit 0\n`);
+  writeStub(
+    dir,
+    "node",
+    `#!/bin/sh\necho "wake $*" >> ${shellQuote(log)}\necho "wake-stub" >&2\nexit ${wakeStatus}\n`
+  );
+  return {
+    dir,
+    log,
+    env: { ...process.env, PATH: `${dir}:${process.env.PATH}` },
+  };
+}
+
+function runWrapper(stage, spec, pointers, env) {
+  return spawnSync("bash", ["-c", buildRetryWrapper(stage, spec, pointers)], { encoding: "utf8", env });
+}
+
+test("after 5 failed attempts the wrapper prints the marker and actuates the wake", () => {
+  const { dir, log, env } = stubEnvironment({ failTimes: 5 });
+  try {
+    const result = runWrapper("dev-flow", "55", "pointers", env);
+    const resume = buildPiCommand("dev-flow", "pointers");
+    assert.equal(result.status, 0);
+    assert.deepEqual(readFileSync(log, "utf8").trim().split("\n"), [
+      "pi attempt 1",
+      "sleep 40",
+      "pi attempt 2",
+      "sleep 80",
+      "pi attempt 3",
+      "sleep 160",
+      "pi attempt 4",
+      "sleep 320",
+      "pi attempt 5",
+      `wake ${wakeHelperPath()} dev-flow 55 ${resume}`,
+    ]);
+    assert.equal(
+      result.stdout,
+      `FAILED: chain #55 dev-flow gave up after 5 attempts\nFAILED: resume with: ${resume}\n`
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("an attempt that succeeds stops the retries and leaves no marker", () => {
+  const { dir, log, env } = stubEnvironment({ failTimes: 2 });
+  try {
+    const result = runWrapper("dev-flow", "55", "pointers", env);
+    assert.equal(result.status, 0);
+    assert.deepEqual(readFileSync(log, "utf8").trim().split("\n"), [
+      "pi attempt 1",
+      "sleep 40",
+      "pi attempt 2",
+      "sleep 80",
+      "pi attempt 3",
+    ]);
+    assert.equal(result.stdout, "");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a failed wake leaves the marker printed and the helper's failure visible", () => {
+  const { dir, log, env } = stubEnvironment({ failTimes: 5, wakeStatus: 7 });
+  try {
+    const result = runWrapper("dev-flow", "55", "pointers", env);
+    assert.equal(result.status, 7);
+    assert.match(result.stdout, /FAILED: chain #55 dev-flow gave up after 5 attempts\n/);
+    assert.match(result.stdout, /FAILED: resume with: pi --print /);
+    assert.match(result.stderr, /wake-stub/);
+    assert.match(readFileSync(log, "utf8"), /wake .*open-wake-session\.mjs/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // --- helpers ---
