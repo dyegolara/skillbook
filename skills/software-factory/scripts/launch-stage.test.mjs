@@ -77,6 +77,8 @@ test("each launching skill runs its helpers from an isolated installed folder", 
         { apiBase: "http://api.test", fetchImpl, worktreePath: "/work/tree", write: () => {} }
       );
       assert.equal(calls[0].body.worktreePath, "/work/tree");
+      const wake = await import(pathToFileURL(join(folder, "scripts/open-wake-session.mjs")));
+      assert.equal(typeof wake.main, "function");
       if (skill === "code-review-loop") {
         const grill = await import(pathToFileURL(join(folder, "scripts/open-grill-session.mjs")));
         assert.equal(typeof grill.main, "function");

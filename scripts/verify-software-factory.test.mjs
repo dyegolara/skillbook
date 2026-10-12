@@ -37,6 +37,8 @@ const grillHelper = [
   "",
 ].join("\n");
 
+const wakeHelper = ["export function wakeLabel() {}", ""].join("\n");
+
 const GRILL_ROUTE = [
   "Decision-forcing findings open the grilling session instead of waiting:",
   "",
@@ -177,6 +179,8 @@ function makeRepo({
   helperText = helper,
   omitGrillHelper = false,
   grillHelperText = grillHelper,
+  omitWakeHelper = false,
+  wakeHelperText = wakeHelper,
   omitGrillRoute = false,
   omitAdr = false,
   adrText = adr,
@@ -196,11 +200,15 @@ function makeRepo({
     if (name === "code-review-loop" && !omitGrillHelper) {
       write(root, `skills/software-factory/${name}/scripts/open-grill-session.mjs`, grillHelperText);
     }
+    if (name !== "create-pr" && !omitWakeHelper) {
+      write(root, `skills/software-factory/${name}/scripts/open-wake-session.mjs`, wakeHelperText);
+    }
   }
   if (!omitHelper) write(root, "skills/software-factory/scripts/launch-stage.mjs", helperText);
   if (!omitGrillHelper) {
     write(root, "skills/software-factory/scripts/open-grill-session.mjs", grillHelperText);
   }
+  if (!omitWakeHelper) write(root, "skills/software-factory/scripts/open-wake-session.mjs", wakeHelperText);
   if (!omitAdr) write(root, "docs/adr/0006-chain-skills-cross-model-handoffs.md", adrText);
   if (!skipPackReadme) write(root, "skills/software-factory/README.md", "# software-factory pack\n");
   write(
@@ -414,6 +422,35 @@ test("rejects a missing grill-session helper", () => {
   assert.ok(
     problems.some((problem) =>
       problem.includes("skills/software-factory/scripts/open-grill-session.mjs: missing")
+    )
+  );
+});
+
+test("rejects a missing shared wake helper", () => {
+  const problems = verify(makeRepo({ omitWakeHelper: true }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes("skills/software-factory/scripts/open-wake-session.mjs: missing")
+    )
+  );
+});
+
+test("rejects a launching skill missing its packaged wake helper", () => {
+  const pack = makeRepo();
+  rmSync(join(pack, "dev-flow/scripts/open-wake-session.mjs"));
+  assert.ok(
+    verify(pack).some((problem) =>
+      problem.includes("dev-flow/scripts/open-wake-session.mjs: missing packaged helper")
+    )
+  );
+});
+
+test("rejects a packaged wake helper that drifts from its shared source", () => {
+  const pack = makeRepo();
+  writeFileSync(join(pack, "code-review-loop/scripts/open-wake-session.mjs"), "export function wakeLabel() { /* drifted */ }\n");
+  assert.ok(
+    verify(pack).some((problem) =>
+      problem.includes("code-review-loop/scripts/open-wake-session.mjs: differs")
     )
   );
 });

@@ -12,10 +12,11 @@
  *   4. the referenced Matt Pocock pack is wired as a dependency: its row in
  *      both books' referenced-skills tables, both published-channel checks,
  *      and the skills:install command;
- *   5. both pack helpers exist and are referenced: every SKILL.md stage
+ *   5. the pack helpers exist and are referenced: every SKILL.md stage
  *      launch goes through launch-stage.mjs with the explicit `<stage> <spec>
- *      '<thin pointers>'` positionals and code-review-loop's
- *      decision-forcing route goes through open-grill-session.mjs;
+ *      '<thin pointers>'` positionals, code-review-loop's decision-forcing
+ *      route goes through open-grill-session.mjs, and every launching skill
+ *      packages open-wake-session.mjs byte-identically beside launch-stage.mjs;
  *   6. both pin tables match their records: the launch helper's STAGE_PINS
  *      against the own pi stages' SKILL.md frontmatter and ADR-0006's
  *      implement-spec pin, the grill helper's GRILL_PIN against
@@ -46,6 +47,9 @@ const DEPENDENCY_CHANNELS = [
 
 const HELPER_FILE = "skills/software-factory/scripts/launch-stage.mjs";
 const GRILL_HELPER_FILE = "skills/software-factory/scripts/open-grill-session.mjs";
+const WAKE_HELPER_FILE = "skills/software-factory/scripts/open-wake-session.mjs";
+// The wake helper is packaged beside the launch helper in every skill that launches a stage.
+const PACKAGED_HELPERS = ["launch-stage.mjs", "open-wake-session.mjs"];
 const ADR_FILE = "docs/adr/0006-chain-skills-cross-model-handoffs.md";
 const LAUNCH_STAGES = ["dev-flow", "implement-spec", "code-review-loop", "create-pr"];
 // The three own pi stages carry frontmatter pins; implement-spec is referenced and pinned via ADR-0006.
@@ -100,6 +104,7 @@ export function verifySoftwareFactoryPack(packDir) {
 
   checkLaunchMechanism(problems, packDir, repoRoot, frontmatter);
   checkGrillMechanism(problems, packDir, frontmatter);
+  checkWakeMechanism(problems, packDir);
 
   if (!existsSync(join(packDir, "README.md"))) {
     problems.push("skills/software-factory/README.md: missing");
@@ -317,7 +322,7 @@ function checkLaunchSnippets(problems, label, text) {
 }
 
 function checkPackagedHelpers(problems, packDir, skill, text) {
-  const helpers = skill === "create-pr" ? [] : ["launch-stage.mjs"];
+  const helpers = skill === "create-pr" ? [] : [...PACKAGED_HELPERS];
   if (skill === "code-review-loop") helpers.push("open-grill-session.mjs");
   for (const helper of helpers) {
     const label = `skills/software-factory/${skill}/scripts/${helper}`;
@@ -430,6 +435,12 @@ function checkGrillMechanism(problems, packDir, frontmatter) {
     problems.push(
       `${GRILL_HELPER_FILE}: grill pin "model ${pin.model ?? ""}, effort ${pin.effort ?? ""}" does not match ${label} frontmatter "model ${data.metadata?.model ?? ""}, thinking ${data.metadata?.thinking ?? ""}"`
     );
+  }
+}
+
+function checkWakeMechanism(problems, packDir) {
+  if (!existsSync(join(packDir, "scripts", "open-wake-session.mjs"))) {
+    problems.push(`${WAKE_HELPER_FILE}: missing`);
   }
 }
 
