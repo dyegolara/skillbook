@@ -43,6 +43,25 @@ context is not independent.
   argument, the id anchor prefers a chain-labeled terminal but accepts any
   terminal on the worktree, fresh runs bootstrap with explicit id flags,
   and the fallback is connection-level only.
+- A stage that fails to run or dies mid-run does not stall the chain
+  silently. The injected command is a retry wrapper around the stage's
+  pinned agent command — whatever the harness, `pi` is not load-bearing —
+  running 5 attempts with exponential backoff (~10 min), the pinned
+  command inside unchanged with its explicit pins. On exhaustion the
+  wrapper leaves a loud FAILED marker in the terminal buffer (stage,
+  spec, the exact resume command) and actuates a wake — an unread
+  session on the task carrying that resume command — the same
+  no-waiting-on-notice principle as the pause path. A launch that never
+  executes is caught by verified-inject: the helper confirms the wrapper
+  started after injection and recovers. Decided 2026-10-12, maintainer
+  decision (fourth) from run experience: a provider 429 at stage launch
+  left the chain parked with no route — the routes are decided by the
+  review after it runs, so a stage that never runs fires none. Open
+  gaps, left to the implementer (record the choice back here): the
+  execution-verification signal (wrapper sentinel vs process probe vs
+  buffer poll), the wedge-recovery mechanism (re-inject vs close and
+  relaunch), and the wake's shape (a failure mode of
+  `open-grill-session.mjs` vs a new helper).
 - Each stage's `SKILL.md` pins its model, invoked at the model's highest
   available effort/thinking (whatever the model exposes — max, xhigh or
   high):
