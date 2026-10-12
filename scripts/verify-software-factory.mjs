@@ -23,7 +23,12 @@
  *      grill-with-spec's SKILL.md frontmatter;
  *   7. every inline `pi` spawn snippet carries an explicit --model — checked
  *      separately from the launch check, so a pinned sub-agent spawn is not
- *      mistaken for a stage launch.
+ *      mistaken for a stage launch;
+ *   8. the error route holds: the launch helper injects a bounded retry
+ *      wrapper (buildRetryWrapper) around the pinned command (buildPiCommand),
+ *      the wrapper's give-up path carries the FAILED marker and references the
+ *      wake helper ADR-0006 names, and the pinned-command builder emits the
+ *      explicit --provider/--model/--thinking flags.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -450,7 +455,8 @@ function checkLaunchMechanism(problems, packDir, repoRoot, frontmatter) {
     problems.push(`${HELPER_FILE}: missing`);
     return;
   }
-  const pins = parseStagePins(readFileSync(helperPath, "utf8"));
+  const text = readFileSync(helperPath, "utf8");
+  const pins = parseStagePins(text);
   if (pins === null) {
     problems.push(`${HELPER_FILE}: cannot read the STAGE_PINS table`);
     return;
@@ -479,6 +485,111 @@ function checkLaunchMechanism(problems, packDir, repoRoot, frontmatter) {
       problems.push(
         `${HELPER_FILE}: ${stage} pin "model ${pin.model ?? ""}, thinking ${pin.thinking ?? ""}" does not match ${record.source} "model ${record.model}, thinking ${record.thinking}"`
       );
+    }
+  }
+
+  const wrapper = checkRetryWrapper(problems, text);
+  checkWakeReference(problems, repoRoot, text, wrapper);
+  checkPinnedCommand(problems, text);
+}
+
+/**
+ * Read a top-level function's body from source text by brace matching. The
+ * verifier reads text and never imports the module it verifies, so fixtures
+ * can mutate it. Contract: the declaration is `function <name>(` followed by
+ * a brace-matched body (balanced braces in its strings and comments).
+ */
+function functionBody(text, name) {
+  const declaration = text.indexOf(`function ${name}(`);
+  if (declaration === -1) return null;
+  const open = text.indexOf("{", declaration);
+  if (open === -1) return null;
+  let depth = 0;
+  for (let i = open; i < text.length; i += 1) {
+    if (text[i] === "{") depth += 1;
+    else if (text[i] === "}") {
+      depth -= 1;
+      if (depth === 0) return text.slice(open + 1, i);
+    }
+  }
+  return null;
+}
+
+/**
+ * (a) The launch construction wraps the pinned command: buildRetryWrapper
+ * builds its inner command through buildPiCommand and runs a bounded retry
+ * loop. Returns the wrapper's body for the wake-reference check, or null when
+ * the wrapper is missing (so that check stays quiet).
+ */
+function checkRetryWrapper(problems, text) {
+  const body = functionBody(text, "buildRetryWrapper");
+  if (body === null) {
+    problems.push(`${HELPER_FILE}: missing the buildRetryWrapper retry wrapper around the pinned command`);
+    return null;
+  }
+  if (!body.includes("buildPiCommand")) {
+    problems.push(`${HELPER_FILE}: retry wrapper does not wrap the buildPiCommand pinned command`);
+  }
+  if (!/\b(?:while|for)\b/.test(body) || !body.includes("RETRY_ATTEMPTS")) {
+    problems.push(`${HELPER_FILE}: retry wrapper does not make a bounded retry loop`);
+  }
+  return body;
+}
+
+/**
+ * Read the wake helper's filename from ADR-0006's recorded wake shape — the
+ * same source-text approach as the pin checks. Contract: the wake bullet
+ * records the actuation as `node "<skill-dir>/scripts/<wake-helper>.mjs"`.
+ */
+function readWakeHelperName(repoRoot, problems) {
+  const path = join(repoRoot, ADR_FILE);
+  if (!existsSync(path)) return null; // readAdrPin already reports the missing record
+  const match = /actuated by the wrapper\s+as\s+`node\s+"[^"]*\/([\w.-]+\.mjs)"/.exec(
+    readFileSync(path, "utf8")
+  );
+  if (!match) {
+    problems.push(`${ADR_FILE}: cannot read the wake helper name`);
+    return null;
+  }
+  return match[1];
+}
+
+/**
+ * (b) The wrapper's give-up path — the buildRetryWrapper body where the FAILED
+ * marker lives — references the wake helper ADR-0006 names: directly, or by
+ * calling the file-local wakeHelperPath resolver, which must then resolve the
+ * named helper.
+ */
+function checkWakeReference(problems, repoRoot, text, wrapper) {
+  if (wrapper === null) return;
+  const wakeName = readWakeHelperName(repoRoot, problems);
+  if (wakeName === null) return;
+  if (!wrapper.includes("FAILED")) {
+    problems.push(`${HELPER_FILE}: retry wrapper's give-up path has no FAILED marker`);
+  }
+  if (!wrapper.includes(wakeName) && !/\bwakeHelperPath\s*\(/.test(wrapper)) {
+    problems.push(`${HELPER_FILE}: give-up path does not reference the wake helper ${wakeName}`);
+    return;
+  }
+  if (/\bwakeHelperPath\s*\(/.test(wrapper) && !text.includes(wakeName)) {
+    problems.push(`${HELPER_FILE}: give-up path resolves a different wake helper than ${wakeName}`);
+  }
+}
+
+/**
+ * (c) The pinned command inside the wrapper keeps its explicit pins: the
+ * buildPiCommand builder emits the provider, model and thinking flags. The
+ * wrapper's use of that builder is check (a)'s contract.
+ */
+function checkPinnedCommand(problems, text) {
+  const body = functionBody(text, "buildPiCommand");
+  if (body === null) {
+    problems.push(`${HELPER_FILE}: missing the buildPiCommand pinned-command builder`);
+    return;
+  }
+  for (const flag of ["--provider", "--model", "--thinking"]) {
+    if (!body.includes(flag)) {
+      problems.push(`${HELPER_FILE}: pinned command drops the explicit ${flag}`);
     }
   }
 }
