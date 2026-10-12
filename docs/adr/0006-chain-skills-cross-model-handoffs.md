@@ -43,6 +43,45 @@ context is not independent.
   argument, the id anchor prefers a chain-labeled terminal but accepts any
   terminal on the worktree, fresh runs bootstrap with explicit id flags,
   and the fallback is connection-level only.
+- A stage that fails to run or dies mid-run does not stall the chain
+  silently. The injected command is a retry wrapper around the stage's
+  pinned agent command — whatever the harness, `pi` is not load-bearing —
+  running 5 attempts with exponential backoff (~10 min), the pinned
+  command inside unchanged with its explicit pins. On exhaustion the
+  wrapper leaves a loud FAILED marker in the terminal buffer (stage,
+  spec, the exact resume command) and actuates a wake — an unread
+  session on the task carrying that resume command — the same
+  no-waiting-on-notice principle as the pause path. A launch that never
+  executes is caught by verified-inject: the helper confirms the wrapper
+  started after injection and recovers. Decided 2026-10-12, maintainer
+  decision (fourth) from run experience: a provider 429 at stage launch
+  left the chain parked with no route — the routes are decided by the
+  review after it runs, so a stage that never runs fires none. Open
+  gaps, left to the implementer (record the choice back here): the
+  execution-verification signal (wrapper sentinel vs process probe vs
+  buffer poll) and the wedge-recovery mechanism (re-inject vs close and
+  relaunch). The wake gap is filled (#93): a new sibling helper,
+  `open-wake-session.mjs`, packaged byte-identically beside
+  `launch-stage.mjs` in every launching skill, actuated by the wrapper
+  as `node "<skill-dir>/scripts/open-wake-session.mjs" <stage> <spec>
+  '<resume command>'` — not a failure mode of `open-grill-session.mjs`,
+  because the wake has its own label, prompt and session config and a
+  mode flag would couple two routes in one module. It creates an
+  opencode session on the task, labels it `chain #<spec>: wake —
+  <stage>` (spec and stage are explicit arguments, never parsed from
+  another label), and sends the wake prompt — `WAKE NOTICE — this session is
+  a notice for the maintainer; do not run any command or tool. The chain
+  parked: the <stage> stage gave up on spec #<spec> after its retries. The
+  maintainer resumes it with this exact command:` plus the resume command
+  verbatim. The notice wording is deliberate: send-prompt starts an agent
+  turn, so the prompt forbids tools and names the maintainer as the actor,
+  instead of inviting the wake session to resume the chain itself. It pins
+  no model or effort: the wake is a notice on the task, not a stage, so
+  the pin-every-spawn rule does not reach it. Ids reuse the launch
+  helper's anchor and bootstrap flags. A connection-level failure
+  before a session exists is the only fallback, and it prints
+  `error.message` plus the resume command so it is never lost; every
+  failure after the session exists is a hard error carrying its id.
 - Each stage's `SKILL.md` pins its model, invoked at the model's highest
   available effort/thinking (whatever the model exposes — max, xhigh or
   high):
