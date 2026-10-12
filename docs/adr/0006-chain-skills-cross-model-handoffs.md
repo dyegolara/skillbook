@@ -56,11 +56,25 @@ context is not independent.
   started after injection and recovers. Decided 2026-10-12, maintainer
   decision (fourth) from run experience: a provider 429 at stage launch
   left the chain parked with no route — the routes are decided by the
-  review after it runs, so a stage that never runs fires none. Open
-  gaps, left to the implementer (record the choice back here): the
-  execution-verification signal (wrapper sentinel vs process probe vs
-  buffer poll) and the wedge-recovery mechanism (re-inject vs close and
-  relaunch). The wake gap is filled (#93): a new sibling helper,
+  review after it runs, so a stage that never runs fires none. Gaps (i)
+  and (ii) are filled (#95, orchestrator steer): the
+  execution-verification signal is the wrapper sentinel — the wrapper
+  prints `CHAIN-STAGE-START: chain #<spec> <stage>` as its first action
+  (before attempt 1), and the helper polls
+  `GET /terminal/buffer?terminalId=…`, parsing the bare JSON string and
+  stripping ANSI escapes, every 250 ms until the sentinel appears on its
+  own line or a 5000 ms timeout elapses (the PTY echoes the injected
+  command, so only a standalone line proves execution; a process probe
+  has no verified endpoint). The wedge recovery is a re-inject of the
+  same terminal input into the same terminal, bounded to one re-inject,
+  then a hard error carrying `error.message`; because the wrapper emits
+  its sentinel immediately on execution, a re-inject only follows a
+  timed-out wait and the helper never touches the input again once the
+  sentinel is seen, so no two stage commands run in one terminal. Any
+  verification failure that is not a wedge — a buffer-read HTTP error, a
+  connection failure to a reachable API, a malformed buffer body — is a
+  hard error, not a silent pass. The wake gap is filled (#93): a new
+  sibling helper,
   `open-wake-session.mjs`, packaged byte-identically beside
   `launch-stage.mjs` in every launching skill, actuated by the wrapper
   as `node "<skill-dir>/scripts/open-wake-session.mjs" <stage> <spec>

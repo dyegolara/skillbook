@@ -12,14 +12,21 @@
  * explicit argument (never parsed from another label), injects the stage's
  * pinned command under the retry wrapper — 5 attempts with doubling backoff
  * (40s/80s/160s/320s, a 10-minute give-up window), the pinned command
- * unchanged inside — and prints the terminal id. On exhaustion the wrapper
- * prints the FAILED marker (stage, spec, the exact resume command) into the
- * buffer and actuates the sibling wake helper; the terminal stays open after
- * the stage exits, and its buffer is the stage log. The detached `nohup`
- * fallback fires only on a connection-level failure to the terminal API —
- * never after `POST /terminal/start` succeeded, so a reachable API never
- * silently degrades — and it preserves `error.message` while reporting which
- * path it took; it launches the pinned command unwrapped.
+ * unchanged inside — and prints the terminal id. The wrapper's first action
+ * is a stable sentinel line, `CHAIN-STAGE-START: chain #<spec> <stage>`;
+ * verified-inject polls `GET /terminal/buffer` for it (the bare JSON string,
+ * ANSI escapes stripped, on its own line — the PTY echo of the injected
+ * command carries the same text mid-line and is not proof of execution)
+ * every 250 ms for up to 5000 ms. A timed-out wait is a wedge: the helper
+ * re-injects the same input into the same terminal once and re-verifies; a
+ * second timeout is a hard error carrying `error.message`. On exhaustion the
+ * wrapper prints the FAILED marker (stage, spec, the exact resume command)
+ * into the buffer and actuates the sibling wake helper; the terminal stays
+ * open after the stage exits, and its buffer is the stage log. The detached
+ * `nohup` fallback fires only on a connection-level failure to the terminal
+ * API — never after `POST /terminal/start` succeeded, so a reachable API
+ * never silently degrades — and it preserves `error.message` while reporting
+ * which path it took; it launches the pinned command unwrapped.
  *
  * Plain ESM per ADR-0002, zero dependencies beyond Node.
  *
@@ -69,27 +76,139 @@ export function buildPiCommand(stage, pointers) {
 export const RETRY_ATTEMPTS = 5;
 export const RETRY_SLEEPS_SECONDS = [40, 80, 160, 320];
 
+/**
+ * verified-inject's parameters: the wrapper prints the sentinel as its first
+ * action, and the helper polls the terminal buffer every 250 ms for up to
+ * 5000 ms before calling the launch wedged. A timed-out wait re-injects the
+ * same input into the same terminal exactly once; a second timeout is a hard
+ * error. Explicit, like the retry schedule, so the behaviour is deterministic.
+ */
+export const SENTINEL_PREFIX = "CHAIN-STAGE-START:";
+export const VERIFY_POLL_INTERVAL_MS = 250;
+export const VERIFY_TIMEOUT_MS = 5000;
+export const VERIFY_MAX_REINJECTS = 1;
+
+/**
+ * The execution sentinel the wrapper prints before attempt 1. It is the
+ * stable string the helper greps the terminal buffer for; the PTY's echo of
+ * the injected command contains it too, so only a standalone line counts as
+ * execution (see `sentinelSeen`).
+ */
+export function stageSentinel(spec, stage) {
+  return `${SENTINEL_PREFIX} chain #${specNumber(spec)} ${stage}`;
+}
+
+/**
+ * The sentinel line, as the wrapper prints it. The injected command itself
+ * carries the sentinel text mid-line and the PTY echoes it, so a substring
+ * match would read a wedged injection as a started stage; only a line that is
+ * exactly the sentinel (after ANSI stripping and carriage-return trimming)
+ * proves the wrapper executed.
+ */
+export function sentinelSeen(buffer, sentinel) {
+  return String(buffer)
+    .split("\n")
+    .some((line) => line.replace(/\r$/, "").trim() === sentinel);
+}
+
+// CSI sequences (colors, cursor movement) and OSC sequences (terminal title).
+const ANSI_PATTERN = /\u001B(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001B]*(?:\u0007|\u001B\\))/g;
+
+/** Strip the terminal's ANSI escapes so buffer lines can be matched as text. */
+export function stripAnsi(text) {
+  return String(text).replace(ANSI_PATTERN, "");
+}
+
+/** The wedge signal: the sentinel wait timed out, so verified-inject re-injects once. */
+export class SentinelTimeoutError extends Error {
+  constructor({ terminalId, sentinel, timeoutMs, reinjected }) {
+    super(
+      `terminal ${terminalId} did not show "${sentinel}" within ${timeoutMs}ms` +
+        (reinjected ? " after one re-inject" : "") +
+        " — the stage launch is wedged"
+    );
+    this.name = "SentinelTimeoutError";
+    this.code = "STAGE_SENTINEL_TIMEOUT";
+  }
+}
+
+export function isSentinelTimeout(error) {
+  return error?.code === "STAGE_SENTINEL_TIMEOUT";
+}
+
+/** The real poll interval; tests inject a no-op sleep to run the loop instantly. */
+export function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Read the terminal's scrollback: `GET /terminal/buffer` returns the text as a
+ * bare JSON string with ANSI escapes. A non-string body is a hard error — an
+ * empty or malformed read must never pass as "sentinel absent" and trigger a
+ * re-inject against a terminal the helper cannot actually see.
+ */
+export async function readTerminalBuffer({ apiBase, fetchImpl = fetch, terminalId }) {
+  const body = await requestJson(
+    fetchImpl,
+    `${apiBase}/terminal/buffer?terminalId=${encodeURIComponent(terminalId)}`
+  );
+  if (typeof body !== "string") {
+    throw new Error(`Kepler terminal buffer for ${terminalId} was not a JSON string`);
+  }
+  return stripAnsi(body);
+}
+
+/**
+ * Poll the terminal buffer until the executed sentinel appears, then return.
+ * The first read is immediate; each later read follows one poll interval, up
+ * to the timeout's worth of polls. A timed-out wait throws
+ * `SentinelTimeoutError` — the one failure verified-inject treats as a wedge.
+ * Every other failure (HTTP error, connection failure, malformed body) is a
+ * hard error and propagates.
+ */
+export async function waitForSentinel({
+  apiBase,
+  fetchImpl = fetch,
+  terminalId,
+  sentinel,
+  timeoutMs = VERIFY_TIMEOUT_MS,
+  pollIntervalMs = VERIFY_POLL_INTERVAL_MS,
+  sleepImpl = sleep,
+  reinjected = false,
+}) {
+  const polls = Math.max(1, Math.ceil(timeoutMs / pollIntervalMs));
+  for (let poll = 0; poll < polls; poll += 1) {
+    if (poll > 0) await sleepImpl(pollIntervalMs);
+    const buffer = await readTerminalBuffer({ apiBase, fetchImpl, terminalId });
+    if (sentinelSeen(buffer, sentinel)) return buffer;
+  }
+  throw new SentinelTimeoutError({ terminalId, sentinel, timeoutMs, reinjected });
+}
+
 /** The sibling wake helper, resolved from this module's own installed location. */
 export function wakeHelperPath() {
   return fileURLToPath(new URL("./open-wake-session.mjs", import.meta.url));
 }
 
 /**
- * The retry wrapper injected into the stage terminal: the pinned command,
- * whatever the harness, attempted up to `RETRY_ATTEMPTS` times with
- * exponential backoff. On exhaustion it prints the FAILED marker — stage,
- * spec and the exact resume command, one greppable line each — into the
- * terminal buffer (the stage log), then actuates the wake by running the
- * sibling helper; the wake's output and exit status are never swallowed.
+ * The retry wrapper injected into the stage terminal: the sentinel's line
+ * before attempt 1, then the pinned command, whatever the harness, attempted
+ * up to `RETRY_ATTEMPTS` times with exponential backoff. On exhaustion it
+ * prints the FAILED marker — stage, spec and the exact resume command, one
+ * greppable line each — into the terminal buffer (the stage log), then
+ * actuates the wake by running the sibling helper; the wake's output and
+ * exit status are never swallowed.
  */
 export function buildRetryWrapper(stage, spec, pointers) {
   const command = buildPiCommand(stage, pointers); // the stage's pinned command, unchanged inside
+  const sentinel = stageSentinel(spec, stage); // the first action, before attempt 1
   const marker = [
     `FAILED: chain #${spec} ${stage} gave up after ${RETRY_ATTEMPTS} attempts`,
     `FAILED: resume with: ${command}`,
   ];
   const sleepCases = RETRY_SLEEPS_SECONDS.map((seconds, index) => `${index + 1}) sleep ${seconds};;`).join(" ");
   return (
+    `printf '%s\\n' ${shellQuote(sentinel)}; ` +
     `chain_attempt=1; chain_status=0; while [ "$chain_attempt" -le ${RETRY_ATTEMPTS} ]; do ` +
     `${command}; chain_status=$?; [ "$chain_status" -eq 0 ] && break; ` +
     `case "$chain_attempt" in ${sleepCases} esac; ` +
@@ -105,11 +224,16 @@ export function buildTerminalInput(stage, spec, pointers) {
 }
 
 export function stageLabel(spec, stage) {
+  return `chain #${specNumber(spec)}: ${stage}`;
+}
+
+/** The one spec-number guard: both the label and the sentinel carry it. */
+function specNumber(spec) {
   const text = String(spec ?? "");
   if (!/^\d+$/.test(text)) {
     throw new Error(`spec must be a number — got "${spec}"`);
   }
-  return `chain #${text}: ${stage}`;
+  return text;
 }
 
 export function readKeplerApiBase({ dataDir = KEPLER_DATA_DIR } = {}) {
@@ -280,9 +404,19 @@ export async function resolveIds({ apiBase, fetchImpl = fetch, worktreePath, fla
  * `POST /terminal/start` may have created a terminal, the caller must never
  * fall back to `nohup` (that would double-launch the stage).
  *
- * @param {{ stage: string, label: string, pointers: string, ids: TaskIds, worktreePath: string, apiBase: string, fetchImpl?: typeof fetch }} options
+ * @param {{ stage: string, spec: number|string, label: string, pointers: string, ids: TaskIds, worktreePath: string, apiBase: string, fetchImpl?: typeof fetch, sleepImpl?: (ms: number) => Promise<void> }} options
  */
-export async function launchInTerminal({ stage, spec, label, pointers, ids, worktreePath, apiBase, fetchImpl = fetch }) {
+export async function launchInTerminal({
+  stage,
+  spec,
+  label,
+  pointers,
+  ids,
+  worktreePath,
+  apiBase,
+  fetchImpl = fetch,
+  sleepImpl = sleep,
+}) {
   const started = await requestJson(fetchImpl, `${apiBase}/terminal/start`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -291,13 +425,32 @@ export async function launchInTerminal({ stage, spec, label, pointers, ids, work
   const terminalId = started?.terminalId;
   if (!terminalId) throw new Error("Kepler terminal start returned no terminalId");
 
-  await requestJson(fetchImpl, `${apiBase}/terminal/input`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ terminalId, input: buildTerminalInput(stage, spec, pointers) }),
-  });
+  const sentinel = stageSentinel(spec, stage);
+  const input = buildTerminalInput(stage, spec, pointers);
+  const postInput = () =>
+    requestJson(fetchImpl, `${apiBase}/terminal/input`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ terminalId, input }),
+    });
 
-  return { terminalId, label };
+  await postInput();
+  for (let reinjects = 0; ; reinjects += 1) {
+    try {
+      // The wrapper prints the sentinel immediately on execution, so a wait
+      // that times out means the command never started: re-inject the same
+      // input into the same terminal, bounded to VERIFY_MAX_REINJECTS, and
+      // re-verify. Once the sentinel is seen the helper returns without
+      // touching the terminal's input again — no double-launch.
+      await waitForSentinel({ apiBase, fetchImpl, terminalId, sentinel, sleepImpl, reinjected: reinjects > 0 });
+      return { terminalId, label };
+    } catch (error) {
+      // A non-wedge failure (buffer read HTTP error, connection failure,
+      // malformed body) is a hard error, never a silent pass.
+      if (!isSentinelTimeout(error) || reinjects >= VERIFY_MAX_REINJECTS) throw error;
+      await postInput();
+    }
+  }
 }
 
 /**
@@ -338,7 +491,17 @@ export async function launchStage({ stage, spec, pointers, flags, deps = {} }) {
   }
 
   // From here the terminal may already exist: every failure is a hard error.
-  const launched = await launchInTerminal({ stage, spec, label, pointers, ids, worktreePath, apiBase, fetchImpl });
+  const launched = await launchInTerminal({
+    stage,
+    spec,
+    label,
+    pointers,
+    ids,
+    worktreePath,
+    apiBase,
+    fetchImpl,
+    sleepImpl: deps.verifySleep,
+  });
   return { path: "api", ...launched };
 }
 
