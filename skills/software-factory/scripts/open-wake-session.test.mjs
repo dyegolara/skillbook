@@ -20,8 +20,9 @@ test("the wake prompt carries the stage, the spec and the exact resume command",
   assert.equal(
     prompt,
     [
+      "WAKE NOTICE — this session is a notice for the maintainer; do not run any command or tool.",
       "The chain parked: the code-review-loop stage gave up on spec #55 after its retries.",
-      "Resume it with this exact command:",
+      "The maintainer resumes it with this exact command:",
       "",
       RESUME_COMMAND,
     ].join("\n")

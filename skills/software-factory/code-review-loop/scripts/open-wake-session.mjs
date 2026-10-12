@@ -51,11 +51,12 @@ export function wakeLabel(spec, stage) {
   return stageLabel(spec, `wake — ${stage}`);
 }
 
-/** The wake prompt: the stage, the spec, and the resume command verbatim. */
+/** The wake prompt: a notice for the maintainer, plus the resume command verbatim. */
 export function buildWakePrompt({ stage, spec, resumeCommand }) {
   return [
+    "WAKE NOTICE — this session is a notice for the maintainer; do not run any command or tool.",
     `The chain parked: the ${stage} stage gave up on spec #${spec} after its retries.`,
-    "Resume it with this exact command:",
+    "The maintainer resumes it with this exact command:",
     "",
     resumeCommand,
   ].join("\n");

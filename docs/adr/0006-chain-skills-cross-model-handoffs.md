@@ -69,9 +69,13 @@ context is not independent.
   mode flag would couple two routes in one module. It creates an
   opencode session on the task, labels it `chain #<spec>: wake —
   <stage>` (spec and stage are explicit arguments, never parsed from
-  another label), and sends the wake prompt — `The chain parked: the
-  <stage> stage gave up on spec #<spec> after its retries. Resume it
-  with this exact command:` plus the resume command verbatim. It pins
+  another label), and sends the wake prompt — `WAKE NOTICE — this session is
+  a notice for the maintainer; do not run any command or tool. The chain
+  parked: the <stage> stage gave up on spec #<spec> after its retries. The
+  maintainer resumes it with this exact command:` plus the resume command
+  verbatim. The notice wording is deliberate: send-prompt starts an agent
+  turn, so the prompt forbids tools and names the maintainer as the actor,
+  instead of inviting the wake session to resume the chain itself. It pins
   no model or effort: the wake is a notice on the task, not a stage, so
   the pin-every-spawn rule does not reach it. Ids reuse the launch
   helper's anchor and bootstrap flags. A connection-level failure
