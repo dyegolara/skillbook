@@ -10,12 +10,16 @@
  * grill-with-spec is the one stage holding the ids. It creates a terminal
  * labeled `chain #<spec>: <stage>` with the spec number taken from the
  * explicit argument (never parsed from another label), injects the stage's
- * pinned `pi` command, and prints the terminal id. The terminal stays open
- * after the stage exits; its buffer is the stage log. The detached `nohup`
+ * pinned command under the retry wrapper — 5 attempts with doubling backoff
+ * (40s/80s/160s/320s, a 10-minute give-up window), the pinned command
+ * unchanged inside — and prints the terminal id. On exhaustion the wrapper
+ * prints the FAILED marker (stage, spec, the exact resume command) into the
+ * buffer and actuates the sibling wake helper; the terminal stays open after
+ * the stage exits, and its buffer is the stage log. The detached `nohup`
  * fallback fires only on a connection-level failure to the terminal API —
  * never after `POST /terminal/start` succeeded, so a reachable API never
  * silently degrades — and it preserves `error.message` while reporting which
- * path it took.
+ * path it took; it launches the pinned command unwrapped.
  *
  * Plain ESM per ADR-0002, zero dependencies beyond Node.
  *
@@ -27,7 +31,7 @@ import { spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const KEPLER_DATA_DIR = join(homedir(), ".kepler-server", "data");
 
@@ -57,8 +61,47 @@ export function buildPiCommand(stage, pointers) {
   return `pi --print --provider ${pin.provider} --model ${pin.model} --thinking ${pin.thinking} ${shellQuote(pointers)}`;
 }
 
-export function buildTerminalInput(stage, pointers) {
-  return `${buildPiCommand(stage, pointers)}\n`;
+/**
+ * The retry wrapper's parameters: five attempts with a doubling backoff whose
+ * four sleeps sum to 600 seconds — a ten-minute give-up window. Explicit, not
+ * jittered, so a stage launch is deterministic.
+ */
+export const RETRY_ATTEMPTS = 5;
+export const RETRY_SLEEPS_SECONDS = [40, 80, 160, 320];
+
+/** The sibling wake helper, resolved from this module's own installed location. */
+export function wakeHelperPath() {
+  return fileURLToPath(new URL("./open-wake-session.mjs", import.meta.url));
+}
+
+/**
+ * The retry wrapper injected into the stage terminal: the pinned command,
+ * whatever the harness, attempted up to `RETRY_ATTEMPTS` times with
+ * exponential backoff. On exhaustion it prints the FAILED marker — stage,
+ * spec and the exact resume command, one greppable line each — into the
+ * terminal buffer (the stage log), then actuates the wake by running the
+ * sibling helper; the wake's output and exit status are never swallowed.
+ */
+export function buildRetryWrapper(stage, spec, pointers) {
+  const command = buildPiCommand(stage, pointers); // the stage's pinned command, unchanged inside
+  const marker = [
+    `FAILED: chain #${spec} ${stage} gave up after ${RETRY_ATTEMPTS} attempts`,
+    `FAILED: resume with: ${command}`,
+  ];
+  const sleepCases = RETRY_SLEEPS_SECONDS.map((seconds, index) => `${index + 1}) sleep ${seconds};;`).join(" ");
+  return (
+    `chain_attempt=1; chain_status=0; while [ "$chain_attempt" -le ${RETRY_ATTEMPTS} ]; do ` +
+    `${command}; chain_status=$?; [ "$chain_status" -eq 0 ] && break; ` +
+    `case "$chain_attempt" in ${sleepCases} esac; ` +
+    "chain_attempt=$((chain_attempt+1)); done; " +
+    `if [ "$chain_status" -ne 0 ]; then ` +
+    `printf '%s\\n' ${marker.map(shellQuote).join(" ")}; ` +
+    `node ${shellQuote(wakeHelperPath())} ${stage} ${spec} ${shellQuote(command)}; fi`
+  );
+}
+
+export function buildTerminalInput(stage, spec, pointers) {
+  return `${buildRetryWrapper(stage, spec, pointers)}\n`;
 }
 
 export function stageLabel(spec, stage) {
@@ -239,7 +282,7 @@ export async function resolveIds({ apiBase, fetchImpl = fetch, worktreePath, fla
  *
  * @param {{ stage: string, label: string, pointers: string, ids: TaskIds, worktreePath: string, apiBase: string, fetchImpl?: typeof fetch }} options
  */
-export async function launchInTerminal({ stage, label, pointers, ids, worktreePath, apiBase, fetchImpl = fetch }) {
+export async function launchInTerminal({ stage, spec, label, pointers, ids, worktreePath, apiBase, fetchImpl = fetch }) {
   const started = await requestJson(fetchImpl, `${apiBase}/terminal/start`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -251,7 +294,7 @@ export async function launchInTerminal({ stage, label, pointers, ids, worktreePa
   await requestJson(fetchImpl, `${apiBase}/terminal/input`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ terminalId, input: buildTerminalInput(stage, pointers) }),
+    body: JSON.stringify({ terminalId, input: buildTerminalInput(stage, spec, pointers) }),
   });
 
   return { terminalId, label };
@@ -295,7 +338,7 @@ export async function launchStage({ stage, spec, pointers, flags, deps = {} }) {
   }
 
   // From here the terminal may already exist: every failure is a hard error.
-  const launched = await launchInTerminal({ stage, label, pointers, ids, worktreePath, apiBase, fetchImpl });
+  const launched = await launchInTerminal({ stage, spec, label, pointers, ids, worktreePath, apiBase, fetchImpl });
   return { path: "api", ...launched };
 }
 
