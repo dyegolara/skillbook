@@ -99,8 +99,7 @@ export const VERIFY_MAX_RELAUNCHES = 1;
 /**
  * The `chain #<spec> <stage>` core, built by the two emitted shapes that use
  * it: the sentinel (`CHAIN-STAGE-START: chain #N S`) and the FAILED marker
- * (`FAILED: chain #N S gave up after N attempts`). The spec goes through
- * `specNumber` here, once for all shapes.
+ * (`FAILED: chain #N S gave up after N attempts`).
  */
 export function chainCore(spec, stage) {
   return `chain #${specNumber(spec)} ${stage}`;
