@@ -201,7 +201,28 @@ Routes: `/health` (watchdog liveness, in the Listener's health shape),
 watched PR with its Stage sequence) and `/flows/:owner/:repo/:num` (one Flow
 in full; 404 when unknown). Stage statuses, outcomes and terminal words use
 `GLOSSARY.md`; the projection derivation is documented in
-`observability/README.md`. The TUI is a client of this contract.
+`observability/README.md`.
+
+`pr_monitor_tui.mjs` is the coloured client of that contract — one command,
+no setup beyond the API being reachable:
+
+```bash
+node pr_monitor_tui.mjs            # refresh every 2s; Ctrl-C exits
+node pr_monitor_tui.mjs --once     # one frame, for scripts
+node pr_monitor_tui.mjs --url http://127.0.0.1:8788 --interval 5000
+```
+
+The header is the loop's tick timeline: ticks done (with the last one), the
+in-flight tick and when the next check fires. One line per watched PR shows
+its Stage sequence in glossary order — `collect check reuse decide act
+schedule` — with **past** green, **current** bold yellow and **next** grey,
+then the terminal outcome in the glossary's words (`All-clear /
+Notify-ready`, `Stuck PR`, `Needs-human`; `waiting` is not terminal). The TUI
+reads only `GET /timeline` and `GET /flows`; it never touches the state
+files. When the API is unreachable it names the URL, says what to start and
+keeps retrying. Settings: `--url` / `PR_MONITOR_OBSERVABILITY_URL` (default
+`http://127.0.0.1:8788`), `--interval` / `PR_MONITOR_TUI_INTERVAL_MS`
+(default `2000`), `--once`, `--color` / `--no-color` / `NO_COLOR`.
 
 Settings (flags override env): `--host` /
 `PR_MONITOR_OBSERVABILITY_HOST` (loopback only; default `127.0.0.1`),
