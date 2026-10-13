@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -253,7 +253,10 @@ function makeRepo({
     write(
       root,
       `skills/software-factory/${name}/SKILL.md`,
-      skillContent(name, { ...overrides, omitHandoffRules: omitHandoffRules === name })
+      skillContent(name, {
+        ...overrides,
+        omitHandoffRules: omitHandoffRules === name || overrides?.omitHandoffRules === true,
+      })
     );
     if (name !== "create-pr" && !omitHelper) {
       write(root, `skills/software-factory/${name}/scripts/launch-stage.mjs`, helperText);
@@ -307,8 +310,56 @@ test("a conforming fixture pack has no problems", () => {
   assert.deepEqual(verify(makeRepo()), []);
 });
 
-test("accepts the byte-identical Handoff rules pair", () => {
-  assert.deepEqual(verify(makeRepo()), []);
+// The identity check compares the two block-carrying skills to each other,
+// not to a fixed text — so the pinning pair carries a custom block.
+const CUSTOM_HANDOFF_RULES = HANDOFF_RULES.replace(
+  "Every stage shares one git worktree.",
+  "Every stage shares one git worktree, no exceptions."
+);
+const DRIFTED_CUSTOM_HANDOFF_RULES = CUSTOM_HANDOFF_RULES.replace("no exceptions", "no exception");
+
+function bodyWithHandoff(name, rules) {
+  return `${defaultSkillBody(name)}\n${rules}`;
+}
+
+test("accepts an identical non-canonical Handoff rules pair", () => {
+  const pack = makeRepo({
+    skillOverrides: {
+      "dev-flow": { body: bodyWithHandoff("dev-flow", CUSTOM_HANDOFF_RULES), omitHandoffRules: true },
+      "code-review-loop": {
+        body: bodyWithHandoff("code-review-loop", CUSTOM_HANDOFF_RULES),
+        omitHandoffRules: true,
+      },
+    },
+  });
+  for (const name of ["dev-flow", "code-review-loop"]) {
+    assert.ok(
+      readFileSync(join(pack, name, "SKILL.md"), "utf8").endsWith(CUSTOM_HANDOFF_RULES),
+      `${name} closes with the custom block`
+    );
+  }
+  assert.deepEqual(verify(pack), []);
+});
+
+test("rejects a one-byte drift between the custom Handoff rules blocks", () => {
+  const problems = verify(
+    makeRepo({
+      skillOverrides: {
+        "dev-flow": { body: bodyWithHandoff("dev-flow", CUSTOM_HANDOFF_RULES), omitHandoffRules: true },
+        "code-review-loop": {
+          body: bodyWithHandoff("code-review-loop", DRIFTED_CUSTOM_HANDOFF_RULES),
+          omitHandoffRules: true,
+        },
+      },
+    })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        'skills/software-factory/dev-flow/SKILL.md: "## Handoff rules" block differs from skills/software-factory/code-review-loop/SKILL.md'
+      )
+    )
+  );
 });
 
 test("rejects a Handoff rules block that drifts from its shared copy", () => {
