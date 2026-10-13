@@ -7,6 +7,8 @@
  * colour is hand-rolled ANSI over `node:*`.
  */
 
+import { STAGES } from "./stages.mjs";
+
 export const ANSI = {
   reset: "\u001b[0m",
   past: "\u001b[32m", // green — Stage already run
@@ -20,7 +22,6 @@ export const ANSI = {
   warn: "\u001b[1;31m",
 };
 
-const STAGES = ["collect", "check", "reuse", "decide", "act", "schedule"];
 const STATUS_CODES = { past: ANSI.past, current: ANSI.current, next: ANSI.next };
 const ANSI_ANYWHERE = /\u001b\[[0-9;]*m/g;
 

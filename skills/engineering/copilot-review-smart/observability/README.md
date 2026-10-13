@@ -36,7 +36,8 @@ that carries process state. The Tick's liveness rule (`tickInFlight`) and
 `isPidAlive` live in the dependency-free `tick_liveness.mjs` at the skill
 root, which both the Tick and this package import. The canonical
 `decision_source` vocabulary comes from `decision_source.mjs`, another pure
-constant module.
+constant module, and the gate-wait matcher from `decision.mjs` (pure: no
+process state, no env reads).
 
 ## TUI
 

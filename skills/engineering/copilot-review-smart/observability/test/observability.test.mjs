@@ -56,7 +56,7 @@ function defaultTickState() {
     "acme/gadgets#3": {
       last_head_sha: "sha-3",
       next_check_at: new Date(NOW + 1 * HOUR).toISOString(),
-      tick_history: [record(NOW - 1 * HOUR, "wait", "Mergeability unknown", null)],
+      tick_history: [record(NOW - 1 * HOUR, "wait", "GitHub has not computed PR mergeability yet; wait for next tick.", null)],
     },
     tick_in_flight: {
       pid: process.pid,
@@ -353,6 +353,10 @@ test("GET /flows returns one row per watched PR in the glossary's Stage words", 
     assert.equal(gadgets3.terminal, null);
     assert.equal(gadgets3.done, false);
     assert.equal(gadgets3.next_check_at, new Date(NOW + 1 * HOUR).toISOString());
+    assert.match(
+      stageOf(gadgets3, "check").outcome,
+      /^gate held: GitHub has not computed PR mergeability/
+    );
     assert.deepEqual(statusesOf(gadgets3), {
       collect: "past",
       check: "past",
