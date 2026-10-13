@@ -1,11 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { runMonitorOnce } from "./pr_monitor.mjs";
+import { runMonitorOnce, tickInFlight } from "./pr_monitor.mjs";
 
 const REPO = "dyegolara/skillbook";
+const PR_MONITOR_PATH = new URL("./pr_monitor.mjs", import.meta.url).pathname;
 
 function makePr(headSha = "abc123") {
   return {
@@ -251,7 +253,6 @@ test("single-PR scope fetches only that PR and emits JSON lines in agent mode", 
     action: "wait",
     reason: "nothing to do right now",
     reused_cached_decision: false,
-    decision_adapter: null,
     github_action_posted: false,
     next_check_at: null,
     owner_notifications: [],
@@ -1441,6 +1442,325 @@ test("review/fix retry exhaustion keeps the weekly retry and a needs-human notif
   assert.equal(prLine.owner_notifications[0].event, "needs-human");
 });
 
+// --- persisted Tick observability (ticket #107) ----------------------------
+
+function idleDecision(reason = "nothing worth doing right now") {
+  return async ({ stateEntry }) => ({
+    handled: true,
+    action: "wait",
+    reason,
+    reused: false,
+    stateEntry,
+    notifications: [],
+  });
+}
+
+test("a Tick persists next_check_at per PR and clears it on a quiescent decision", async () => {
+  const now = Date.parse("2026-09-08T00:00:00.000Z");
+  const armed = await runMonitorOnce({
+    repos: [REPO],
+    state: {},
+    nowMs: now,
+    dryRun: false,
+    emitJsonReport: true,
+    runGhFn: repoScopeGh("arm123"),
+    collectPrStateFn: async () => makeCtx({ headSha: "arm123" }),
+    decideFn: async ({ stateEntry }) => ({
+      handled: true,
+      action: "request_review",
+      reason: "no review on this head yet",
+      reused: false,
+      stateEntry,
+      notifications: [],
+    }),
+  });
+  const armedReport = prJsonLine(armed);
+  assert.equal(armedReport.action, "request_review");
+  assert.equal(armedReport.next_check_at, new Date(now + 12 * 3600_000).toISOString());
+  assert.equal(armed.state[`${REPO}#7`].next_check_at, armedReport.next_check_at);
+
+  // A new head with nothing pending is quiescent: the persisted deadline must
+  // be cleared to match the report, not left behind.
+  const quiescent = await runMonitorOnce({
+    repos: [REPO],
+    state: armed.state,
+    nowMs: now + 3600_000,
+    dryRun: false,
+    emitJsonReport: true,
+    runGhFn: repoScopeGh("quiet123"),
+    collectPrStateFn: async () => makeCtx({ headSha: "quiet123" }),
+    decideFn: idleDecision(),
+  });
+  const quiescentReport = prJsonLine(quiescent);
+  assert.equal(quiescentReport.action, "wait");
+  assert.equal(quiescentReport.next_check_at, null);
+  assert.equal(quiescent.state[`${REPO}#7`].next_check_at, null);
+});
+
+test("a Tick-history record carries the report's action, reason, terminal and optional decision source", async () => {
+  const now = Date.parse("2026-09-08T00:00:00.000Z");
+  const first = await runMonitorOnce({
+    repos: [REPO],
+    state: {},
+    nowMs: now,
+    dryRun: false,
+    emitJsonReport: true,
+    runGhFn: repoScopeGh("src123"),
+    collectPrStateFn: async () => makeCtx({ headSha: "src123" }),
+    decideFn: async ({ stateEntry }) => ({
+      handled: true,
+      action: "request_review",
+      reason: "no review yet",
+      decision_source: "command",
+      reused: false,
+      stateEntry,
+      notifications: [],
+    }),
+  });
+
+  const report = prJsonLine(first);
+  assert.equal(report.decision_source, "command");
+  const history = first.state[`${REPO}#7`].tick_history;
+  assert.equal(history.length, 1);
+  assert.deepEqual(history[0], {
+    ts: new Date(now).toISOString(),
+    action: "request_review",
+    reason: "no review yet",
+    terminal: null,
+    decision_source: "command",
+  });
+
+  const done = await runMonitorOnce({
+    repos: [REPO],
+    state: first.state,
+    nowMs: now + 1000,
+    dryRun: false,
+    emitJsonReport: true,
+    runGhFn: repoScopeGh("src123"),
+    collectPrStateFn: async () => makeCtx({ headSha: "src123" }),
+    decideFn: async ({ stateEntry }) => ({
+      handled: true,
+      action: "notify_ready",
+      reason: "all clear",
+      reused: false,
+      stateEntry,
+      notifications: [],
+    }),
+  });
+  const history2 = done.state[`${REPO}#7`].tick_history;
+  assert.equal(history2.length, 2);
+  assert.equal(history2.at(-1).action, "notify_ready");
+  assert.equal(history2.at(-1).terminal, "done");
+  assert.equal("decision_source" in history2.at(-1), false);
+});
+
+test("Tick history stays bounded on an idle watched PR and keeps the newest records", async () => {
+  const now = Date.parse("2026-09-08T00:00:00.000Z");
+  const reasons = [];
+  let state = {};
+  for (let i = 1; i <= 25; i++) {
+    const reason = `tick-${i}`;
+    reasons.push(reason);
+    const out = await runMonitorOnce({
+      repos: [REPO],
+      state,
+      nowMs: now + i * 60_000,
+      dryRun: false,
+      runGhFn: repoScopeGh(`sha-${i}`),
+      collectPrStateFn: async () => makeCtx({ headSha: `sha-${i}` }),
+      decideFn: idleDecision(reason),
+    });
+    state = out.state;
+    assert.equal(
+      state[`${REPO}#7`].tick_history.length,
+      Math.min(i, 20),
+      `history length after tick ${i}`
+    );
+    assert.equal(state[`${REPO}#7`].tick_history.at(-1).reason, reason);
+  }
+  assert.deepEqual(
+    state[`${REPO}#7`].tick_history.map((record) => record.reason),
+    reasons.slice(-20)
+  );
+});
+
+test("an in-flight marker reads as running only while its owner can still be running", () => {
+  const fresh = new Date("2026-09-08T00:00:00.000Z").toISOString();
+  assert.equal(tickInFlight({}), null);
+  assert.equal(tickInFlight({ tick_in_flight: null }), null);
+
+  const live = { pid: process.pid, token: "tok", started_at: fresh, heartbeat_at: fresh };
+  const liveNow = Date.parse(fresh) + 60_000;
+  assert.deepEqual(tickInFlight({ tick_in_flight: live }, { nowMs: liveNow }), {
+    pid: process.pid,
+    started_at: fresh,
+    heartbeat_at: fresh,
+    alive: true,
+  });
+
+  // A live pid with a stale heartbeat is a reused pid, not a running Tick.
+  assert.equal(
+    tickInFlight({ tick_in_flight: live }, { nowMs: Date.parse(fresh) + 11 * 60_000 }).alive,
+    false
+  );
+
+  // A dead owner is not running even with a fresh heartbeat.
+  assert.equal(
+    tickInFlight({ tick_in_flight: live }, { nowMs: liveNow, isAliveFn: () => false }).alive,
+    false
+  );
+});
+
+function writeSpawnedStubs(dir) {
+  const binDir = path.join(dir, "bin");
+  fs.mkdirSync(binDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(binDir, "gh"),
+    ["#!/bin/sh", 'exec node "$(dirname "$0")/gh-stub.mjs" "$@"', ""].join("\n")
+  );
+  fs.chmodSync(path.join(binDir, "gh"), 0o755);
+  fs.writeFileSync(
+    path.join(binDir, "gh-stub.mjs"),
+    [
+      "const args = process.argv.slice(2);",
+      'const endpoint = args[1] || "";',
+      'const method = args.includes("-X") ? args[args.indexOf("-X") + 1] : "GET";',
+      'if (method === "POST") { process.stdout.write("{}\\n"); process.exit(0); }',
+      `if (endpoint === "repos/${REPO}/pulls/7") {`,
+      "  process.stdout.write(JSON.stringify({",
+      "    number: 7, state: \"open\", draft: false, title: \"Spawned PR\",",
+      "    head: { sha: \"spawn123\" }, mergeable: true, mergeable_state: \"clean\",",
+      "  }) + \"\\n\");",
+      '} else if (endpoint.startsWith("repos/' + REPO + '/pulls/7/") || endpoint.startsWith("repos/' + REPO + '/issues/7/")) {',
+      '  process.stdout.write("[]\\n");',
+      "} else {",
+      '  process.stderr.write("unexpected gh call: " + args.join(" ") + "\\n");',
+      "  process.exit(1);",
+      "}",
+      "",
+    ].join("\n")
+  );
+  const preload = path.join(dir, "stub-llm.mjs");
+  fs.writeFileSync(
+    preload,
+    [
+      'const delayMs = Number(process.env.PR_MONITOR_TEST_FETCH_DELAY_MS || "0");',
+      "globalThis.fetch = async () => {",
+      "  if (delayMs > 0) await new Promise((resolve) => setTimeout(resolve, delayMs));",
+      "  return new Response(JSON.stringify({",
+      "    choices: [{ message: { content: JSON.stringify({ action: \"request_review\", reason: \"stub decision\" }) } }],",
+      '  }), { status: 200, headers: { "content-type": "application/json" } });',
+      "};",
+      "",
+    ].join("\n")
+  );
+  return { binDir, preload };
+}
+
+function spawnTickProcess({ statePath, binDir, preload, delayMs = 0, dryRun = false }) {
+  const child = spawn(
+    process.execPath,
+    ["--import", preload, PR_MONITOR_PATH, "--pr", `${REPO}#7`, "--json-report"],
+    {
+      env: {
+        ...process.env,
+        PR_MONITOR_STATE_PATH: statePath,
+        PR_MONITOR_REPOS: "",
+        PR_MONITOR_PR: "",
+        PR_MONITOR_REPORT: "",
+        OPENROUTER_API_KEY: "spawn-test-key",
+        PR_MONITOR_TEST_FETCH_DELAY_MS: String(delayMs),
+        DRY_RUN: dryRun ? "1" : "0",
+        PATH: `${binDir}${path.delimiter}${process.env.PATH || ""}`,
+      },
+    }
+  );
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => { stdout += chunk; });
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  const done = new Promise((resolve) => {
+    child.on("close", (code, signal) => resolve({ code, signal, stdout, stderr }));
+  });
+  return { child, done };
+}
+
+async function waitForStateFile(statePath, predicate, { timeoutMs = 5000, stepMs = 25 } = {}) {
+  const start = Date.now();
+  for (;;) {
+    try {
+      const state = JSON.parse(fs.readFileSync(statePath, "utf8"));
+      if (predicate(state)) return state;
+    } catch {
+      // not written yet, or caught mid-write
+    }
+    if (Date.now() - start > timeoutMs) {
+      throw new Error(`state file at ${statePath} did not reach the expected shape in ${timeoutMs}ms`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, stepMs));
+  }
+}
+
+test("a running Tick marks itself in flight on disk and clears the marker on a clean exit", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pr-monitor-inflight-"));
+  const { binDir, preload } = writeSpawnedStubs(dir);
+  const statePath = path.join(dir, "state.json");
+  const { child, done } = spawnTickProcess({ statePath, binDir, preload, delayMs: 500 });
+
+  const marked = await waitForStateFile(statePath, (state) => state.tick_in_flight);
+  assert.equal(child.exitCode, null, "the Tick is still running while the marker is on disk");
+  assert.equal(marked.tick_in_flight.pid, child.pid);
+  assert.equal(typeof marked.tick_in_flight.started_at, "string");
+  assert.equal(typeof marked.tick_in_flight.heartbeat_at, "string");
+  assert.equal(tickInFlight(marked).alive, true);
+
+  const result = await done;
+  assert.equal(result.code, 0, result.stderr);
+  const final = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal("tick_in_flight" in final, false);
+  assert.equal(tickInFlight(final), null);
+  const entry = final[`${REPO}#7`];
+  assert.equal(typeof entry.next_check_at, "string");
+  assert.equal(entry.tick_history.length, 1);
+  assert.equal(entry.tick_history[0].action, "request_review");
+  assert.equal(entry.tick_history[0].reason, "stub decision");
+});
+
+test("a Tick killed mid-run leaves a marker that no longer reads as in flight", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pr-monitor-crash-"));
+  const { binDir, preload } = writeSpawnedStubs(dir);
+  const statePath = path.join(dir, "state.json");
+  const { child, done } = spawnTickProcess({ statePath, binDir, preload, delayMs: 60_000 });
+
+  const marked = await waitForStateFile(statePath, (state) => state.tick_in_flight);
+  assert.equal(tickInFlight(marked).alive, true);
+  child.kill("SIGKILL");
+  const result = await done;
+  assert.equal(result.signal, "SIGKILL");
+
+  const crashed = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.ok(crashed.tick_in_flight, "the marker survives the crash");
+  assert.equal(crashed.tick_in_flight.pid, child.pid);
+  assert.equal(tickInFlight(crashed).alive, false);
+});
+
+test("DRY_RUN=1 leaves the state file byte-identical and writes no lock", async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pr-monitor-dry-"));
+  const { binDir, preload } = writeSpawnedStubs(dir);
+  const statePath = path.join(dir, "state.json");
+  const before = JSON.stringify(
+    { seen_ready_shas: [], [`${REPO}#7`]: { sentinel: "untouched" } },
+    null,
+    2
+  );
+  fs.writeFileSync(statePath, before);
+
+  const { done } = spawnTickProcess({ statePath, binDir, preload, delayMs: 0, dryRun: true });
+  const result = await done;
+  assert.equal(result.code, 0, result.stderr);
+  assert.equal(fs.readFileSync(statePath, "utf8"), before);
+  assert.equal(fs.existsSync(`${statePath}.lock`), false);
+});
 function makeTempDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
@@ -1503,7 +1823,7 @@ function assertCommandFailureEscalation(ticks, failurePattern) {
   assert.equal(ticks[0].reports[0].action, "wait");
   assert.match(ticks[0].reports[0].reason, failurePattern);
   assert.match(ticks[0].reports[0].reason, /retrying \(1\/3\)/);
-  assert.equal(ticks[0].reports[0].decision_adapter, "decision_command");
+  assert.equal(ticks[0].reports[0].decision_source, "decision_command");
   assert.deepEqual(ticks[0].reports[0].owner_notifications, []);
   assert.equal(ticks[0].state[`${REPO}#7`].llm_failures, 1);
 
@@ -1516,7 +1836,7 @@ function assertCommandFailureEscalation(ticks, failurePattern) {
   assert.equal(finalReport.done, true);
   assert.equal(finalReport.owner_notifications.length, 1);
   assert.equal(finalReport.owner_notifications[0].event, "needs-human");
-  assert.equal(finalReport.decision_adapter, "decision_command");
+  assert.equal(finalReport.decision_source, "decision_command");
   assert.match(finalReport.reason, /after 3 attempts on this head/i);
   assert.equal(ticks[2].state[`${REPO}#7`].llm_failures, 3);
 }
@@ -1559,7 +1879,8 @@ process.stdin.on("end", () => {
     .map((line) => JSON.parse(line));
   assert.equal(prLine.action, "request_review");
   assert.equal(prLine.reason, "command says review");
-  assert.equal(prLine.decision_adapter, "decision_command");
+  assert.equal(prLine.decision_source, "decision_command");
+  assert.equal(out.state[`${REPO}#7`].tick_history.at(-1).decision_source, "decision_command");
   assert.match(out.output, /\[DRY-RUN\].*@copilot code review/);
 });
 
@@ -1586,7 +1907,7 @@ test("the skill env file can define the decision command", async () => {
 
   assert.equal(out.reports[0].action, "request_fix");
   assert.equal(out.reports[0].reason, "env file command");
-  assert.equal(out.reports[0].decision_adapter, "decision_command");
+  assert.equal(out.reports[0].decision_source, "decision_command");
 });
 
 test("an explicit decision command wins over model+credential", async () => {
@@ -1669,7 +1990,7 @@ test("no decision source resolves to an actionable wait without notification or 
   for (const tick of [result.first, result.second]) {
     const [report] = tick.reports;
     assert.equal(report.action, "wait");
-    assert.equal(report.decision_adapter, "none");
+    assert.equal(report.decision_source, "none");
     assert.equal(report.done, false);
     assert.equal(report.terminal, null);
     assert.deepEqual(report.owner_notifications, []);
@@ -1698,7 +2019,7 @@ test("deterministic gates still decide without a decision source", async () => {
 
   const prLine = prJsonLine(out);
   assert.equal(prLine.action, "request_rebase");
-  assert.equal(prLine.decision_adapter, null);
+  assert.equal(prLine.decision_source, undefined);
   assert.doesNotMatch(prLine.reason, /PR_MONITOR_LLM_CMD/);
 });
 
@@ -1736,7 +2057,7 @@ test("model+credential remains the deployed decision source when no command is d
     assert.equal(JSON.parse(requestBody.messages[1].content).head_sha, "model123");
     assert.equal(out.reports[0].action, "wait");
     assert.equal(out.reports[0].reason, "model decided");
-    assert.equal(out.reports[0].decision_adapter, "model_credential");
+    assert.equal(out.reports[0].decision_source, "model_credential");
   } finally {
     globalThis.fetch = originalFetch;
   }

@@ -84,6 +84,14 @@ const STATE_LOCK_RETRY_MS = 200;
 const STATE_LOCK_STALE_MS = 10 * 60_000;
 const STATE_LOCK_HEARTBEAT_MS = 60_000;
 
+// Persisted Tick observability (ADR-0009): the per-PR Tick history is bounded
+// so an idle watched repo cannot grow the state file forever, and the
+// in-flight marker heartbeats so a projection can rule a crashed Tick dead
+// (see tickInFlight).
+const TICK_HISTORY_MAX = 20;
+const TICK_IN_FLIGHT_HEARTBEAT_MS = 60_000;
+const TICK_IN_FLIGHT_STALE_MS = 10 * 60_000;
+
 const H = (h) => h * 3600_000;
 const JSON_REPORT_ENV_VALUES = new Set(["1", "true", "json", "jsonl"]);
 
@@ -348,6 +356,84 @@ function releaseStateLock(lock) {
   } catch {
     // already closed
   }
+}
+
+// ---------------------------------------------------------------------------
+// persisted in-flight Tick marker (observability, ADR-0009)
+// ---------------------------------------------------------------------------
+
+/**
+ * The run-level in-flight marker written before a Tick starts and deleted on
+ * a graceful exit. The persisted state gained one top-level field for it:
+ *
+ *   tick_in_flight: {
+ *     pid:          number   — the Tick process id
+ *     token:        string   — random per Tick; internal, for safe clearing
+ *     started_at:   ISO-8601 — when this Tick started
+ *     heartbeat_at: ISO-8601 — refreshed every TICK_IN_FLIGHT_HEARTBEAT_MS
+ *   }
+ *
+ * A reader decides liveness from disk alone with tickInFlight(): a marker
+ * whose pid is gone or whose heartbeat is stale is not running, so a Tick
+ * that crashed mid-run is never read as in flight forever. DRY_RUN never
+ * writes it.
+ */
+function inFlightMarker(token, nowMs = Date.now()) {
+  const ts = new Date(nowMs).toISOString();
+  return { pid: process.pid, token, started_at: ts, heartbeat_at: ts };
+}
+
+function startTickInFlightHeartbeat(owner, { intervalMs = TICK_IN_FLIGHT_HEARTBEAT_MS } = {}) {
+  const timer = setInterval(() => {
+    try {
+      const state = loadState();
+      if (state.tick_in_flight?.token !== owner.token) return;
+      state.tick_in_flight.heartbeat_at = new Date().toISOString();
+      saveState(state);
+    } catch {
+      // best effort: the marker is advisory and must never break the Tick
+    }
+  }, intervalMs);
+  timer.unref?.();
+  return timer;
+}
+
+/** Remove the in-flight marker only if it still belongs to `owner`; a crash
+ * leaves it behind for tickInFlight() to rule dead. */
+function clearTickInFlight(owner) {
+  try {
+    const state = loadState();
+    if (state.tick_in_flight?.token !== owner?.token) return;
+    delete state.tick_in_flight;
+    saveState(state);
+  } catch {
+    // best effort
+  }
+}
+
+/**
+ * Read the persisted in-flight marker and decide whether its Tick can still
+ * be running. Returns null when no Tick is marked, otherwise the readable
+ * fields plus `alive`:
+ *   alive: true  — the recorded pid is alive and its heartbeat is fresh
+ *   alive: false — the owner is gone (crash/kill) or the heartbeat is stale
+ *                  (pid reuse); a projection must not read it as running.
+ */
+export function tickInFlight(state, {
+  nowMs = Date.now(),
+  isAliveFn = isPidAlive,
+  staleMs = TICK_IN_FLIGHT_STALE_MS,
+} = {}) {
+  const marker = state?.tick_in_flight;
+  if (!marker || typeof marker !== "object") return null;
+  const heartbeatMs = toMs(marker.heartbeat_at);
+  const heartbeatFresh = heartbeatMs !== null && nowMs - heartbeatMs <= staleMs;
+  return {
+    pid: marker.pid ?? null,
+    started_at: marker.started_at ?? null,
+    heartbeat_at: marker.heartbeat_at ?? null,
+    alive: isAliveFn(Number(marker.pid)) && heartbeatFresh,
+  };
 }
 
 async function postComment(repo, num, body, { dryRun = DRY_RUN, runGhFn = runGh, dryRunLogs = null } = {}) {
@@ -895,12 +981,12 @@ function buildPrReport({
   action,
   reason,
   reused = false,
-  decisionAdapter = null,
   githubActionPosted = false,
   pingedAtMs = null,
   reviewFixResponseSig = null,
   ownerNotifications = [],
   fetchFailed = false,
+  decisionSource = null,
   nowMs,
 }) {
   return {
@@ -911,8 +997,8 @@ function buildPrReport({
     head_sha: ctx?.headSha ?? null,
     action,
     reason,
+    ...(decisionSource ? { decision_source: decisionSource } : {}),
     reused_cached_decision: reused,
-    decision_adapter: decisionAdapter,
     github_action_posted: githubActionPosted,
     next_check_at: ctx
       ? computeNextCheckAt({ ctx, stateEntry, action, pingedAtMs, reviewFixResponseSig, nowMs })
@@ -956,7 +1042,6 @@ function buildTerminalPrReport({
     action,
     reason,
     reused_cached_decision: false,
-    decision_adapter: null,
     github_action_posted: false,
     next_check_at: null,
     owner_notifications: [],
@@ -1005,7 +1090,7 @@ export async function runMonitorOnce({
   // One resolution per Tick, consumed by every PR's decide Stage. An
   // injected llmDecider (embedders, tests) stands in for the built-in
   // model+credential adapter and bypasses environment resolution.
-  const decisionSource = llmDecider
+  const resolvedSource = llmDecider
     ? { adapter: "model_credential", decider: llmDecider }
     : resolveDecisionSource();
 
@@ -1015,9 +1100,50 @@ export async function runMonitorOnce({
   let githubActionsTaken = 0;
   let scopeFetchFailures = 0;
   const ownerNotifications = [];
+
+  // --- Persisted per-PR observability state (ADR-0009, ticket #107) --------
+  // The per-PR state entry keeps its watchdog bookkeeping fields and gains
+  // exactly two observability fields, written here so the API (#110) can
+  // project a Flow from disk alone:
+  //
+  //   next_check_at  ISO-8601 string | null — the deadline the next Tick is
+  //                  worth its cost, exactly as the report carries it. null
+  //                  means quiescent: nothing is scheduled, only a Delivery
+  //                  should wake the Flow. Always overwritten, so a decision
+  //                  that disarms the Expectation clears the persisted one.
+  //
+  //   tick_history   Oldest-first array of the most recent Tick outcomes,
+  //                  capped at TICK_HISTORY_MAX (newest kept). Each record:
+  //                    ts               ISO-8601, the Tick's clock
+  //                    action           the report's action
+  //                    reason           the report's reason
+  //                    terminal         "done" | "needs-human" | "skipped" | null
+  //                    decision_source  optional; only when the report carries
+  //                                     one (the adapter that decided, #106)
+  //
+  const persistReportOutcome = (report) => {
+    if (report?.type !== "pr" || !report.repo || !Number.isInteger(report.pr)) return;
+    const skey = `${report.repo}#${report.pr}`;
+    const entry = { ...(nextState[skey] || {}) };
+    entry.next_check_at = report.next_check_at ?? null;
+    const history = Array.isArray(entry.tick_history) ? entry.tick_history : [];
+    entry.tick_history = [
+      ...history,
+      {
+        ts: new Date(nowMs).toISOString(),
+        action: report.action,
+        reason: report.reason,
+        terminal: report.terminal ?? null,
+        ...(report.decision_source ? { decision_source: report.decision_source } : {}),
+      },
+    ].slice(-TICK_HISTORY_MAX);
+    nextState[skey] = entry;
+  };
+
   const pushReport = (report) => {
     reports.push(report);
     ownerNotifications.push(...(report.owner_notifications || []));
+    persistReportOutcome(report);
   };
 
   // Collect open PRs from every watched repo. A failure on one repo must
@@ -1164,8 +1290,8 @@ export async function runMonitorOnce({
         rebaseMaxPings: REBASE_MAX_PINGS,
         rebaseStaleRetryHours: REBASE_STALE_RETRY_HOURS,
         llmContext: decisionCtx,
-        llmDecider: decisionSource.decider,
-        decisionAdapter: decisionSource.adapter,
+        llmDecider: resolvedSource.decider,
+        decisionSource: resolvedSource.adapter,
       });
       Object.assign(st, decided.stateEntry);
       for (const note of decided.notifications || []) recordOwnerNote(note);
@@ -1206,11 +1332,11 @@ export async function runMonitorOnce({
         action: finalAction,
         reason: finalReason,
         reused: decided.reused,
-        decisionAdapter: decided.adapter ?? null,
         githubActionPosted,
         pingedAtMs,
         reviewFixResponseSig,
         ownerNotifications: prOwnerNotes,
+        decisionSource: decided.decision_source ?? null,
         nowMs,
         ...overrides,
       });
@@ -1405,9 +1531,18 @@ async function main() {
   }
 
   let lock = null;
+  let heartbeat = null;
   try {
     if (!DRY_RUN) lock = await acquireStateLock();
     const state = loadState();
+    if (!DRY_RUN) {
+      // Mark the Tick in flight before any work starts, so a projection that
+      // reads the state file while it runs sees "running"; a crash leaves the
+      // marker behind for tickInFlight() to rule dead.
+      state.tick_in_flight = inFlightMarker(lock.owner.token);
+      saveState(state);
+      heartbeat = startTickInFlightHeartbeat(lock.owner);
+    }
     const out = await runMonitorOnce({
       nowMs: Date.now(),
       repos,
@@ -1419,12 +1554,21 @@ async function main() {
 
     // Never persist in dry-run — a dry run must not poison the real
     // throttle/cache bookkeeping.
-    if (!DRY_RUN) saveState(out.state);
+    if (!DRY_RUN) {
+      clearInterval(heartbeat);
+      heartbeat = null;
+      delete out.state.tick_in_flight;
+      saveState(out.state);
+    }
 
     // Output: only emit human-facing notifications (empty otherwise ->
     // no_agent cron stays silent so we don't spam the owner).
     if (out.output) console.log(out.output);
   } finally {
+    if (!DRY_RUN) {
+      if (heartbeat) clearInterval(heartbeat);
+      clearTickInFlight(lock?.owner);
+    }
     releaseStateLock(lock);
   }
 }

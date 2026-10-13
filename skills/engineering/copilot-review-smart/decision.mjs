@@ -185,7 +185,7 @@ export async function decideWithLlm({
   rebaseStaleRetryHours,
   llmContext,
   llmDecider,
-  decisionAdapter = null,
+  decisionSource = null,
 }) {
   const deterministic = decideDeterministic({
     ctx,
@@ -214,7 +214,7 @@ export async function decideWithLlm({
         action: "wait",
         reason: e.message,
         reused: false,
-        adapter: "none",
+        decision_source: "none",
         stateEntry: st,
         notifications,
       };
@@ -236,7 +236,7 @@ export async function decideWithLlm({
         action: "wait",
         reason: st._reason,
         reused: false,
-        adapter: decisionAdapter,
+        decision_source: decisionSource,
         stateEntry: st,
         notifications,
       };
@@ -260,7 +260,7 @@ export async function decideWithLlm({
       action: "llm_failed",
       reason: st._reason,
       reused: false,
-      adapter: decisionAdapter,
+      decision_source: decisionSource,
       stateEntry: st,
       notifications,
     };
@@ -277,7 +277,7 @@ export async function decideWithLlm({
     action,
     reason,
     reused: false,
-    adapter: decisionAdapter,
+    decision_source: decisionSource,
     stateEntry: st,
     notifications,
   };
