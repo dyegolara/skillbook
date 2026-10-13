@@ -33,6 +33,8 @@
  */
 import { pathToFileURL } from "node:url";
 import {
+  createLabeledSession,
+  failureLines,
   isConnectionError,
   parseIdFlags,
   reachApi,
@@ -57,42 +59,28 @@ export const GRILL_PIN = { model: "opencode-go/glm-5.3", effort: "max" };
  */
 export async function createGrillSession({ spec, prompt, ids, worktreePath, apiBase, fetchImpl = fetch }) {
   const label = stageLabel(spec, "grill-with-spec");
-  const created = await requestJson(fetchImpl, `${apiBase}/agent/sessions`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ adapterId: "opencode", worktreePath, ...ids }),
+  return createLabeledSession({
+    label,
+    prompt,
+    ids,
+    worktreePath,
+    apiBase,
+    fetchImpl,
+    // The grill's route-specific pre-send step: pin model and effort. The
+    // wake pins nothing by decision — it is a notice on the task, not a stage.
+    beforeSend: async (sessionId) => {
+      for (const [configId, value] of [
+        ["model", GRILL_PIN.model],
+        ["effort", GRILL_PIN.effort],
+      ]) {
+        await requestJson(fetchImpl, `${apiBase}/agent/session-config-option`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ sessionId, configId, value }),
+        });
+      }
+    },
   });
-  const sessionId = created?.sessionId;
-  if (!sessionId) throw new Error("Kepler agent session start returned no sessionId");
-
-  try {
-    await requestJson(fetchImpl, `${apiBase}/agent/rename-session`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ sessionId, name: label }),
-    });
-    for (const [configId, value] of [
-      ["model", GRILL_PIN.model],
-      ["effort", GRILL_PIN.effort],
-    ]) {
-      await requestJson(fetchImpl, `${apiBase}/agent/session-config-option`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ sessionId, configId, value }),
-      });
-    }
-    await requestJson(fetchImpl, `${apiBase}/agent/send-prompt`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ sessionId, prompt }),
-    });
-  } catch (cause) {
-    const error = cause instanceof Error ? cause : new Error(String(cause));
-    error.sessionId = sessionId;
-    throw error;
-  }
-
-  return { sessionId, label };
 }
 
 export async function openGrillSession({ spec, prompt, flags, deps = {} }) {
@@ -125,15 +113,6 @@ export function buildPauseLines({ label, prompt, reason }) {
   ];
 }
 
-/** Hard-error report: the error, plus the created session's id when there is one. */
-export function failureLines(error) {
-  const lines = [`open-grill-session: ${error.message}`];
-  if (error.sessionId) {
-    lines.push(`open-grill-session: session ${error.sessionId} was already created — terminate it or reuse it`);
-  }
-  return lines;
-}
-
 export async function main(argv = process.argv.slice(2), deps = {}) {
   const [spec, prompt] = argv;
   if (spec === undefined || prompt === undefined) {
@@ -156,7 +135,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
-    for (const line of failureLines(error)) console.error(line);
+    for (const line of failureLines("open-grill-session", error)) console.error(line);
     process.exitCode = 1;
   });
 }

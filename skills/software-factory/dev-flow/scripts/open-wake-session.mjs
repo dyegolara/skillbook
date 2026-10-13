@@ -35,10 +35,11 @@
  */
 import { pathToFileURL } from "node:url";
 import {
+  createLabeledSession,
+  failureLines,
   isConnectionError,
   parseIdFlags,
   reachApi,
-  requestJson,
   stageLabel,
   stagePin,
 } from "./launch-stage.mjs";
@@ -71,33 +72,14 @@ export function buildWakePrompt({ stage, spec, resumeCommand }) {
  * @param {{ stage: string, spec: number|string, resumeCommand: string, ids: TaskIds, worktreePath: string, apiBase: string, fetchImpl?: typeof fetch }} options
  */
 export async function createWakeSession({ stage, spec, resumeCommand, ids, worktreePath, apiBase, fetchImpl = fetch }) {
-  const label = wakeLabel(spec, stage);
-  const created = await requestJson(fetchImpl, `${apiBase}/agent/sessions`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ adapterId: "opencode", worktreePath, ...ids }),
+  return createLabeledSession({
+    label: wakeLabel(spec, stage),
+    prompt: buildWakePrompt({ stage, spec, resumeCommand }),
+    ids,
+    worktreePath,
+    apiBase,
+    fetchImpl,
   });
-  const sessionId = created?.sessionId;
-  if (!sessionId) throw new Error("Kepler agent session start returned no sessionId");
-
-  try {
-    await requestJson(fetchImpl, `${apiBase}/agent/rename-session`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ sessionId, name: label }),
-    });
-    await requestJson(fetchImpl, `${apiBase}/agent/send-prompt`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ sessionId, prompt: buildWakePrompt({ stage, spec, resumeCommand }) }),
-    });
-  } catch (cause) {
-    const error = cause instanceof Error ? cause : new Error(String(cause));
-    error.sessionId = sessionId;
-    throw error;
-  }
-
-  return { sessionId, label };
 }
 
 export async function openWakeSession({ stage, spec, resumeCommand, flags, deps = {} }) {
@@ -151,18 +133,9 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
   return result;
 }
 
-/** Hard-error report: the error, plus the created session's id when there is one. */
-export function failureLines(error) {
-  const lines = [`open-wake-session: ${error.message}`];
-  if (error.sessionId) {
-    lines.push(`open-wake-session: session ${error.sessionId} was already created — terminate it or reuse it`);
-  }
-  return lines;
-}
-
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main().catch((error) => {
-    for (const line of failureLines(error)) console.error(line);
+    for (const line of failureLines("open-wake-session", error)) console.error(line);
     process.exitCode = 1;
   });
 }

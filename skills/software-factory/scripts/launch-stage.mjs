@@ -454,6 +454,73 @@ export async function reachApi({ apiBase, dataDir, fetchImpl = fetch, worktreePa
 }
 
 /**
+ * The shared hard-error report for the two session routes (`open-grill-session`
+ * and `open-wake-session`): the route's tool name and the error's message,
+ * plus the created session's id when the failure happened after the session
+ * existed — so nothing is lost silently. The tool name is the routes' one
+ * difference; the shape lives here once.
+ */
+export function failureLines(toolName, error) {
+  const lines = [`${toolName}: ${error.message}`];
+  if (error.sessionId) {
+    lines.push(`${toolName}: session ${error.sessionId} was already created — terminate it or reuse it`);
+  }
+  return lines;
+}
+
+/**
+ * The shared session-create orchestration for the two session routes
+ * (`createGrillSession` and `createWakeSession`): create an opencode session on
+ * the task, rename it to the route's label, run the route's optional pre-send
+ * step, then send the route's prompt. The route-specific pieces are exactly
+ * the label, the prompt and `beforeSend` — the routes keep those in their own
+ * modules (ADR-0006's route separation). A create response without a
+ * sessionId is a hard error before any session exists; every failure after
+ * creation carries the session's id (`error.sessionId`) and is a hard error,
+ * so a caller must never fall back once a session exists.
+ *
+ * @param {{ label: string, prompt: string, beforeSend?: (sessionId: string) => Promise<void>, ids: TaskIds, worktreePath: string, apiBase: string, fetchImpl?: typeof fetch }} options
+ * @returns {Promise<{ sessionId: string, label: string }>}
+ */
+export async function createLabeledSession({
+  label,
+  prompt,
+  beforeSend,
+  ids,
+  worktreePath,
+  apiBase,
+  fetchImpl = fetch,
+}) {
+  const created = await requestJson(fetchImpl, `${apiBase}/agent/sessions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ adapterId: "opencode", worktreePath, ...ids }),
+  });
+  const sessionId = created?.sessionId;
+  if (!sessionId) throw new Error("Kepler agent session start returned no sessionId");
+
+  try {
+    await requestJson(fetchImpl, `${apiBase}/agent/rename-session`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId, name: label }),
+    });
+    if (beforeSend) await beforeSend(sessionId);
+    await requestJson(fetchImpl, `${apiBase}/agent/send-prompt`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId, prompt }),
+    });
+  } catch (cause) {
+    const error = cause instanceof Error ? cause : new Error(String(cause));
+    error.sessionId = sessionId;
+    throw error;
+  }
+
+  return { sessionId, label };
+}
+
+/**
  * The reachable-API path: start the labeled terminal with the resolved ids,
  * then inject the pinned command. Any failure here is a hard error — once
  * `POST /terminal/start` may have created a terminal, the caller must never
