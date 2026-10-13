@@ -66,6 +66,48 @@ decision-forcing findings. The chain resumes when grill-with-spec hands
 off to dev-flow.
 _Avoid_: loop stop, halt.
 
+**Thin pointers**:
+The pointer-only stage launch argument —
+`launch-stage.mjs <stage> <spec> '<thin pointers>'`. Context travels as
+pointers to durable artifacts — the spec issue, tickets, ADRs, `GLOSSARY.md`,
+the review report — and to the handoff doc, never as conversation.
+_Avoid_: context dump, prompt payload.
+
+**Fresh form**:
+`grill-with-spec`'s from-scratch form: grill the design, `to-spec` and
+publish the spec, then hand off to `dev-flow`. The fresh form is the run that
+bootstraps the repo/worktree/task ids, so its stage launch passes all three
+as explicit `--repo-id/--worktree-id/--task-id` flags.
+_Avoid_: new chain, full form.
+
+**Re-entry form**:
+The re-entry form is `grill-with-spec`'s decision-forcing form, entered from
+`code-review-loop`: grill the decision, write new ADRs, refine the original
+spec's scope in comments — no `to-spec`, no new spec — then hand off to
+`dev-flow`. Its stage launch anchors like every mid-chain launch: no id flags.
+_Avoid_: resume form, decision form.
+
+**Wake**:
+A wake is an unread session on the task carrying the exhausted stage's exact
+resume command, actuated by the retry wrapper. A notice on the task, not a
+stage: it pins no model or effort.
+_Avoid_: alert, notification (the wake is a session on the task, not a ping).
+
+**Verified-inject**:
+The helper's post-injection confirmation that the retry wrapper started:
+verified-inject polls the terminal buffer for the wrapper sentinel
+(`CHAIN-STAGE-START: chain #<spec> <stage>`) on its own line, one relaunch on
+a wedge, hard errors on every other failure.
+_Avoid_: health check, smoke test.
+
+**Wedge**:
+An injected stage command the PTY echoes but never executes — the sentinel
+wait times out. A wedge triggers the bounded recovery: close the terminal,
+relaunch it once with the same ids, worktree and label, and inject the same
+input.
+_Avoid_: hang, stall (a wedge is the sentinel-timeout signal, not any slow
+stage).
+
 ### pstack pack
 
 **Ported skill**:
