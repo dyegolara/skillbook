@@ -12,20 +12,27 @@
   chain-labeled anchor preference, explicit id flags for fresh runs,
   connection-level-only `nohup` fallback), and `open-grill-session.mjs`
   actuates the decision-forcing pause by opening and pinning a fresh
-  grilling session on the task. grill-with-spec keeps a live
-  `chain #<spec>: status` terminal (a plain bash loop refreshed every
-  30 seconds).
+  grilling session on the task. The injected command runs under a retry
+  wrapper around the pinned agent command — 5 attempts with exponential
+  backoff (~10-minute window) — and verified-inject polls the terminal
+  buffer for the wrapper's sentinel, closing and relaunching a wedged
+  terminal once; on exhaustion the wrapper leaves a FAILED marker (stage,
+  spec, the exact resume command) and actuates a sibling wake helper,
+  `open-wake-session.mjs`, an unread notice session on the task carrying
+  that resume command. grill-with-spec keeps a live `chain #<spec>: status`
+  terminal (a plain bash loop refreshed every 30 seconds).
 - Add the Matt Pocock pack as referenced skills (published from skills.sh):
   one install command in the book's skills:install script, two
   published-channel checks in the publishing verify, and referenced-skills
   rows in the book's tables.
 - Add verify:software-factory, the pack-contract check for chain frontmatter
   and model pins, plugin registration, table rows, and dependency references,
-  wired into npm run verify. It also checks that both pack helpers exist and
-  are referenced, that both pin tables match their records, that every launch
-  snippet carries the exact `<stage> <spec> '<thin pointers>'` arity, and that
-  every spawn snippet carries an explicit --model — checked separately from
-  the launch snippets.
+  wired into npm run verify. It also checks that the three packaged helpers
+  (`launch-stage.mjs`, `open-grill-session.mjs`, and `open-wake-session.mjs`,
+  the last with its own suite) exist and are referenced, that both pin tables
+  match their records, that every launch snippet carries the exact
+  `<stage> <spec> '<thin pointers>'` arity, and that every spawn snippet
+  carries an explicit --model — checked separately from the launch snippets.
 - Document the Kepler local API the helpers wrap in the pack's
   `docs/kepler-api.md`: verified terminal and agent endpoints, their
   request/response shapes, and the probe recipe that settles a new endpoint.
