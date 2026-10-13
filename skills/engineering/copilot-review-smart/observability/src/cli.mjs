@@ -1,4 +1,5 @@
 import { createObservabilityServer } from "./server.mjs";
+import { pathToFileURL } from "node:url";
 import {
   DEFAULT_HOST,
   DEFAULT_PORT,
@@ -121,4 +122,13 @@ export async function main(argv = process.argv.slice(2), { env = process.env } =
   };
   process.once("SIGINT", shutdown);
   process.once("SIGTERM", shutdown);
+}
+
+// Running this module directly (the package's `npm start`) is the same
+// command as the root shim; importing it for tests must do nothing.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(`⚠️ observability server crashed: ${error?.stack || error}`);
+    process.exitCode = 1;
+  });
 }

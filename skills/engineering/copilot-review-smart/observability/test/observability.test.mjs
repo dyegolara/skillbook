@@ -164,6 +164,14 @@ function firstLine(stream, predicate, timeoutMs = 10_000) {
   });
 }
 
+/** Stop a spawned CLI whether it is still running or exited early. */
+async function reapChild(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const exited = once(child, "exit").catch(() => {});
+  child.kill("SIGTERM");
+  await exited;
+}
+
 // ---------------------------------------------------------------------------
 // GET /health — the Listener's health shape, driven by the pid file
 // ---------------------------------------------------------------------------
@@ -561,6 +569,47 @@ test("the observability package never imports the watchdog's writer script", () 
 
 const SHIM = new URL("../../pr_monitor_observability.mjs", import.meta.url).pathname;
 
+/** The entry the package's own script names, so the suite fails if the
+ * documented `npm start` is a dead script. */
+function packageStartScript() {
+  const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const command = pkg.scripts?.start;
+  assert.ok(command, "package.json must define a start script");
+  const match = /^node\s+(.+)$/.exec(command);
+  assert.ok(match, `the start script must run a Node entry: ${command}`);
+  return new URL(`../${match[1]}`, import.meta.url).pathname;
+}
+
+test("the package's start script runs the observability server", async () => {
+  const fixture = new Fixture({ pid: null });
+  const child = spawn(
+    process.execPath,
+    [
+      packageStartScript(),
+      "--port",
+      "0",
+      "--state",
+      fixture.statePath,
+      "--listener-state",
+      fixture.listenerStatePath,
+      "--pid",
+      fixture.pidPath,
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] }
+  );
+  try {
+    const line = await firstLine(child.stdout, (l) => l.includes("observability listening"));
+    const url = line.match(/http:\/\/127\.0\.0\.1:\d+/)?.[0];
+    assert.ok(url, `no loopback URL in: ${line}`);
+    const response = await fetch(`${url}/health`);
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).status, "absent");
+  } finally {
+    await reapChild(child);
+    await fixture.stop();
+  }
+});
+
 test("the CLI starts the server with one command and honours port and state paths", async () => {
   const fixture = new Fixture({ pid: null });
   const child = spawn(
@@ -589,8 +638,7 @@ test("the CLI starts the server with one command and honours port and state path
     assert.deepEqual(body.tracked_flows, ["acme/gadgets#3", "acme/widgets#11", "acme/widgets#7", "acme/widgets#9"]);
     assert.deepEqual(body.pending_expectations, ["acme/widgets#7", "acme/widgets#9"]);
   } finally {
-    child.kill("SIGTERM");
-    await once(child, "exit").catch(() => {});
+    await reapChild(child);
     await fixture.stop();
   }
 });
