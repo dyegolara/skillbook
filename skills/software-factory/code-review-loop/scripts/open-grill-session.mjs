@@ -31,14 +31,12 @@
  *   node skills/software-factory/scripts/open-grill-session.mjs <spec> '<re-entry prompt>'
  *     [--repo-id <id> --worktree-id <id> --task-id <id>]
  */
-import { pathToFileURL } from "node:url";
 import {
   createLabeledSession,
-  failureLines,
-  isConnectionError,
   parseIdFlags,
-  reachApi,
   requestJson,
+  runSessionCli,
+  runSessionHelper,
   stageLabel,
 } from "./launch-stage.mjs";
 
@@ -49,16 +47,14 @@ import {
 export const GRILL_PIN = { model: "opencode-go/glm-5.3", effort: "max" };
 
 /**
- * The reachable-API path: create the opencode session on the task, rename it,
- * pin model and effort, then send the re-entry prompt verbatim. A
- * connection-level failure on the create call leaves no session id and may
- * still fall back to the pause; every failure after the session exists
- * carries its id and is a hard error.
+ * The grill's route-specific create step: the shared create orchestration
+ * plus the grill's pre-send pin step — model and effort per `GRILL_PIN`. The
+ * pin lives in the grill's own module (ADR-0006: the wake pins nothing). A
+ * failure here carries the session's id and is a hard error.
  *
- * @param {{ spec: number|string, prompt: string, ids: TaskIds, worktreePath: string, apiBase: string, fetchImpl?: typeof fetch }} options
+ * @param {{ label: string, prompt: string, ids: TaskIds, worktreePath: string, apiBase: string, fetchImpl?: typeof fetch }} options
  */
-export async function createGrillSession({ spec, prompt, ids, worktreePath, apiBase, fetchImpl = fetch }) {
-  const label = stageLabel(spec, "grill-with-spec");
+export async function createGrillSession({ label, prompt, ids, worktreePath, apiBase, fetchImpl = fetch }) {
   return createLabeledSession({
     label,
     prompt,
@@ -66,8 +62,6 @@ export async function createGrillSession({ spec, prompt, ids, worktreePath, apiB
     worktreePath,
     apiBase,
     fetchImpl,
-    // The grill's route-specific pre-send step: pin model and effort. The
-    // wake pins nothing by decision — it is a notice on the task, not a stage.
     beforeSend: async (sessionId) => {
       for (const [configId, value] of [
         ["model", GRILL_PIN.model],
@@ -83,25 +77,24 @@ export async function createGrillSession({ spec, prompt, ids, worktreePath, apiB
   });
 }
 
+/**
+ * The grill's route shell: its label, prompt and pin step, handed to the
+ * shared `runSessionHelper`, which owns the reach/create/fallback/emit shape
+ * both session routes share.
+ *
+ * @param {{ spec: number|string, prompt: string, flags?: Object, deps?: Object }} options
+ */
 export async function openGrillSession({ spec, prompt, flags, deps = {} }) {
-  const { fetchImpl = fetch, worktreePath = process.cwd() } = deps;
-  const label = stageLabel(spec, "grill-with-spec"); // a bad spec is a hard error before any fetch
-  const fallback = (error) => ({ path: "pause", label, reason: error.message });
-
-  const reached = await reachApi({ apiBase: deps.apiBase, dataDir: deps.dataDir, fetchImpl, worktreePath, flags });
-  if (!reached.ok) return fallback(reached.error);
-  const { apiBase, ids } = reached;
-
-  let created;
-  try {
-    created = await createGrillSession({ spec, prompt, ids, worktreePath, apiBase, fetchImpl });
-  } catch (error) {
-    // Never fall back once a session exists; failures after creation carry its id.
-    if (isConnectionError(error) && !error.sessionId) return fallback(error);
-    throw error;
-  }
-
-  return { path: "api", ...created };
+  return runSessionHelper({
+    label: stageLabel(spec, "grill-with-spec"), // a bad spec is a hard error before any fetch
+    prompt,
+    flags,
+    deps,
+    fallbackPath: "pause",
+    create: createGrillSession,
+    successLine: (result) => `open-grill-session: opened ${result.label} as Kepler session ${result.sessionId}`,
+    fallbackLines: (result) => buildPauseLines({ label: result.label, prompt, reason: result.reason }),
+  });
 }
 
 /** The manual re-entry route: the pause plus the re-entry prompt, verbatim. */
@@ -120,22 +113,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       "usage: open-grill-session.mjs <spec> '<re-entry prompt>' [--repo-id <id> --worktree-id <id> --task-id <id>]"
     );
   }
-  const flags = parseIdFlags(argv.slice(2));
-  const write = deps.write ?? ((line) => process.stdout.write(`${line}\n`));
-  const result = await openGrillSession({ spec, prompt, flags, deps });
-  if (result.path === "api") {
-    write(`open-grill-session: opened ${result.label} as Kepler session ${result.sessionId}`);
-  } else {
-    for (const line of buildPauseLines({ label: result.label, prompt, reason: result.reason })) {
-      write(line);
-    }
-  }
-  return result;
+  return openGrillSession({ spec, prompt, flags: parseIdFlags(argv.slice(2)), deps });
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch((error) => {
-    for (const line of failureLines("open-grill-session", error)) console.error(line);
-    process.exitCode = 1;
-  });
-}
+runSessionCli({ toolName: "open-grill-session", moduleUrl: import.meta.url, main });

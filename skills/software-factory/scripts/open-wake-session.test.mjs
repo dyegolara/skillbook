@@ -30,15 +30,19 @@ test("the wake prompt carries the stage, the spec and the exact resume command",
   );
 });
 
-test("the wake helper reuses the launch helper's reach-the-API step, create orchestration and failure lines", () => {
+test("the wake-session helper delegates to the shared runSessionHelper and pins nothing", () => {
   const source = readFileSync(new URL("./open-wake-session.mjs", import.meta.url), "utf8");
   assert.match(source, /from\s+"\.\/launch-stage\.mjs"/);
   assert.match(source, /\bparseIdFlags\b/);
-  assert.match(source, /\breachApi\b/);
-  assert.match(source, /\bisConnectionError\b/); // the post-session guard stays local
-  assert.match(source, /\bcreateLabeledSession\b/);
-  assert.match(source, /\bfailureLines\b/);
-  assert.match(source, /failureLines\("open-wake-session",/);
+  assert.match(source, /\brunSessionHelper\b/); // the one shared route shell
+  assert.match(source, /\brunSessionCli\b/); // the one shared CLI boot
+  assert.match(source, /\bcreateLabeledSession\b/); // the route's create step
+  assert.match(source, /\bbuildWakePrompt\b/);
+  assert.match(source, /\bbuildWakeFallbackLines\b/);
+  assert.match(source, /\bstagePin\b/); // the stage guard, not a pin step
+  assert.doesNotMatch(source, /\bsession-config-option\b/); // the wake pins nothing, by decision
+  assert.doesNotMatch(source, /\breachApi\b/); // the shared shell owns the reach step now
+  assert.doesNotMatch(source, /\bisConnectionError\b/); // and the never-fallback guard
   assert.doesNotMatch(source, /\bresolveIds\b/);
   assert.doesNotMatch(source, /\breadKeplerApiBase\b/);
 });

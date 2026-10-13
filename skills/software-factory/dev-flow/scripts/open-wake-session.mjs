@@ -33,18 +33,14 @@
  *   node skills/software-factory/scripts/open-wake-session.mjs <stage> <spec> '<resume command>'
  *     [--repo-id <id> --worktree-id <id> --task-id <id>]
  */
-import { pathToFileURL } from "node:url";
 import {
   createLabeledSession,
-  failureLines,
-  isConnectionError,
   parseIdFlags,
-  reachApi,
+  runSessionCli,
+  runSessionHelper,
   stageLabel,
   stagePin,
 } from "./launch-stage.mjs";
-
-/** @typedef {import("./launch-stage.mjs").TaskIds} TaskIds */
 
 /** The session label: the chain spec plus the failed stage, not another stage's name. */
 export function wakeLabel(spec, stage) {
@@ -63,45 +59,25 @@ export function buildWakePrompt({ stage, spec, resumeCommand }) {
 }
 
 /**
- * The reachable-API path: create the opencode session on the task, rename it,
- * then send the wake prompt verbatim. A connection-level failure on the
- * create call leaves no session id and may still fall back to the printed
- * resume command; every failure after the session exists carries its id and
- * is a hard error.
+ * The wake's route shell: its label and prompt (the no-pin notice semantics —
+ * a plain labeled session, no pre-send step), handed to the shared
+ * `runSessionHelper`. `stagePin` is the stage guard, not a pin step: the wake
+ * is a message on the task, not an agent stage.
  *
- * @param {{ stage: string, spec: number|string, resumeCommand: string, ids: TaskIds, worktreePath: string, apiBase: string, fetchImpl?: typeof fetch }} options
+ * @param {{ stage: string, spec: number|string, resumeCommand: string, flags?: Object, deps?: Object }} options
  */
-export async function createWakeSession({ stage, spec, resumeCommand, ids, worktreePath, apiBase, fetchImpl = fetch }) {
-  return createLabeledSession({
-    label: wakeLabel(spec, stage),
-    prompt: buildWakePrompt({ stage, spec, resumeCommand }),
-    ids,
-    worktreePath,
-    apiBase,
-    fetchImpl,
-  });
-}
-
 export async function openWakeSession({ stage, spec, resumeCommand, flags, deps = {} }) {
-  const { fetchImpl = fetch, worktreePath = process.cwd() } = deps;
   stagePin(stage); // a bad stage is a hard error before any fetch
-  const label = wakeLabel(spec, stage); // a bad spec too
-  const fallback = (error) => ({ path: "fallback", label, reason: error.message, resumeCommand });
-
-  const reached = await reachApi({ apiBase: deps.apiBase, dataDir: deps.dataDir, fetchImpl, worktreePath, flags });
-  if (!reached.ok) return fallback(reached.error);
-  const { apiBase, ids } = reached;
-
-  let created;
-  try {
-    created = await createWakeSession({ stage, spec, resumeCommand, ids, worktreePath, apiBase, fetchImpl });
-  } catch (error) {
-    // Never fall back once a session exists; failures after creation carry its id.
-    if (isConnectionError(error) && !error.sessionId) return fallback(error);
-    throw error;
-  }
-
-  return { path: "api", ...created };
+  return runSessionHelper({
+    label: wakeLabel(spec, stage), // a bad spec too
+    prompt: buildWakePrompt({ stage, spec, resumeCommand }),
+    flags,
+    deps,
+    fallbackExtra: { resumeCommand },
+    create: createLabeledSession,
+    successLine: (result) => `open-wake-session: woke ${result.label} as Kepler session ${result.sessionId}`,
+    fallbackLines: (result) => buildWakeFallbackLines({ reason: result.reason, resumeCommand }),
+  });
 }
 
 /** The terminal fallback: the error, then the resume command so it is never lost. */
@@ -120,22 +96,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
       "usage: open-wake-session.mjs <stage> <spec> '<resume command>' [--repo-id <id> --worktree-id <id> --task-id <id>]"
     );
   }
-  const flags = parseIdFlags(argv.slice(3));
-  const write = deps.write ?? ((line) => process.stdout.write(`${line}\n`));
-  const result = await openWakeSession({ stage, spec, resumeCommand, flags, deps });
-  if (result.path === "api") {
-    write(`open-wake-session: woke ${result.label} as Kepler session ${result.sessionId}`);
-  } else {
-    for (const line of buildWakeFallbackLines({ reason: result.reason, resumeCommand })) {
-      write(line);
-    }
-  }
-  return result;
+  return openWakeSession({ stage, spec, resumeCommand, flags: parseIdFlags(argv.slice(3)), deps });
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  main().catch((error) => {
-    for (const line of failureLines("open-wake-session", error)) console.error(line);
-    process.exitCode = 1;
-  });
-}
+runSessionCli({ toolName: "open-wake-session", moduleUrl: import.meta.url, main });

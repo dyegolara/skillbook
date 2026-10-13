@@ -489,8 +489,8 @@ export function failureLines(toolName, error) {
 }
 
 /**
- * The shared session-create orchestration for the two session routes
- * (`createGrillSession` and `createWakeSession`): create an opencode session on
+ * The shared session-create orchestration for the two session routes (the
+ * grill's pin step and the wake's plain create): create an opencode session on
  * the task, rename it to the route's label, run the route's optional pre-send
  * step, then send the route's prompt. The route-specific pieces are exactly
  * the label, the prompt and `beforeSend` — the routes keep those in their own
@@ -538,6 +538,78 @@ export async function createLabeledSession({
   }
 
   return { sessionId, label };
+}
+
+/**
+ * The shared shell for the two session routes (`open-grill-session` and
+ * `open-wake-session`): reach the agent API, create the route's labeled
+ * session through its own `create` step, emit the route's success line or its
+ * fallback lines, and never fall back once a session exists. The route keeps
+ * its label, prompt, create step, fallback path/extra and line texts (the
+ * route separation of ADR-0006); the twin `openXSession → reachApi → create →
+ * fallback` shape lives here once. Emission goes through `deps.write`, like
+ * the launch path's injection.
+ *
+ * @param {{
+ *   label: string,
+ *   prompt: string,
+ *   create: (context: { label: string, prompt: string, ids: TaskIds, worktreePath: string, apiBase: string, fetchImpl: typeof fetch }) => Promise<{ sessionId: string, label: string }>,
+ *   flags?: IdFlags,
+ *   deps?: Object,
+ *   fallbackPath?: string,
+ *   fallbackExtra?: Object,
+ *   successLine: (result: { label: string, sessionId: string }) => string,
+ *   fallbackLines: (result: { label: string, reason: string }) => string[],
+ * }} options
+ * @returns {Promise<{ path: string, label: string, sessionId?: string, reason?: string }>}
+ */
+export async function runSessionHelper({
+  label,
+  prompt,
+  create,
+  flags,
+  deps = {},
+  fallbackPath = "fallback",
+  fallbackExtra = {},
+  successLine,
+  fallbackLines,
+}) {
+  const { fetchImpl = fetch, worktreePath = process.cwd() } = deps;
+  const write = deps.write ?? ((line) => process.stdout.write(`${line}\n`));
+  const fallback = (error) => ({ path: fallbackPath, label, reason: error.message, ...fallbackExtra });
+  const emit = (result) => {
+    if (result.path === "api") write(successLine(result));
+    else for (const line of fallbackLines(result)) write(line);
+    return result;
+  };
+
+  const reached = await reachApi({ apiBase: deps.apiBase, dataDir: deps.dataDir, fetchImpl, worktreePath, flags });
+  if (!reached.ok) return emit(fallback(reached.error));
+  const { apiBase, ids } = reached;
+
+  try {
+    const created = await create({ label, prompt, ids, worktreePath, apiBase, fetchImpl });
+    return emit({ path: "api", ...created });
+  } catch (error) {
+    // Never fall back once a session exists; failures after creation carry its id.
+    if (isConnectionError(error) && !error.sessionId) return emit(fallback(error));
+    throw error;
+  }
+}
+
+/**
+ * The shared CLI boot for the two session routes: when the route module is the
+ * invoked script, run `main` and report a hard error through `failureLines`,
+ * so the catch shape exists once. `moduleUrl` is the route's own
+ * `import.meta.url` — this module's URL is never the invoked one.
+ */
+export function runSessionCli({ toolName, moduleUrl, main }) {
+  if (process.argv[1] && moduleUrl === pathToFileURL(process.argv[1]).href) {
+    main().catch((error) => {
+      for (const line of failureLines(toolName, error)) console.error(line);
+      process.exitCode = 1;
+    });
+  }
 }
 
 /**

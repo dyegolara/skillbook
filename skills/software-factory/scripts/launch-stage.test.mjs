@@ -6,6 +6,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import {
+  ConnectionError,
   KEPLER_DATA_DIR,
   RETRY_ATTEMPTS,
   RETRY_SLEEPS_SECONDS,
@@ -30,6 +31,7 @@ import {
   reachApi,
   readKeplerApiBase,
   resolveIds,
+  runSessionHelper,
   sentinelSeen,
   shellQuote,
   stageLabel,
@@ -519,6 +521,151 @@ test("createLabeledSession tags every failure after creation with the session id
       return true;
     }
   );
+});
+
+// --- the session routes' shared shell ---
+
+test("runSessionHelper creates through the route's step and emits the route's success line", async () => {
+  const lines = [];
+  const contexts = [];
+  const result = await runSessionHelper({
+    label: "chain #55: grill-with-spec",
+    prompt: "Re-enter the grill for spec #55.",
+    flags: { repoId: "r", worktreeId: "w", taskId: "t" },
+    deps: { apiBase: "http://api.test", worktreePath: "/work/tree", write: (line) => lines.push(line) },
+    successLine: (created) => `open-grill-session: opened ${created.label} as Kepler session ${created.sessionId}`,
+    fallbackLines: () => assert.fail("the fallback must not be emitted on the API path"),
+    create: async (context) => {
+      contexts.push(context);
+      return { sessionId: "sess-1", label: context.label };
+    },
+  });
+
+  assert.deepEqual(result, { path: "api", sessionId: "sess-1", label: "chain #55: grill-with-spec" });
+  assert.deepEqual(lines, ["open-grill-session: opened chain #55: grill-with-spec as Kepler session sess-1"]);
+  assert.deepEqual(contexts, [
+    {
+      label: "chain #55: grill-with-spec",
+      prompt: "Re-enter the grill for spec #55.",
+      ids: { repoId: "r", worktreeId: "w", taskId: "t" },
+      worktreePath: "/work/tree",
+      apiBase: "http://api.test",
+      fetchImpl: fetch,
+    },
+  ]);
+});
+
+test("runSessionHelper falls back on a connection-level failure before any session exists", async () => {
+  const lines = [];
+  const result = await runSessionHelper({
+    label: "chain #55: wake — code-review-loop",
+    prompt: "WAKE NOTICE",
+    fallbackExtra: { resumeCommand: "cd '/work/tree' && node launch-stage.mjs dev-flow 55 'pointers'" },
+    deps: {
+      apiBase: "http://127.0.0.1:1",
+      fetchImpl: async () => {
+        throw new Error("fetch failed: ECONNREFUSED");
+      },
+      worktreePath: "/work/tree",
+      write: (line) => lines.push(line),
+    },
+    successLine: () => assert.fail("the success line must not be emitted on the fallback path"),
+    fallbackLines: (fellBack) => [
+      `open-wake-session: ${fellBack.reason} — wake session not opened`,
+      `open-wake-session: ${fellBack.resumeCommand}`,
+    ],
+    create: async () => assert.fail("a connection-level failure before creation never reaches create"),
+  });
+
+  assert.deepEqual(result, {
+    path: "fallback",
+    label: "chain #55: wake — code-review-loop",
+    reason: "fetch failed: ECONNREFUSED",
+    resumeCommand: "cd '/work/tree' && node launch-stage.mjs dev-flow 55 'pointers'",
+  });
+  assert.deepEqual(lines, [
+    "open-wake-session: fetch failed: ECONNREFUSED — wake session not opened",
+    "open-wake-session: cd '/work/tree' && node launch-stage.mjs dev-flow 55 'pointers'",
+  ]);
+});
+
+test("runSessionHelper falls back when the route's create step fails before any session exists", async () => {
+  const lines = [];
+  const result = await runSessionHelper({
+    label: "chain #55: wake — dev-flow",
+    prompt: "WAKE NOTICE",
+    flags: { repoId: "r", worktreeId: "w", taskId: "t" },
+    deps: { apiBase: "http://api.test", worktreePath: "/work/tree", write: (line) => lines.push(line) },
+    successLine: () => assert.fail("the success line must not be emitted on the fallback path"),
+    fallbackLines: (fellBack) => [`open-wake-session: ${fellBack.reason} — wake session not opened`],
+    create: async () => {
+      throw new ConnectionError("fetch failed: socket hang up");
+    },
+  });
+
+  assert.deepEqual(result, {
+    path: "fallback",
+    label: "chain #55: wake — dev-flow",
+    reason: "fetch failed: socket hang up",
+  });
+  assert.deepEqual(lines, ["open-wake-session: fetch failed: socket hang up — wake session not opened"]);
+});
+
+test("runSessionHelper hard-errors on a non-connection create failure — never a fallback", async () => {
+  const lines = [];
+  await assert.rejects(
+    runSessionHelper({
+      label: "chain #55: grill-with-spec",
+      prompt: "Re-enter the grill for spec #55.",
+      flags: { repoId: "r", worktreeId: "w", taskId: "t" },
+      deps: { apiBase: "http://api.test", worktreePath: "/work/tree", write: (line) => lines.push(line) },
+      successLine: () => assert.fail("the success line must not be emitted"),
+      fallbackLines: () => assert.fail("a reachable API failure never falls back"),
+      create: async () => {
+        throw new Error("POST /agent/sessions -> HTTP 500");
+      },
+    }),
+    /HTTP 500/
+  );
+  assert.deepEqual(lines, []);
+});
+
+test("runSessionHelper never falls back once a session exists — the error carries the session id", async () => {
+  const lines = [];
+  const failure = new ConnectionError("fetch failed: socket hang up");
+  failure.sessionId = "sess-created";
+  await assert.rejects(
+    runSessionHelper({
+      label: "chain #55: grill-with-spec",
+      prompt: "Re-enter the grill for spec #55.",
+      flags: { repoId: "r", worktreeId: "w", taskId: "t" },
+      deps: { apiBase: "http://api.test", worktreePath: "/work/tree", write: (line) => lines.push(line) },
+      successLine: () => assert.fail("the success line must not be emitted"),
+      fallbackLines: () => assert.fail("a failure after creation never falls back"),
+      create: async () => {
+        throw failure;
+      },
+    }),
+    (error) => {
+      assert.equal(error, failure);
+      assert.equal(error.sessionId, "sess-created");
+      return true;
+    }
+  );
+  assert.deepEqual(lines, []);
+});
+
+test("the session routes' shared CLI boot reports a hard error through failureLines", () => {
+  for (const [helper, toolName] of [
+    ["open-grill-session.mjs", "open-grill-session"],
+    ["open-wake-session.mjs", "open-wake-session"],
+  ]) {
+    const result = spawnSync(process.execPath, [fileURLToPath(new URL(`./${helper}`, import.meta.url))], {
+      encoding: "utf8",
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, new RegExp(`^${toolName}: usage: ${toolName}\\.mjs`));
+  }
 });
 
 // --- the API path ---

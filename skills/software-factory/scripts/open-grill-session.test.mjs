@@ -15,15 +15,18 @@ test("the grill pin matches the recorded grill-with-spec pin", () => {
   assert.deepEqual(GRILL_PIN, RECORDED_GRILL_PIN);
 });
 
-test("the grill-session helper reuses the launch helper's reach-the-API step, create orchestration and failure lines", () => {
+test("the grill-session helper delegates to the shared runSessionHelper and keeps its own pin step", () => {
   const source = readFileSync(new URL("./open-grill-session.mjs", import.meta.url), "utf8");
   assert.match(source, /from\s+"\.\/launch-stage\.mjs"/);
   assert.match(source, /\bparseIdFlags\b/);
-  assert.match(source, /\breachApi\b/);
-  assert.match(source, /\bisConnectionError\b/); // the post-session guard stays local
-  assert.match(source, /\bcreateLabeledSession\b/);
-  assert.match(source, /\bfailureLines\b/);
-  assert.match(source, /failureLines\("open-grill-session",/);
+  assert.match(source, /\brunSessionHelper\b/); // the one shared route shell
+  assert.match(source, /\brunSessionCli\b/); // the one shared CLI boot
+  assert.match(source, /\bcreateLabeledSession\b/); // the route's create step
+  assert.match(source, /\bGRILL_PIN\b/);
+  assert.match(source, /\bbeforeSend\b/); // the grill's route-specific pin step
+  assert.match(source, /\bbuildPauseLines\b/);
+  assert.doesNotMatch(source, /\breachApi\b/); // the shared shell owns the reach step now
+  assert.doesNotMatch(source, /\bisConnectionError\b/); // and the never-fallback guard
   assert.doesNotMatch(source, /\bresolveIds\b/);
   assert.doesNotMatch(source, /\breadKeplerApiBase\b/);
 });
