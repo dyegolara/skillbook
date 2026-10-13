@@ -136,10 +136,20 @@ dev-flow stage. The doc carries pointers only: the spec issue, the ADRs,
 `GLOSSARY.md`, the worktree.
 
 Start dev-flow in a new session. It is a pi stage, so launch it through the
-pack helper from the shared worktree, per [ADR-0006](../../../docs/adr/0006-chain-skills-cross-model-handoffs.md):
+pack helper from the shared worktree, per [ADR-0006](../../../docs/adr/0006-chain-skills-cross-model-handoffs.md).
+The helper's bootstrap ids are this grilling session's own Kepler metadata —
+the same `GET /agent/sessions` source [Status terminal](#status-terminal)
+documents, filtered by the worktree. Resolve the triple and pass all three
+flags together after the thin pointers:
 
 ```bash
-node "<skill-dir>/scripts/launch-stage.mjs" dev-flow <spec> 'Run the dev-flow skill on spec issue #<spec> in this worktree: load the dev-flow skill and follow it. Read the handoff doc at <path> first.'
+WORKTREE=$(pwd)
+API="http://$(cat ~/.kepler-server/data/server.host):$(cat ~/.kepler-server/data/server.port)"
+ids=$(curl -s "$API/agent/sessions" | jq -r --arg wt "$WORKTREE" \
+  '.[] | select(.worktreePath == $wt) | "\(.repoId) \(.worktreeId) \(.taskId)"' | head -n1)
+read -r REPO_ID WORKTREE_ID TASK_ID <<<"$ids"
+
+node "<skill-dir>/scripts/launch-stage.mjs" dev-flow <spec> 'Run the dev-flow skill on spec issue #<spec> in this worktree: load the dev-flow skill and follow it. Read the handoff doc at <path> first.' --repo-id "$REPO_ID" --worktree-id "$WORKTREE_ID" --task-id "$TASK_ID"
 ```
 
 ## Re-entry form
@@ -176,8 +186,9 @@ not run `to-spec` and do not write a new spec.
 ### 4. Resume
 
 Call the Skill tool for `handoff` for a fresh dev-flow session, then launch
-dev-flow exactly as in the fresh form. The loop pause ends when this hands off
-to dev-flow.
+dev-flow exactly as in the fresh form — including the explicit
+`--repo-id/--worktree-id/--task-id` flags resolved from this session's own
+Kepler metadata. The loop pause ends when this hands off to dev-flow.
 
 ## Handoff rules
 

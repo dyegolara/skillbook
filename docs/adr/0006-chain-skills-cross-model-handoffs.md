@@ -43,7 +43,12 @@ context is not independent.
   terminal-mechanism review: the spec number is an explicit helper
   argument, the id anchor prefers a chain-labeled terminal but accepts any
   terminal on the worktree, fresh runs bootstrap with explicit id flags,
-  and the fallback is connection-level only.
+  and the fallback is connection-level only. Amended 2026-10-13, after the
+  wave-7 review (ticket #100): fresh launches — and the re-entry form,
+  which launches dev-flow exactly as the fresh form — wire the decided
+  bootstrap flags, whose values come from the grilling session's own Kepler
+  metadata (`GET /agent/sessions` filtered by the worktree);
+  grill-with-spec remains the one stage holding the ids.
 - A stage that fails to run or dies mid-run does not stall the chain
   silently. The injected command is a retry wrapper around the stage's
   pinned agent command — whatever the harness, `pi` is not load-bearing —
