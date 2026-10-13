@@ -47,14 +47,14 @@ on a spec issue.
 5. Launch implement-spec through the pack helper from the shared worktree:
 
    ```bash
-   node "<skill-dir>/scripts/launch-stage.mjs" implement-spec <spec> 'Run the implement-spec skill in this worktree for spec #<n>: load it with the Skill tool as `implement-spec`, or in this pi session read ~/.agents/skills/implement-spec/SKILL.md. Read the handoff doc at <path>. Work the ticket frontier. Run implement-spec through its complete process including its own inline review and the draft PR after the first merge. When it completes, run the handoff skill for code-review-loop, then load code-review-loop and launch it per its chain rules.'
+   node "<skill-dir>/scripts/launch-stage.mjs" implement-spec <spec> 'Run the implement-spec skill in this worktree for spec #<n>: load it with the Skill tool as `implement-spec`, or in this pi session read ~/.agents/skills/implement-spec/SKILL.md. Read the handoff doc at <path>. Work the ticket frontier. Run implement-spec through its complete process including its own inline review and the draft PR after the first merge. When it completes, run the handoff skill for code-review-loop, then launch code-review-loop as a fresh session per its chain rules.'
    ```
 
 6. Report the ticket numbers and the launch line the helper printed, then stop.
    The implement-spec session owns the rest: it runs its complete process in
    this same worktree, including its own inline review and the draft PR after
-   the first merge, and at the end launches `code-review-loop` with a fresh
-   context and pointers only.
+   the first merge, and at the end launches `code-review-loop` as a fresh
+   session with pointers only.
 
 ## Handoff rules
 
