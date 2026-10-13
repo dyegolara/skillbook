@@ -14,12 +14,14 @@ test("the grill pin matches the recorded grill-with-spec pin", () => {
   assert.deepEqual(GRILL_PIN, RECORDED_GRILL_PIN);
 });
 
-test("the grill-session helper reuses the launch helper's id anchor and flags", () => {
+test("the grill-session helper reuses the launch helper's reach-the-API step", () => {
   const source = readFileSync(new URL("./open-grill-session.mjs", import.meta.url), "utf8");
   assert.match(source, /from\s+"\.\/launch-stage\.mjs"/);
   assert.match(source, /\bparseIdFlags\b/);
-  assert.match(source, /\bresolveIds\b/);
-  assert.match(source, /\bisConnectionError\b/);
+  assert.match(source, /\breachApi\b/);
+  assert.match(source, /\bisConnectionError\b/); // the post-session guard stays local
+  assert.doesNotMatch(source, /\bresolveIds\b/);
+  assert.doesNotMatch(source, /\breadKeplerApiBase\b/);
 });
 
 test("the full flow creates, renames, pins model and effort, and sends the prompt verbatim", async () => {
