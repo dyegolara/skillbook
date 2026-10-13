@@ -25,8 +25,9 @@ context is not independent.
   terminal labeled `chain #<spec>: <stage>` with the spec number taken from
   the explicit argument, never parsed from another label, injects the
   stage's pinned command — `pi --print --provider opencode-go --model <pin>
-  --thinking <flag> '<thin pointers>'` — and prints the terminal id. The
-  terminal stays open after the stage exits; its buffer is the stage log.
+  --thinking <flag> '<thin pointers>'` — under the retry wrapper the
+  error-route bullet records, and prints the terminal id. The terminal
+  stays open after the stage exits; its buffer is the stage log.
   The `nohup` fallback fires only on a connection-level failure to the API
   and never after `POST /terminal/start` succeeded — a reachable API never
   silently degrades — and it preserves `error.message` while reporting which

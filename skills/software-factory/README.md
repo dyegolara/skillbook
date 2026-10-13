@@ -52,9 +52,16 @@ Routes out of `code-review-loop`:
   worktree. Each launching skill ships its own standalone helper; the copies
   match the shared sources in `scripts/`, enforced by the pack verifier.
   The helper starts a visible `chain #<spec>: <stage>` Kepler terminal,
-  injects the stage's pinned command and prints the terminal id. The detached
-  `nohup pi` fallback fires only on a connection-level failure to the terminal
-  API and never after `POST /terminal/start` succeeded — a reachable API never
+  injects the stage's pinned command under a retry wrapper and prints the
+  terminal id. The wrapper is harness-agnostic — whatever the harness, `pi` is
+  not load-bearing — and gives the pinned command 5 attempts with exponential
+  backoff (a ~10-minute window). On exhaustion it leaves a loud FAILED marker
+  in the terminal buffer (stage, spec, the exact resume command) and actuates
+  a wake — an unread session on the task carrying that resume command. A
+  launch that never executes is caught by verified-inject, which confirms the
+  wrapper started after injection and recovers. The detached `nohup pi`
+  fallback fires only on a connection-level failure to the terminal API and
+  never after `POST /terminal/start` succeeded — a reachable API never
   silently degrades —
   and it preserves `error.message` while reporting which path it took.
   `grill-with-spec` is the one interactive stage and runs as a Kepler session.
