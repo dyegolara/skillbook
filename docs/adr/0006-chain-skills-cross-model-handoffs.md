@@ -223,7 +223,13 @@ context is not independent.
 - Context travels by pointers, never by conversation: each stage runs the
   `handoff` skill (compacted doc in the OS temp dir) and the next session reads
   durable artifacts — the spec issue, tickets, ADRs, `GLOSSARY.md`, the
-  untracked review report. The git worktree is shared by every stage.
+  untracked review report. The git worktree is shared by every stage. Amended
+  2026-10-13, maintainer decision (seventh, `6153458701`): the work stays on
+  the branch and the PR it started on — no new branches or PRs mid-work
+  unless the maintainer explicitly asks for one; development is forced onto
+  the same branch/PR where the work began. A Fresh start creating the
+  integration branch and its PR is a start, not a fork; every fix ticket,
+  re-entry and wave after it lands there.
 - grill-with-spec ends with `to-spec` and no post-grilling questions (seams
   auto-accepted, documented in the spec). On decision re-entry it takes a
   reduced form — new ADRs plus scope-refining comments on the original spec
