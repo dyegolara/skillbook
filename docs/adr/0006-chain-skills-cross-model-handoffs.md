@@ -64,7 +64,13 @@ context is not independent.
   without a task or spec asks the user for one; the helper's
   no-anchor-no-flags hard error stands as the standalone path. Ticket
   #100's re-entry clause and its in-snippet curl are corrected by the next
-  fix wave. Amended 2026-10-13, in-ticket design (ticket #117, fifth
+  fix wave. Amended 2026-10-13, in-ticket design (ticket #115, fifth
+  decision `6135580212`'s fix-ticket scope item 1): the correction the
+  pending sentence anticipated has landed — the fresh form's step 4
+  passes the §Status echo's triple as the three explicit
+  `--repo-id/--worktree-id/--task-id` flags with no inline curl, and
+  re-entry step 4 anchors with no flags.
+  Amended 2026-10-13, in-ticket design (ticket #117, fifth
   decision `6135580212`'s fix-ticket scope item 3) filling open gap (ii):
   the standalone path resolves ids from the user's answer to the helper's
   explicit flags. The answer names the issue the run acts on — the spec
