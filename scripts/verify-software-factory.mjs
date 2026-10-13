@@ -14,7 +14,7 @@
  *      and the skills:install command;
  *   5. the pack helpers exist and are referenced: every SKILL.md stage
  *      launch goes through launch-stage.mjs with the explicit `<stage> <spec>
- *      '<thin pointers>'` positionals, and grill-with-spec's fresh-form launch
+ *      '<pointers>'` positionals, and grill-with-spec's Fresh start launch
  *      additionally carries the three explicit `--repo-id/--worktree-id/
  *      --task-id` flags (re-entry and mid-chain launches stay unpinned),
  *      code-review-loop's decision-forcing
@@ -251,7 +251,7 @@ function scanShellArgs(text) {
 const LAUNCH_VALUE_FLAGS = new Set(["--repo-id", "--worktree-id", "--task-id"]);
 
 /**
- * The fresh-form launch: the fenced helper invocation whose first positional is
+ * The Fresh start launch: the fenced helper invocation whose first positional is
  * the dev-flow stage — the fresh chain's bootstrap. The token scan keeps a bare
  * mention or an invocation of another stage from matching.
  */
@@ -335,7 +335,7 @@ function checkLaunchSnippets(problems, label, text, skill) {
     if (spawns.length > 0 && !spawns.every((command) => command.includes("--model"))) {
       problems.push(`${label}: spawn snippet lacks an explicit --model`);
     }
-    // The id flags are scoped to grill-with-spec's fresh form (the fifth
+    // The id flags are scoped to grill-with-spec's Fresh start (the fifth
     // decision's fix-ticket scope item 4): its fenced step-4 dev-flow launch
     // passes the triple the status snippet echoed. Mid-chain and re-entry
     // launches anchor on the live terminal instead, and the §Handoff rules
@@ -344,7 +344,7 @@ function checkLaunchSnippets(problems, label, text, skill) {
       for (const flag of LAUNCH_VALUE_FLAGS) {
         if (!block.includes(flag)) {
           problems.push(
-            `${label}: fresh-form launch snippet lacks the explicit ${flag} — pass the status snippet's echoed chain-ids triple`
+            `${label}: Fresh start launch snippet lacks the explicit ${flag} — pass the status snippet's echoed chain-ids triple`
           );
         }
       }
@@ -354,7 +354,7 @@ function checkLaunchSnippets(problems, label, text, skill) {
     for (const count of launchPositionals(segment)) {
       if (count !== 3) {
         problems.push(
-          `${label}: launch snippet invokes ${HELPER_FILE} with ${count} positional(s) — expected <stage> <spec> '<thin pointers>'`
+          `${label}: launch snippet invokes ${HELPER_FILE} with ${count} positional(s) — expected <stage> <spec> '<pointers>'`
         );
       }
     }

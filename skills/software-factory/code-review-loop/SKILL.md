@@ -128,7 +128,7 @@ It points at the review report, the spec issue, the tickets and the PR.
   The helper creates the opencode session on the task, labels it `chain
   #<spec>: grill-with-spec`, pins its model and effort, and sends the re-entry
   prompt — so a fresh grilling session lands `unread` on the maintainer's
-  task. The re-entry prompt carries the thin pointers: the handoff doc path,
+  task. The re-entry prompt carries the pointers: the handoff doc path,
   the review report path, the spec issue and the decision-forcing finding.
   When the helper reports a connection-level failure it prints the pause — the
   manual re-entry route — with those pointers in the prompt; the maintainer
@@ -151,7 +151,7 @@ The chain's rules apply at this stage and every later one:
   ADRs, `GLOSSARY.md`, the review report — never as conversation.
 - Every stage is a new session. No stage inherits this session's context.
 - The pi stages launch through the pack helper from the shared worktree:
-  `node "<skill-dir>/scripts/launch-stage.mjs" <stage> <spec> '<thin pointers>'`.
+  `node "<skill-dir>/scripts/launch-stage.mjs" <stage> <spec> '<pointers>'`.
   The helper starts a visible `chain #<spec>: <stage>` Kepler terminal, injects
   the stage's pinned command under a retry wrapper and prints the terminal id.
   The wrapper is harness-agnostic — whatever the harness, `pi` is not
@@ -159,9 +159,10 @@ The chain's rules apply at this stage and every later one:
   backoff (a ~10-minute window). On exhaustion it leaves a loud FAILED marker
   in the terminal buffer (stage, spec, the exact resume command) and actuates a
   wake — an unread session on the task carrying that resume command. A launch
-  that never executes is caught by verified-inject, which confirms the wrapper
-  started after injection and recovers. The detached `nohup pi` fallback fires
-  only on a connection-level failure to the terminal API and never after
+  that never executes is caught by the helper's post-injection check, which
+  confirms the wrapper started after injection and recovers. The detached
+  `nohup pi` fallback fires only on a connection-level failure to the terminal
+  API and never after
   `POST /terminal/start` succeeded — a reachable API never silently degrades —
   and it preserves `error.message` while reporting which path it took.
 - Every spawned `pi` command — the stage launch and each sub-agent — carries

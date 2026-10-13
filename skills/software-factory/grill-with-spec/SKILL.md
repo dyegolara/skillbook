@@ -30,9 +30,9 @@ A pi stage prints nothing until it finishes, so the chain keeps a live view in
 its own Kepler terminal: `chain #<spec>: status` runs a plain bash loop —
 branch log, fix tickets, chain terminals, failed stages — refreshed every
 30 seconds. The failed-stages check skips the status terminal itself and
-matches the marker as printed, not the injected wrapper's quoted echo of it. The
-fresh form launches it once the spec is published; the re-entry form makes
-sure it is alive when the chain resumes. The check reuses an existing live
+matches the marker as printed, not the injected wrapper's quoted echo of it.
+The Fresh start launches it once the spec is published; Re-entry makes sure
+it is alive when the chain resumes. The check reuses an existing live
 terminal on the worktree and never creates a duplicate.
 
 The repo/worktree/task id triple has one resolution point: this snippet. On a
@@ -42,7 +42,7 @@ from this grilling session's own Kepler metadata — `GET /agent/sessions`
 filtered by the worktree exposes `repoId`, `worktreeId` and `taskId`. A single
 echo prints the triple on one line in a stable order (`CHAIN-IDS <repoId>
 <worktreeId> <taskId>`) before the fresh path attempts `POST /terminal/start`,
-so the fresh form's step 4 can pass the echoed values as the three explicit
+so the Fresh start's step 4 can pass the echoed values as the three explicit
 `--repo-id/--worktree-id/--task-id` flags even if the start fails. With `SPEC`
 set to the spec issue number, run:
 
@@ -68,7 +68,7 @@ fi
 
 # One echo closes both paths: the triple, repoId worktreeId taskId, on one
 # line. It precedes the start attempt, so a failed start still leaves it
-# standing for the fresh form's step 4.
+# standing for the Fresh start's step 4.
 echo "CHAIN-IDS $REPO_ID $WORKTREE_ID $TASK_ID"
 
 if [ -z "$EXISTING" ]; then
@@ -121,7 +121,7 @@ LOOP_BODY
 fi
 ```
 
-## Fresh form
+## Fresh start
 
 ### 1. Grill
 
@@ -159,20 +159,20 @@ pack helper from the shared worktree, per [ADR-0006](../../../docs/adr/0006-chai
 The helper's bootstrap ids are the triple the [Status terminal](#status-terminal)
 snippet echoed in step 3 — `CHAIN-IDS <repoId> <worktreeId> <taskId>` — so
 substitute those echoed values for the placeholders and pass all three flags
-together after the thin pointers:
+together after the pointers:
 
 ```bash
 node "<skill-dir>/scripts/launch-stage.mjs" dev-flow <spec> 'Run the dev-flow skill on spec issue #<spec> in this worktree: load the dev-flow skill and follow it. Read the handoff doc at <path> first.' --repo-id <repoId> --worktree-id <worktreeId> --task-id <taskId>
 ```
 
-## Re-entry form
+## Re-entry
 
 Entered from `code-review-loop` when a decision-forcing finding arrives: the
 fix is not obvious, or the needed decision cannot be derived from the code,
 the task or the spec — or the fix would change one of the project's
 commitments instead of satisfying them (the list in `code-review-loop` §4).
 The chain is paused while you work — the maintainer is the only actor who can
-settle the decision, and this form exists so the decision gets settled before
+settle the decision, and Re-entry exists so the decision gets settled before
 an implementation guesses at it.
 
 The entry prompt carries the review report path, the original spec issue, the
@@ -208,7 +208,7 @@ when this hands off to dev-flow.
 
 ## Handoff rules
 
-Both forms follow the same rules, and so does every later stage:
+Both entries follow the same rules, and so does every later stage:
 
 - Run the `handoff` skill before launching the next stage. It writes the
   compacted doc to the OS temp directory; the next session reads it by pointer.
@@ -216,7 +216,7 @@ Both forms follow the same rules, and so does every later stage:
   ADRs, `GLOSSARY.md`, the review report — never as conversation.
 - Every stage is a new session. No stage inherits this session's context.
 - The pi stages launch through the pack helper from the shared worktree:
-  `node "<skill-dir>/scripts/launch-stage.mjs" <stage> <spec> '<thin pointers>'`.
+  `node "<skill-dir>/scripts/launch-stage.mjs" <stage> <spec> '<pointers>'`.
   The helper starts a visible `chain #<spec>: <stage>` Kepler terminal, injects
   the stage's pinned command under a retry wrapper and prints the terminal id.
   The wrapper is harness-agnostic — whatever the harness, `pi` is not
@@ -224,9 +224,10 @@ Both forms follow the same rules, and so does every later stage:
   backoff (a ~10-minute window). On exhaustion it leaves a loud FAILED marker
   in the terminal buffer (stage, spec, the exact resume command) and actuates a
   wake — an unread session on the task carrying that resume command. A launch
-  that never executes is caught by verified-inject, which confirms the wrapper
-  started after injection and recovers. The detached `nohup pi` fallback fires
-  only on a connection-level failure to the terminal API and never after
+  that never executes is caught by the helper's post-injection check, which
+  confirms the wrapper started after injection and recovers. The detached
+  `nohup pi` fallback fires only on a connection-level failure to the terminal
+  API and never after
   `POST /terminal/start` succeeded — a reachable API never silently degrades —
   and it preserves `error.message` while reporting which path it took.
 - Every spawned `pi` command — the stage launch and each sub-agent — carries

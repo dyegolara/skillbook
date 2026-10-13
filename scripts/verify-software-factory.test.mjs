@@ -115,7 +115,7 @@ const SKILL_LAUNCHES = {
   "create-pr": [],
 };
 
-// The fresh form's decided launch shape: the triple the status snippet echoed
+// The Fresh start's decided launch shape: the triple the status snippet echoed
 // rides the three explicit id flags (the fifth decision, item 2).
 const FRESH_FORM_FLAGS = "--repo-id <repoId> --worktree-id <worktreeId> --task-id <taskId>";
 
@@ -709,7 +709,7 @@ test("rejects an inline launch rule that omits the explicit spec positional", ()
     makeRepo({
       skillOverrides: {
         "dev-flow": {
-          body: "Launch through `node skills/software-factory/scripts/launch-stage.mjs <stage> '<thin pointers>'`.\n",
+          body: "Launch through `node skills/software-factory/scripts/launch-stage.mjs <stage> '<pointers>'`.\n",
         },
       },
     })
@@ -763,7 +763,7 @@ test("accepts the three-position form followed by id flags", () => {
   assert.deepEqual(problems, []);
 });
 
-test("accepts the decided fresh-form launch shape with the echoed id triple", () => {
+test("accepts the decided Fresh start launch shape with the echoed id triple", () => {
   const decided = [
     "Launch dev-flow:",
     "",
@@ -775,7 +775,7 @@ test("accepts the decided fresh-form launch shape with the echoed id triple", ()
   assert.deepEqual(verify(makeRepo({ skillOverrides: { "grill-with-spec": { body: decided } } })), []);
 });
 
-test("rejects a fresh-form launch snippet missing the repo-id flag", () => {
+test("rejects a Fresh start launch snippet missing the repo-id flag", () => {
   const problems = verify(
     makeRepo({
       skillOverrides: {
@@ -786,11 +786,11 @@ test("rejects a fresh-form launch snippet missing the repo-id flag", () => {
     })
   );
   assert.ok(
-    problems.some((problem) => problem.includes("fresh-form launch snippet lacks the explicit --repo-id"))
+    problems.some((problem) => problem.includes("Fresh start launch snippet lacks the explicit --repo-id"))
   );
 });
 
-test("rejects a fresh-form launch snippet missing the worktree-id flag", () => {
+test("rejects a Fresh start launch snippet missing the worktree-id flag", () => {
   const problems = verify(
     makeRepo({
       skillOverrides: {
@@ -802,12 +802,12 @@ test("rejects a fresh-form launch snippet missing the worktree-id flag", () => {
   );
   assert.ok(
     problems.some((problem) =>
-      problem.includes("fresh-form launch snippet lacks the explicit --worktree-id")
+      problem.includes("Fresh start launch snippet lacks the explicit --worktree-id")
     )
   );
 });
 
-test("rejects a fresh-form launch snippet missing the task-id flag", () => {
+test("rejects a Fresh start launch snippet missing the task-id flag", () => {
   const problems = verify(
     makeRepo({
       skillOverrides: {
@@ -818,7 +818,7 @@ test("rejects a fresh-form launch snippet missing the task-id flag", () => {
     })
   );
   assert.ok(
-    problems.some((problem) => problem.includes("fresh-form launch snippet lacks the explicit --task-id"))
+    problems.some((problem) => problem.includes("Fresh start launch snippet lacks the explicit --task-id"))
   );
 });
 

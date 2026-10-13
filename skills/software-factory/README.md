@@ -47,7 +47,7 @@ Routes out of `code-review-loop`:
   The reviewer in particular sees only pointers, never the implementer's
   reasoning.
 - The pi stages launch through the pack helper from the shared worktree:
-  `node "<skill-dir>/scripts/launch-stage.mjs" <stage> <spec> '<thin pointers>'`.
+  `node "<skill-dir>/scripts/launch-stage.mjs" <stage> <spec> '<pointers>'`.
   `<skill-dir>` is the absolute directory of the loaded skill, not the shared
   worktree. Each launching skill ships its own standalone helper; the copies
   match the shared sources in `scripts/`, enforced by the pack verifier.
@@ -58,10 +58,10 @@ Routes out of `code-review-loop`:
   backoff (a ~10-minute window). On exhaustion it leaves a loud FAILED marker
   in the terminal buffer (stage, spec, the exact resume command) and actuates
   a wake — an unread session on the task carrying that resume command. A
-  launch that never executes is caught by verified-inject, which confirms the
-  wrapper started after injection and recovers. The detached `nohup pi`
-  fallback fires only on a connection-level failure to the terminal API and
-  never after `POST /terminal/start` succeeded — a reachable API never
+  launch that never executes is caught by the helper's post-injection check,
+  which confirms the wrapper started after injection and recovers. The detached
+  `nohup pi` fallback fires only on a connection-level failure to the terminal
+  API and never after `POST /terminal/start` succeeded — a reachable API never
   silently degrades —
   and it preserves `error.message` while reporting which path it took.
   `grill-with-spec` is the one interactive stage and runs as a Kepler session.
@@ -86,7 +86,7 @@ watched in three places:
 - **The live view.** Live progress is the artifacts — commits on the shared
   worktree and the spec's tickets — plus a status terminal
   `chain #<spec>: status`. `grill-with-spec` launches it once the spec is
-  published in the fresh form and makes sure it is alive when the chain
+  published in the Fresh start and makes sure it is alive when the chain
   resumes; the status terminal refreshes every 30 seconds.
 
 ## Runtime availability

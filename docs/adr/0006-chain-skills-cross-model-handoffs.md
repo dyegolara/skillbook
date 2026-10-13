@@ -15,7 +15,7 @@ context is not independent.
   one. The pi stages (dev-flow, implement-spec, code-review-loop, create-pr)
   run inside a visible Kepler terminal, launched from the shared worktree
   with the packaged helper: `node "<skill-dir>/scripts/launch-stage.mjs"
-  <stage> <spec> '<thin pointers>'`. The helper calls Kepler's local
+  <stage> <spec> '<pointers>'`. The helper calls Kepler's local
   terminal API (loopback HTTP, no auth), derives the terminal's
   repo/worktree/task ids from an existing terminal on the same worktree
   (`GET /terminal/list`, preferring a chain-labeled one so the terminal
@@ -25,7 +25,7 @@ context is not independent.
   terminal labeled `chain #<spec>: <stage>` with the spec number taken from
   the explicit argument, never parsed from another label, injects the
   stage's pinned command — `pi --print --provider opencode-go --model <pin>
-  --thinking <flag> '<thin pointers>'` — under the retry wrapper the
+  --thinking <flag> '<pointers>'` — under the retry wrapper the
   error-route bullet records, and prints the terminal id. The terminal
   stays open after the stage exits; its buffer is the stage log.
   The `nohup` fallback fires only on a connection-level failure to the API
@@ -44,14 +44,14 @@ context is not independent.
   argument, the id anchor prefers a chain-labeled terminal but accepts any
   terminal on the worktree, fresh runs bootstrap with explicit id flags,
   and the fallback is connection-level only. Amended 2026-10-13, after the
-  wave-7 review (ticket #100): fresh launches — and the re-entry form,
-  which launches dev-flow exactly as the fresh form — wire the decided
+  wave-7 review (ticket #100): fresh launches — and Re-entry,
+  which launches dev-flow exactly as the Fresh start — wire the decided
   bootstrap flags, whose values come from the grilling session's own Kepler
   metadata (`GET /agent/sessions` filtered by the worktree);
   grill-with-spec remains the one stage holding the ids. Amended
   2026-10-13, maintainer decision (fifth, the same review's
   decision-forcing route — this note corrects ticket #100's note above):
-  the explicit id flags are scoped to fresh runs only; the re-entry form's
+  the explicit id flags are scoped to fresh runs only; the Re-entry's
   stage launch anchors like every mid-chain launch — its step 1 guarantees
   the live status terminal that seeds the anchor, and the anchor's
   chain-label preference yields the same triple the session would resolve.
@@ -59,14 +59,14 @@ context is not independent.
   resolution point — its check line extracts the triple from the matched
   terminal's entry on a resume, the grilling session's own metadata
   resolves it on a fresh chain, and a single echo closes both paths — and
-  the fresh form's stage launch passes the echoed triple as the three
+  the Fresh start's stage launch passes the echoed triple as the three
   flags, with no second curl in the launch snippet. Standalone entry
   without a task or spec asks the user for one; the helper's
   no-anchor-no-flags hard error stands as the standalone path. Ticket
   #100's re-entry clause and its in-snippet curl are corrected by the next
   fix wave. Amended 2026-10-13, in-ticket design (ticket #115, fifth
   decision `6135580212`'s fix-ticket scope item 1): the correction the
-  pending sentence anticipated has landed — the fresh form's step 4
+  pending sentence anticipated has landed — the Fresh start's step 4
   passes the §Status echo's triple as the three explicit
   `--repo-id/--worktree-id/--task-id` flags with no inline curl, and
   re-entry step 4 anchors with no flags.
@@ -99,15 +99,15 @@ context is not independent.
   running 5 attempts with exponential backoff (~10 min), the pinned
   command inside unchanged with its explicit pins. The resume command is
   the launch invocation — `cd <worktree> && node "<skill-dir>/scripts/
-  launch-stage.mjs" <stage> <spec> '<thin pointers>'` — so a resume
-  re-enters the retry wrapper and verified-inject instead of running the
-  bare pinned command. On exhaustion the
+  launch-stage.mjs" <stage> <spec> '<pointers>'` — so a resume
+  re-enters the retry wrapper and the helper's post-injection check instead
+  of running the bare pinned command. On exhaustion the
   wrapper leaves a loud FAILED marker in the terminal buffer (stage,
   spec, the exact resume command) and actuates a wake — an unread
   session on the task carrying that resume command — the same
   no-waiting-on-notice principle as the pause path. A launch that never
-  executes is caught by verified-inject: the helper confirms the wrapper
-  started after injection and recovers. Decided 2026-10-12, maintainer
+  executes is caught by the helper's post-injection check: it confirms the
+  wrapper started after injection and recovers. Decided 2026-10-12, maintainer
   decision (fourth) from run experience: a provider 429 at stage launch
   left the chain parked with no route — the routes are decided by the
   review after it runs, so a stage that never runs fires none. Gaps (i)
@@ -180,7 +180,7 @@ context is not independent.
   decision: the pause actuates the grilling session; a passive pause once
   left a settled chain stopped and unnoticed overnight.
 - grill-with-spec launches a `chain #<spec>: status` terminal when it
-  resumes a chain, and in the fresh form once the spec is published: a
+  resumes a chain, and in the Fresh start once the spec is published: a
   plain bash loop (branch log, fix tickets, chain terminals) refreshed
   every 30 seconds — live progress in the Kepler UI, because
   `pi --print` is silent until a stage finishes. Each stage's transcript
@@ -189,7 +189,7 @@ context is not independent.
   (spec #55 finding S3): the timing was decided "when it starts or
   resumes a chain"; amended to the shipped timing — the label and the
   loop's fix-ticket filter both need the spec number, which exists only
-  once `to-spec` publishes, and the fresh form's grilling phase is the
+  once `to-spec` publishes, and the Fresh start's grilling phase is the
   one interactive stage (the maintainer in the conversation is its live
   view; the headless stages the terminal watches begin after
   publication). Open gaps, left undecided: mid-chain liveness — nothing
@@ -215,7 +215,7 @@ context is not independent.
   scope item 2) filling open gap (iii): the single echo sits after the
   triple's resolution and before the fresh path's `POST /terminal/start`
   — both paths print it once, and when that start fails on a reachable
-  API the triple is already on the buffer, so the fresh form's stage
+  API the triple is already on the buffer, so the Fresh start's stage
   launch still passes the three explicit flags. A failed status terminal
   costs the live view, not the id bootstrap the fresh launch depends on;
   the recipe does not retry the start — the missing terminal is the
