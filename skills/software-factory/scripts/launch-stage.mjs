@@ -14,9 +14,10 @@
  * (40s/80s/160s/320s, a 10-minute give-up window), the pinned command
  * unchanged inside — and prints the terminal id. The wrapper's first action
  * is a stable sentinel line, `CHAIN-STAGE-START: chain #<spec> <stage>`;
- * verified-inject polls `GET /terminal/buffer` for it (the bare JSON string,
- * ANSI escapes stripped, on its own line — the PTY echo of the injected
- * command carries the same text mid-line and is not proof of execution)
+ * the helper's post-injection check polls `GET /terminal/buffer` for it (the
+ * bare JSON string, ANSI escapes stripped, on its own line — the PTY echo of
+ * the injected command carries the same text mid-line and is not proof of
+ * execution)
  * every 250 ms for up to 5000 ms. A timed-out wait is a wedge: the helper
  * closes the wedged terminal, relaunches it with the same ids/worktree/label
  * and injects the same input into the new terminal, then re-verifies; a
@@ -26,7 +27,7 @@
  * a second stage command in a closed terminal. On exhaustion the
  * wrapper prints the FAILED marker (stage, spec, the exact resume command —
  * the launch-helper invocation, so a resume re-enters the retry wrapper and
- * verified-inject, never the bare pinned command)
+ * the helper's post-injection check, never the bare pinned command)
  * into the buffer and actuates the sibling wake helper; the terminal stays
  * open after the stage exits, and its buffer is the stage log. The detached
  * `nohup` fallback fires only on a connection-level failure to the terminal
@@ -37,7 +38,7 @@
  * Plain ESM per ADR-0002, zero dependencies beyond Node.
  *
  * Usage:
- *   node skills/software-factory/scripts/launch-stage.mjs <stage> <spec> '<thin pointers>'
+ *   node skills/software-factory/scripts/launch-stage.mjs <stage> <spec> '<pointers>'
  *     [--repo-id <id> --worktree-id <id> --task-id <id>]
  */
 import { spawn } from "node:child_process";
@@ -83,9 +84,9 @@ export const RETRY_ATTEMPTS = 5;
 export const RETRY_SLEEPS_SECONDS = [40, 80, 160, 320];
 
 /**
- * verified-inject's parameters: the wrapper prints the sentinel as its first
- * action, and the helper polls the terminal buffer every 250 ms for up to
- * 5000 ms before calling the launch wedged. A timed-out wait closes the
+ * The post-injection check's parameters: the wrapper prints the sentinel as
+ * its first action, and the helper polls the terminal buffer every 250 ms for
+ * up to 5000 ms before calling the launch wedged. A timed-out wait closes the
  * wedged terminal and relaunches it with the same input exactly once; a
  * second timeout is a hard error. Explicit, like the retry schedule, so the
  * behaviour is deterministic.
@@ -138,7 +139,10 @@ export function stripAnsi(text) {
   return String(text).replace(ANSI_PATTERN, "");
 }
 
-/** The wedge signal: the sentinel wait timed out, so verified-inject relaunches once. */
+/**
+ * The wedge signal: the sentinel wait timed out, so the helper's
+ * post-injection check relaunches once.
+ */
 export class SentinelTimeoutError extends Error {
   constructor({ terminalId, sentinel, timeoutMs, relaunched }) {
     super(
@@ -181,7 +185,8 @@ export async function readTerminalBuffer({ apiBase, fetchImpl = fetch, terminalI
  * Poll the terminal buffer until the executed sentinel appears, then return.
  * The first read is immediate; each later read follows one poll interval, up
  * to the timeout's worth of polls. A timed-out wait throws
- * `SentinelTimeoutError` — the one failure verified-inject treats as a wedge.
+ * `SentinelTimeoutError` — the one failure the helper's post-injection check
+ * treats as a wedge.
  * Every other failure (HTTP error, connection failure, malformed body) is a
  * hard error and propagates.
  */
@@ -217,8 +222,8 @@ export function launchHelperPath() {
 /**
  * The resume command the give-up marker and the wake carry: re-enter this
  * protected route — the launch helper from the stage's worktree — so a resume
- * runs under the retry wrapper and verified-inject, never the bare pinned
- * command.
+ * runs under the retry wrapper and the helper's post-injection check, never
+ * the bare pinned command.
  */
 export function buildResumeCommand({ stage, spec, pointers, worktreePath }) {
   return `cd ${shellQuote(worktreePath)} && node ${shellQuote(launchHelperPath())} ${stage} ${spec} ${shellQuote(pointers)}`;
@@ -233,7 +238,7 @@ export function buildResumeCommand({ stage, spec, pointers, worktreePath }) {
  * actuates the wake by running the sibling helper; the wake's output and
  * exit status are never swallowed. The pinned command inside stays unchanged;
  * the resume command is the launch-helper invocation, so a resume re-enters
- * the retry wrapper and verified-inject.
+ * the retry wrapper and the helper's post-injection check.
  */
 export function buildRetryWrapper(stage, spec, pointers, worktreePath) {
   const command = buildPiCommand(stage, pointers); // the stage's pinned command, unchanged inside
@@ -644,7 +649,7 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
   const [stage, spec, pointers] = argv;
   if (!stage || spec === undefined || pointers === undefined) {
     throw new Error(
-      "usage: launch-stage.mjs <stage> <spec> '<thin pointers>' [--repo-id <id> --worktree-id <id> --task-id <id>]"
+      "usage: launch-stage.mjs <stage> <spec> '<pointers>' [--repo-id <id> --worktree-id <id> --task-id <id>]"
     );
   }
   const flags = parseIdFlags(argv.slice(3));

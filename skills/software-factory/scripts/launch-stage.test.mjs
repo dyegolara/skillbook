@@ -92,7 +92,7 @@ test("buildTerminalInput terminates the injected retry wrapper with a newline", 
   );
 });
 
-// --- verified-inject: the execution sentinel ---
+// --- the helper's post-injection check: the execution sentinel ---
 
 test("chainCore builds the chain #<spec> <stage> core the three emitted shapes share", () => {
   assert.equal(chainCore("55", "dev-flow"), "chain #55 dev-flow");
@@ -883,11 +883,11 @@ test("a connection-level failure on terminal/input after start is still a hard e
   assert.equal(spawnCalls.length, 0);
 });
 
-// --- verified-inject: sentinel present, wedge recovery, hard failures ---
+// --- the helper's post-injection check: sentinel present, wedge recovery, hard failures ---
 
 const VERIFY_TERMINAL = { worktreePath: "/work/tree", label: "Terminal 1", repoId: "r", worktreeId: "w", taskId: "t" };
 
-/** The `main` deps for the verified-inject tests: instant polls, no real waiting. */
+/** The `main` deps for the helper's post-injection check tests: instant polls, no real waiting. */
 function verifyDeps({ fetchImpl, spawnImpl } = {}) {
   return {
     apiBase: "http://api.test",
@@ -899,7 +899,7 @@ function verifyDeps({ fetchImpl, spawnImpl } = {}) {
   };
 }
 
-test("verified-inject: a sentinel present on the first poll launches with no relaunch", async () => {
+test("the helper's post-injection check: a sentinel present on the first poll launches with no relaunch", async () => {
   const { fetchImpl, calls, inputs } = mockKeplerApi({ terminals: [VERIFY_TERMINAL] });
   const result = await main(["dev-flow", "55", "pointers"], verifyDeps({ fetchImpl }));
   assert.equal(result.path, "api");
@@ -907,7 +907,7 @@ test("verified-inject: a sentinel present on the first poll launches with no rel
   assert.equal(calls.filter((call) => call.url.includes("/terminal/buffer")).length, 1);
 });
 
-test("verified-inject: a wedged terminal is closed and relaunched once, and the new terminal passes verification", async () => {
+test("the helper's post-injection check: a wedged terminal is closed and relaunched once, and the new terminal passes verification", async () => {
   const { fetchImpl, calls, inputs, bufferText } = mockKeplerApi({
     terminals: [VERIFY_TERMINAL],
     handlers: {
@@ -935,7 +935,7 @@ test("verified-inject: a wedged terminal is closed and relaunched once, and the 
   assert.deepEqual(calls[closeAt].body, { terminalId: "term-new" });
 });
 
-test("verified-inject: a second timeout after the relaunch is a hard error, never a silent pass", async () => {
+test("the helper's post-injection check: a second timeout after the relaunch is a hard error, never a silent pass", async () => {
   const { fetchImpl, calls, inputs } = mockKeplerApi({
     terminals: [VERIFY_TERMINAL],
     handlers: { buffer: () => okResponse("echoed, never executed\r\n") },
@@ -955,7 +955,7 @@ test("verified-inject: a second timeout after the relaunch is a hard error, neve
   assert.equal(spawnCalls.length, 0);
 });
 
-test("verified-inject: a close failure after a wedge is a hard error and the relaunch never starts", async () => {
+test("the helper's post-injection check: a close failure after a wedge is a hard error and the relaunch never starts", async () => {
   const { fetchImpl, calls, inputs } = mockKeplerApi({
     terminals: [VERIFY_TERMINAL],
     handlers: {
@@ -971,7 +971,7 @@ test("verified-inject: a close failure after a wedge is a hard error and the rel
   assert.equal(spawnCalls.length, 0);
 });
 
-test("verified-inject: a start failure after a wedge is a hard error, never a silent pass", async () => {
+test("the helper's post-injection check: a start failure after a wedge is a hard error, never a silent pass", async () => {
   let starts = 0;
   const { fetchImpl, calls, inputs } = mockKeplerApi({
     terminals: [VERIFY_TERMINAL],
@@ -988,7 +988,7 @@ test("verified-inject: a start failure after a wedge is a hard error, never a si
   assert.equal(spawnCalls.length, 0);
 });
 
-test("verified-inject: the buffer poll waits for the sentinel before it declares success", async () => {
+test("the helper's post-injection check: the buffer poll waits for the sentinel before it declares success", async () => {
   const { fetchImpl, inputs, bufferText } = mockKeplerApi({
     terminals: [VERIFY_TERMINAL],
     handlers: {
@@ -1003,7 +1003,7 @@ test("verified-inject: the buffer poll waits for the sentinel before it declares
   assert.equal(inputs().length, 1);
 });
 
-test("verified-inject: ANSI escapes in the buffer are stripped before matching", async () => {
+test("the helper's post-injection check: ANSI escapes in the buffer are stripped before matching", async () => {
   const { fetchImpl, inputs, bufferText } = mockKeplerApi({
     terminals: [VERIFY_TERMINAL],
     handlers: { buffer: () => okResponse(`\u001b[33m${bufferText()}\u001b[0m`) },
@@ -1013,7 +1013,7 @@ test("verified-inject: ANSI escapes in the buffer are stripped before matching",
   assert.equal(inputs().length, 1);
 });
 
-test("verified-inject: a buffer-read HTTP error is a hard error with no relaunch", async () => {
+test("the helper's post-injection check: a buffer-read HTTP error is a hard error with no relaunch", async () => {
   const { fetchImpl, inputs } = mockKeplerApi({
     terminals: [VERIFY_TERMINAL],
     handlers: { buffer: () => errorResponse(500) },
@@ -1024,7 +1024,7 @@ test("verified-inject: a buffer-read HTTP error is a hard error with no relaunch
   assert.equal(spawnCalls.length, 0);
 });
 
-test("verified-inject: a connection-level buffer failure is a hard error with no relaunch", async () => {
+test("the helper's post-injection check: a connection-level buffer failure is a hard error with no relaunch", async () => {
   const { fetchImpl, inputs } = mockKeplerApi({
     terminals: [VERIFY_TERMINAL],
     handlers: {
@@ -1042,7 +1042,7 @@ test("verified-inject: a connection-level buffer failure is a hard error with no
   assert.equal(spawnCalls.length, 0);
 });
 
-test("verified-inject: a malformed buffer body is a hard error with no relaunch", async () => {
+test("the helper's post-injection check: a malformed buffer body is a hard error with no relaunch", async () => {
   const { fetchImpl, inputs } = mockKeplerApi({
     terminals: [VERIFY_TERMINAL],
     handlers: { buffer: () => ({ ok: true, status: 200, text: async () => "{not json" }) },

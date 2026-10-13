@@ -14,10 +14,10 @@
   actuates the decision-forcing pause by opening and pinning a fresh
   grilling session on the task. The injected command runs under a retry
   wrapper around the pinned agent command — 5 attempts with exponential
-  backoff (~10-minute window) — and verified-inject polls the terminal
-  buffer for the wrapper's sentinel, closing and relaunching a wedged
-  terminal once; on exhaustion the wrapper leaves a FAILED marker (stage,
-  spec, the exact resume command) and actuates a sibling wake helper,
+  backoff (~10-minute window) — and the helper's post-injection check polls
+  the terminal buffer for the wrapper's sentinel, closing and relaunching a
+  wedged terminal once; on exhaustion the wrapper leaves a FAILED marker
+  (stage, spec, the exact resume command) and actuates a sibling wake helper,
   `open-wake-session.mjs`, an unread notice session on the task carrying
   that resume command. grill-with-spec keeps a live `chain #<spec>: status`
   terminal (a plain bash loop refreshed every 30 seconds).
@@ -31,12 +31,12 @@
   (`launch-stage.mjs`, `open-grill-session.mjs`, and `open-wake-session.mjs`,
   the last with its own suite) exist and are referenced, that both pin tables
   match their records, that every launch snippet carries the exact
-  `<stage> <spec> '<thin pointers>'` arity, and that every spawn snippet
+  `<stage> <spec> '<pointers>'` arity, and that every spawn snippet
   carries an explicit --model — checked separately from the launch snippets.
 - Document the Kepler local API the helpers wrap in the pack's
   `docs/kepler-api.md`: verified terminal and agent endpoints, their
   request/response shapes, and the probe recipe that settles a new endpoint.
-- Teach the grill-with-spec re-entry form to list a decision's open gaps in
+- Teach the grill-with-spec Re-entry to list a decision's open gaps in
   its scope comment, so the implementer fills them in-ticket and records them
   in the ADR instead of making its own design call.
 - Extend the decision-forcing rule: a fix that would change one of the
