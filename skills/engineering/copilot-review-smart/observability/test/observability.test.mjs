@@ -25,9 +25,9 @@ function defaultTickState() {
       last_head_sha: "sha-7",
       next_check_at: new Date(NOW + 6 * HOUR).toISOString(),
       tick_history: [
-        record(NOW - 13 * HOUR, "request_fix", "unaddressed inline comments", null, { decision_source: "command" }),
+        record(NOW - 13 * HOUR, "request_fix", "unaddressed inline comments", null, { decision_source: "decision_command" }),
         record(NOW - 1 * HOUR, "request_fix", "pending fix older than 12h with no new feedback; retrying.", null, {
-          decision_source: "command",
+          decision_source: "decision_command",
         }),
       ],
     },
@@ -236,7 +236,7 @@ test("GET /timeline projects executed, in-flight and scheduled ticks", async () 
     assert.equal(body.executed[0].repo, "acme/widgets");
     assert.equal(body.executed[0].pr, 7);
     assert.equal(body.executed[0].terminal, null);
-    assert.equal(body.executed[0].decision_source, "command");
+    assert.equal(body.executed[0].decision_source, "decision_command");
 
     assert.deepEqual(body.in_flight, {
       pid: process.pid,
@@ -311,7 +311,7 @@ test("GET /flows returns one row per watched PR in the glossary's Stage words", 
       act: "past",
       schedule: "current",
     });
-    assert.equal(stageOf(widgets7, "decide").outcome, "decision made by command");
+    assert.equal(stageOf(widgets7, "decide").outcome, "decision made by decision_command");
     assert.equal(stageOf(widgets7, "act").outcome, "asked Copilot to fix review comments");
     assert.match(stageOf(widgets7, "schedule").outcome, /^next check at /);
     assert.equal(stageOf(widgets7, "collect").at, new Date(NOW - 1 * HOUR).toISOString());
@@ -382,6 +382,39 @@ test("a needs-human Flow keeps its glossary outcome and is not done", async () =
   }
 });
 
+test("a Flow with decision_source none reads as a configuration gap, not a decision made", async () => {
+  const state = defaultTickState();
+  state["acme/widgets#14"] = {
+    last_head_sha: "sha-14",
+    next_check_at: new Date(NOW + 1 * HOUR).toISOString(),
+    tick_history: [
+      record(
+        NOW - 1 * HOUR,
+        "wait",
+        "No LLM decision source is configured: define the PR_MONITOR_LLM_CMD environment " +
+          "variable or a chat-completions provider with PR_MONITOR_LLM_API_KEY.",
+        null,
+        { decision_source: "none" }
+      ),
+    ],
+  };
+  const fixture = new Fixture({ state });
+  await fixture.start();
+  try {
+    const { status, body } = await fixture.get("/flows/acme/widgets/14");
+    assert.equal(status, 200);
+    // The decide Stage is current — the Flow waits on a configuration gap —
+    // not past, and it must never read as an adapter that ran.
+    assert.equal(stageOf(body, "decide").status, "current");
+    assert.equal(body.stage, "decide");
+    assert.match(stageOf(body, "decide").outcome, /no decision source configured/);
+    assert.match(stageOf(body, "decide").outcome, /PR_MONITOR_LLM_CMD|PR_MONITOR_LLM_API_KEY/);
+    assert.doesNotMatch(JSON.stringify(body.stages), /decision made by none/);
+  } finally {
+    await fixture.stop();
+  }
+});
+
 test("a fetch-failed Tick stops the Stage sequence at collect", async () => {
   const state = defaultTickState();
   state["acme/widgets#13"] = {
@@ -424,7 +457,7 @@ test("GET /flows/:owner/:repo/:num returns the Flow in full and 404s an unknown 
       action: "request_fix",
       reason: "unaddressed inline comments",
       terminal: null,
-      decision_source: "command",
+      decision_source: "decision_command",
     });
     assert.deepEqual(body.expectation, {
       repo: "acme/widgets",

@@ -2,6 +2,10 @@
  * writes; `server.mjs` loads the files and hands them to these functions. */
 
 import { tickInFlight } from "../../tick_liveness.mjs";
+import {
+  isNoDecisionSource,
+  NO_DECISION_SOURCE_STAGE_OUTCOME,
+} from "../../decision_source.mjs";
 
 const FLOW_KEY_RE = /^([^/\s#]+\/[^/\s#]+)#(\d+)$/;
 
@@ -156,7 +160,12 @@ function reachedStages(record) {
     // Gate waits stop at `check`; every other wait passed the signature
     // cache. Only explicit evidence proves the LLM ran.
     if (!GATE_WAIT_RE.test(reason)) reached.add("reuse");
-    if (record?.decision_source || LLM_REASON_RE.test(reason)) reached.add("decide");
+    if (
+      (record?.decision_source && !isNoDecisionSource(record.decision_source)) ||
+      LLM_REASON_RE.test(reason)
+    ) {
+      reached.add("decide");
+    }
     if (record?.terminal === "needs-human") reached.add("act");
   }
   // `skip_wip` is the draft/WIP gate: collect + check only.
@@ -175,6 +184,7 @@ function stageOutcome(stage, { last, action, reason, decisionSource, allClear, d
     case "reuse":
       return "signature cache checked";
     case "decide":
+      if (isNoDecisionSource(decisionSource)) return NO_DECISION_SOURCE_STAGE_OUTCOME;
       if (decisionSource) return `decision made by ${decisionSource}`;
       if (action === "llm_failed") return "LLM decision failed";
       return "LLM decision made";
@@ -206,6 +216,9 @@ function projectStages({ entry, expectation, deadlineIso }) {
   const statuses = Object.fromEntries(STAGE_ORDER.map((stage) => [stage, "next"]));
   if (last) {
     for (const stage of reachedStages(last)) statuses[stage] = "past";
+    // Layer 3 is a configuration gap: the Flow waits at `decide` for a
+    // decision source rather than having completed a decision.
+    if (isNoDecisionSource(last.decision_source)) statuses.decide = "current";
     statuses.schedule = allClear && !armed ? "past" : "current";
   } else if (armed || expectation) {
     statuses.schedule = "current";

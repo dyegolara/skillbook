@@ -1513,7 +1513,7 @@ test("a Tick-history record carries the report's action, reason, terminal and op
       handled: true,
       action: "request_review",
       reason: "no review yet",
-      decision_source: "command",
+      decision_source: "decision_command",
       reused: false,
       stateEntry,
       notifications: [],
@@ -1521,7 +1521,7 @@ test("a Tick-history record carries the report's action, reason, terminal and op
   });
 
   const report = prJsonLine(first);
-  assert.equal(report.decision_source, "command");
+  assert.equal(report.decision_source, "decision_command");
   const history = first.state[`${REPO}#7`].tick_history;
   assert.equal(history.length, 1);
   assert.deepEqual(history[0], {
@@ -1529,7 +1529,7 @@ test("a Tick-history record carries the report's action, reason, terminal and op
     action: "request_review",
     reason: "no review yet",
     terminal: null,
-    decision_source: "command",
+    decision_source: "decision_command",
   });
 
   const done = await runMonitorOnce({

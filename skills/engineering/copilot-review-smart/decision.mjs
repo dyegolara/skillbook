@@ -1,3 +1,5 @@
+import { DECISION_SOURCES } from "./decision_source.mjs";
+
 const COPILOT_SUBSTR = "copilot";
 const WIP_TITLE_RE = /^\s*\[?(wip|draft|dnm|do not merge|work in progress)\b/i;
 const H = (h) => h * 3600_000;
@@ -214,7 +216,7 @@ export async function decideWithLlm({
         action: "wait",
         reason: e.message,
         reused: false,
-        decision_source: "none",
+        decision_source: DECISION_SOURCES.none,
         stateEntry: st,
         notifications,
       };

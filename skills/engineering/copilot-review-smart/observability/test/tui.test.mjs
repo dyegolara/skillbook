@@ -195,7 +195,7 @@ class Fixture {
           last_head_sha: "sha-7",
           next_check_at: iso(NOW + 2 * HOUR),
           tick_history: [
-            { ts: iso(NOW - HOUR), action: "request_fix", reason: "unaddressed inline comments", terminal: null, decision_source: "command" },
+            { ts: iso(NOW - HOUR), action: "request_fix", reason: "unaddressed inline comments", terminal: null, decision_source: "decision_command" },
           ],
         },
         "acme/widgets#9": {

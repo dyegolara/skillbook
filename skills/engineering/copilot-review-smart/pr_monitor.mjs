@@ -45,6 +45,7 @@ import os from "node:os";
 import path from "node:path";
 import { decideWithLlm, newestRebaseRequestTsMs, NoDecisionSourceError } from "./decision.mjs";
 import { resolveAutoDecisionSource } from "./agents.mjs";
+import { DECISION_SOURCES, NO_DECISION_SOURCE_REASON } from "./decision_source.mjs";
 import { isPidAlive, tickInFlight } from "./tick_liveness.mjs";
 
 /** The Tick's public liveness reader; the rule lives in tick_liveness.mjs so
@@ -61,13 +62,6 @@ const MODEL = process.env.PR_MONITOR_MODEL || "deepseek/deepseek-v4-flash-0731";
 const DEFAULT_LLM_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
 const DECISION_COMMAND_DEFAULT_TIMEOUT_MS = 60_000;
 const DECISION_COMMAND_MAX_OUTPUT_BYTES = 1024 * 1024;
-const NO_DECISION_SOURCE_REASON =
-  "No LLM decision source is configured: define the PR_MONITOR_LLM_CMD " +
-  "environment variable as a command that reads the decision request on stdin " +
-  "and writes a JSON decision on stdout, or define a chat-completions provider " +
-  "with PR_MONITOR_LLM_API_KEY (default: OPENROUTER_API_KEY) and optionally " +
-  "PR_MONITOR_LLM_ENDPOINT / PR_MONITOR_MODEL, in the invoking environment or in " +
-  "~/.pr-monitor.env / ~/.hermes/.env. Waiting without escalating.";
 const DRY_RUN = process.env.DRY_RUN === "1";
 
 // Don't re-ping Copilot on the same head sha more often than this. This is
@@ -783,7 +777,7 @@ function resolveDecisionSource() {
   const command = String(loadEnvKey("PR_MONITOR_LLM_CMD") || "").trim();
   if (command) {
     return {
-      adapter: "decision_command",
+      adapter: DECISION_SOURCES.decisionCommand,
       decider: (decisionCtx) => callDecisionCommand(command, decisionCtx),
     };
   }
@@ -791,7 +785,7 @@ function resolveDecisionSource() {
   // credential, or the legacy OpenRouter default) fills the model+credential slot.
   const providerKey = loadEnvKey("PR_MONITOR_LLM_API_KEY") || loadEnvKey("OPENROUTER_API_KEY");
   if (providerKey) {
-    return { adapter: "model_credential", decider: callLlm };
+    return { adapter: DECISION_SOURCES.modelCredential, decider: callLlm };
   }
   // Layer 2 (auto: current agent, current provider). Only the markers of the
   // agent session actually surrounding this process select an adapter, and
@@ -804,7 +798,7 @@ function resolveDecisionSource() {
     };
   }
   return {
-    adapter: "none",
+    adapter: DECISION_SOURCES.none,
     decider: async () => { throw new NoDecisionSourceError(NO_DECISION_SOURCE_REASON); },
   };
 }
@@ -1102,7 +1096,7 @@ export async function runMonitorOnce({
   // injected llmDecider (embedders, tests) stands in for the built-in
   // model+credential adapter and bypasses environment resolution.
   const resolvedSource = llmDecider
-    ? { adapter: "model_credential", decider: llmDecider }
+    ? { adapter: DECISION_SOURCES.modelCredential, decider: llmDecider }
     : resolveDecisionSource();
 
   const notifications = [];

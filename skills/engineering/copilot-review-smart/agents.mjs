@@ -26,6 +26,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { autoDecisionSource } from "./decision_source.mjs";
 
 const DECISION_INSTRUCTION =
   "You are the decision step of a GitHub PR watchdog. The JSON decision " +
@@ -143,7 +144,7 @@ export function resolveAutoDecisionSource({
   const pin = adapter.modelPin(env);
   const model = pin ? [pin.provider, pin.model].filter(Boolean).join("/") : null;
   return {
-    adapter: model ? `auto:${adapter.name}:${model}` : `auto:${adapter.name}`,
+    adapter: autoDecisionSource(adapter.name, model),
     command: adapter.buildCommand(env),
   };
 }
