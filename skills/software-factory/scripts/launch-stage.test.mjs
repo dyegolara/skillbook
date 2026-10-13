@@ -18,10 +18,12 @@ import {
   buildResumeCommand,
   buildRetryWrapper,
   buildTerminalInput,
+  isConnectionError,
   launchHelperPath,
   main,
   parseIdFlags,
   pickAnchor,
+  reachApi,
   readKeplerApiBase,
   resolveIds,
   sentinelSeen,
@@ -309,6 +311,92 @@ test("resolveIds throws when there are no flags and no anchor", async () => {
   await assert.rejects(
     resolveIds({ apiBase: "http://api.test", fetchImpl, worktreePath: "/work/tree" }),
     /no terminal on/
+  );
+});
+
+// --- reachApi: the one reach-the-API step ---
+
+test("reachApi resolves the explicit flags against the injected base without touching the API", async () => {
+  const reached = await reachApi({
+    apiBase: "http://api.test",
+    fetchImpl: async () => {
+      throw new Error("the API must not be called");
+    },
+    worktreePath: "/work/tree",
+    flags: { repoId: "r", worktreeId: "w", taskId: "t" },
+  });
+  assert.deepEqual(reached, {
+    ok: true,
+    apiBase: "http://api.test",
+    ids: { repoId: "r", worktreeId: "w", taskId: "t" },
+  });
+});
+
+test("reachApi derives the base from the data dir and the ids from the anchor terminal", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "reach-api-"));
+  const worktreePath = "/work/tree";
+  const { fetchImpl, calls } = mockKeplerApi({
+    terminals: [{ worktreePath, label: "Terminal 1", repoId: "r", worktreeId: "w", taskId: "t" }],
+  });
+  try {
+    writeFileSync(join(dataDir, "server.host"), "127.0.0.1\n");
+    writeFileSync(join(dataDir, "server.port"), "36325\n");
+    const reached = await reachApi({ dataDir, fetchImpl, worktreePath });
+    assert.deepEqual(reached, {
+      ok: true,
+      apiBase: "http://127.0.0.1:36325",
+      ids: { repoId: "r", worktreeId: "w", taskId: "t" },
+    });
+    assert.deepEqual(calls.map((call) => call.url), ["http://127.0.0.1:36325/terminal/list"]);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("reachApi classifies a missing API location as connection-level with the read error preserved", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "reach-api-missing-"));
+  try {
+    const reached = await reachApi({
+      dataDir,
+      fetchImpl: async () => {
+        throw new Error("the API must not be called");
+      },
+      worktreePath: "/work/tree",
+    });
+    assert.equal(reached.ok, false);
+    assert.match(reached.error.message, /ENOENT/);
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+test("reachApi classifies a connection-level id resolution and preserves the message", async () => {
+  const { fetchImpl } = mockKeplerApi({
+    handlers: {
+      list: () => {
+        throw new Error("fetch failed: ECONNREFUSED");
+      },
+    },
+  });
+  const reached = await reachApi({ apiBase: "http://127.0.0.1:1", fetchImpl, worktreePath: "/work/tree" });
+  assert.equal(reached.ok, false);
+  assert.ok(isConnectionError(reached.error));
+  assert.equal(reached.error.message, "fetch failed: ECONNREFUSED");
+});
+
+test("reachApi throws an anchorless hard error from a reachable API — never a classification", async () => {
+  const { fetchImpl } = mockKeplerApi({ terminals: [] });
+  await assert.rejects(
+    reachApi({ apiBase: "http://api.test", fetchImpl, worktreePath: "/work/tree" }),
+    /no terminal on/
+  );
+});
+
+test("reachApi throws an HTTP error from a reachable API — never a classification", async () => {
+  const { fetchImpl } = mockKeplerApi({ handlers: { list: () => errorResponse(500) } });
+  await assert.rejects(
+    reachApi({ apiBase: "http://api.test", fetchImpl, worktreePath: "/work/tree" }),
+    /HTTP 500/
   );
 });
 

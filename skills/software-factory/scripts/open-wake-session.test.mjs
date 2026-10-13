@@ -29,12 +29,14 @@ test("the wake prompt carries the stage, the spec and the exact resume command",
   );
 });
 
-test("the wake helper reuses the launch helper's id anchor and flags", () => {
+test("the wake helper reuses the launch helper's reach-the-API step", () => {
   const source = readFileSync(new URL("./open-wake-session.mjs", import.meta.url), "utf8");
   assert.match(source, /from\s+"\.\/launch-stage\.mjs"/);
   assert.match(source, /\bparseIdFlags\b/);
-  assert.match(source, /\bresolveIds\b/);
-  assert.match(source, /\bisConnectionError\b/);
+  assert.match(source, /\breachApi\b/);
+  assert.match(source, /\bisConnectionError\b/); // the post-session guard stays local
+  assert.doesNotMatch(source, /\bresolveIds\b/);
+  assert.doesNotMatch(source, /\breadKeplerApiBase\b/);
 });
 
 test("the full flow creates, renames, and sends the wake prompt verbatim", async () => {

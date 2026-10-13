@@ -35,9 +35,8 @@ import { pathToFileURL } from "node:url";
 import {
   isConnectionError,
   parseIdFlags,
-  readKeplerApiBase,
+  reachApi,
   requestJson,
-  resolveIds,
   stageLabel,
 } from "./launch-stage.mjs";
 
@@ -101,20 +100,9 @@ export async function openGrillSession({ spec, prompt, flags, deps = {} }) {
   const label = stageLabel(spec, "grill-with-spec"); // a bad spec is a hard error before any fetch
   const fallback = (error) => ({ path: "pause", label, reason: error.message });
 
-  let apiBase;
-  try {
-    apiBase = deps.apiBase ?? readKeplerApiBase({ dataDir: deps.dataDir });
-  } catch (error) {
-    return fallback(error); // the API location is unknown: connection-level
-  }
-
-  let ids;
-  try {
-    ids = await resolveIds({ apiBase, fetchImpl, worktreePath, flags });
-  } catch (error) {
-    if (!isConnectionError(error)) throw error; // reachable API, bad response: hard error
-    return fallback(error);
-  }
+  const reached = await reachApi({ apiBase: deps.apiBase, dataDir: deps.dataDir, fetchImpl, worktreePath, flags });
+  if (!reached.ok) return fallback(reached.error);
+  const { apiBase, ids } = reached;
 
   let created;
   try {

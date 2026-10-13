@@ -37,9 +37,8 @@ import { pathToFileURL } from "node:url";
 import {
   isConnectionError,
   parseIdFlags,
-  readKeplerApiBase,
+  reachApi,
   requestJson,
-  resolveIds,
   stageLabel,
   stagePin,
 } from "./launch-stage.mjs";
@@ -107,20 +106,9 @@ export async function openWakeSession({ stage, spec, resumeCommand, flags, deps 
   const label = wakeLabel(spec, stage); // a bad spec too
   const fallback = (error) => ({ path: "fallback", label, reason: error.message, resumeCommand });
 
-  let apiBase;
-  try {
-    apiBase = deps.apiBase ?? readKeplerApiBase({ dataDir: deps.dataDir });
-  } catch (error) {
-    return fallback(error); // the API location is unknown: connection-level
-  }
-
-  let ids;
-  try {
-    ids = await resolveIds({ apiBase, fetchImpl, worktreePath, flags });
-  } catch (error) {
-    if (!isConnectionError(error)) throw error; // reachable API, bad response: hard error
-    return fallback(error);
-  }
+  const reached = await reachApi({ apiBase: deps.apiBase, dataDir: deps.dataDir, fetchImpl, worktreePath, flags });
+  if (!reached.ok) return fallback(reached.error);
+  const { apiBase, ids } = reached;
 
   let created;
   try {

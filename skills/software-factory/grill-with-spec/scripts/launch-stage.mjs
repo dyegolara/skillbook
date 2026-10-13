@@ -424,6 +424,36 @@ export async function resolveIds({ apiBase, fetchImpl = fetch, worktreePath, fla
 }
 
 /**
+ * Reach the API: resolve the base location, then the ids, classifying only
+ * connection-level failures. Returns `{ ok: true, apiBase, ids }` on the
+ * resolved path, or `{ ok: false, error }` when the API is unreachable — the
+ * caller maps that to its own fallback. A reachable API with a bad response
+ * (HTTP error, malformed body, anchorless hard error) is a hard error and
+ * propagates, so no caller degrades silently against a live server.
+ *
+ * @param {{ apiBase?: string, dataDir?: string, fetchImpl?: typeof fetch, worktreePath: string, flags?: IdFlags }} options
+ * @returns {Promise<{ ok: true, apiBase: string, ids: TaskIds } | { ok: false, error: Error }>}
+ */
+export async function reachApi({ apiBase, dataDir, fetchImpl = fetch, worktreePath, flags }) {
+  let resolvedBase;
+  try {
+    resolvedBase = apiBase ?? readKeplerApiBase({ dataDir });
+  } catch (error) {
+    return { ok: false, error }; // the API location is unknown: connection-level
+  }
+
+  let ids;
+  try {
+    ids = await resolveIds({ apiBase: resolvedBase, fetchImpl, worktreePath, flags });
+  } catch (error) {
+    if (!isConnectionError(error)) throw error; // reachable API, bad response: hard error
+    return { ok: false, error };
+  }
+
+  return { ok: true, apiBase: resolvedBase, ids };
+}
+
+/**
  * The reachable-API path: start the labeled terminal with the resolved ids,
  * then inject the pinned command. Any failure here is a hard error — once
  * `POST /terminal/start` may have created a terminal, the caller must never
@@ -512,20 +542,9 @@ export async function launchStage({ stage, spec, pointers, flags, deps = {} }) {
 
   const fallback = (error) => ({ ...launchDetached({ stage, pointers, spawnImpl }), reason: error.message });
 
-  let apiBase;
-  try {
-    apiBase = deps.apiBase ?? readKeplerApiBase({ dataDir: deps.dataDir });
-  } catch (error) {
-    return fallback(error); // the API location is unknown: connection-level
-  }
-
-  let ids;
-  try {
-    ids = await resolveIds({ apiBase, fetchImpl, worktreePath, flags });
-  } catch (error) {
-    if (!isConnectionError(error)) throw error; // reachable API, bad response: hard error
-    return fallback(error);
-  }
+  const reached = await reachApi({ apiBase: deps.apiBase, dataDir: deps.dataDir, fetchImpl, worktreePath, flags });
+  if (!reached.ok) return fallback(reached.error);
+  const { apiBase, ids } = reached;
 
   // From here the terminal may already exist: every failure is a hard error.
   const launched = await launchInTerminal({
