@@ -14,11 +14,16 @@
  *   PR_MONITOR_PR          (optional) single PR scope: "owner/repo#123"
  *   PR_MONITOR_STATE_PATH  state file (default ~/.cache/pr-monitor/state.json)
  *   PR_MONITOR_REPORT      "jsonl" / "1" => emit agent-facing JSON lines
- *   PR_MONITOR_MODEL       OpenRouter model for the decision LLM
+ *   PR_MONITOR_MODEL       model for the decision LLM
+ *   PR_MONITOR_LLM_ENDPOINT  chat-completions endpoint for the decision LLM
+ *                          (default https://openrouter.ai/api/v1/chat/completions)
+ *   PR_MONITOR_LLM_API_KEY  credential for that endpoint
+ *                          (default: OPENROUTER_API_KEY)
  *   PR_MONITOR_LLM_CMD     explicit decider command: decision request on stdin,
  *                          JSON decision ({"action","reason"}) on stdout
  *   PR_MONITOR_LLM_CMD_TIMEOUT_MS  decision command timeout (default 60000)
- *   OPENROUTER_API_KEY     (or in ~/.hermes/.env / ~/.pr-monitor.env)
+ *   OPENROUTER_API_KEY     default credential for the OpenRouter endpoint
+ *                          (or in ~/.hermes/.env / ~/.pr-monitor.env)
  *   DRY_RUN=1              print would-be comments; never post, never persist
  *
  * CLI flags:
@@ -43,14 +48,16 @@ const STATE_PATH = process.env.PR_MONITOR_STATE_PATH ||
 
 const COPILOT_SUBSTR = "copilot";
 const MODEL = process.env.PR_MONITOR_MODEL || "deepseek/deepseek-v4-flash-0731";
+const DEFAULT_LLM_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
 const DECISION_COMMAND_DEFAULT_TIMEOUT_MS = 60_000;
 const DECISION_COMMAND_MAX_OUTPUT_BYTES = 1024 * 1024;
 const NO_DECISION_SOURCE_REASON =
   "No LLM decision source is configured: define the PR_MONITOR_LLM_CMD " +
   "environment variable as a command that reads the decision request on stdin " +
-  "and writes a JSON decision on stdout, or define PR_MONITOR_MODEL + " +
-  "OPENROUTER_API_KEY, in the invoking environment or in ~/.pr-monitor.env / " +
-  "~/.hermes/.env. Waiting without escalating.";
+  "and writes a JSON decision on stdout, or define a chat-completions provider " +
+  "with PR_MONITOR_LLM_API_KEY (default: OPENROUTER_API_KEY) and optionally " +
+  "PR_MONITOR_LLM_ENDPOINT / PR_MONITOR_MODEL, in the invoking environment or in " +
+  "~/.pr-monitor.env / ~/.hermes/.env. Waiting without escalating.";
 const DRY_RUN = process.env.DRY_RUN === "1";
 
 // Don't re-ping Copilot on the same head sha more often than this. This is
@@ -648,8 +655,10 @@ async function collectPrState(pr, num, repo, { runGhFn = runGh } = {}) {
 class LLMDecisionError extends Error {}
 
 async function callLlm(decisionCtx) {
-  const apiKey = loadEnvKey("OPENROUTER_API_KEY");
-  if (!apiKey) throw new LLMDecisionError("no OPENROUTER_API_KEY");
+  const apiKey = loadEnvKey("PR_MONITOR_LLM_API_KEY") || loadEnvKey("OPENROUTER_API_KEY");
+  if (!apiKey) throw new LLMDecisionError("no LLM API key configured");
+  const endpoint =
+    String(loadEnvKey("PR_MONITOR_LLM_ENDPOINT") || "").trim() || DEFAULT_LLM_ENDPOINT;
 
   const system =
     "You are a senior engineer's PR-watchdog. Given the state of a GitHub " +
@@ -684,7 +693,7 @@ async function callLlm(decisionCtx) {
 
   let res;
   try {
-    res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    res = await fetch(endpoint, {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -789,7 +798,10 @@ function resolveDecisionSource() {
     };
   }
   // Layer 2 (auto: current agent, current provider) resolves here in #109.
-  if (loadEnvKey("OPENROUTER_API_KEY")) {
+  // Layer 1b: a configured chat-completions provider (custom endpoint and
+  // credential, or the legacy OpenRouter default) fills the model+credential slot.
+  const providerKey = loadEnvKey("PR_MONITOR_LLM_API_KEY") || loadEnvKey("OPENROUTER_API_KEY");
+  if (providerKey) {
     return { adapter: "model_credential", decider: callLlm };
   }
   return {

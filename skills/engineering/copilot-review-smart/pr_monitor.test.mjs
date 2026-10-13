@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { runMonitorOnce, tickInFlight } from "./pr_monitor.mjs";
@@ -1792,6 +1793,8 @@ async function withEnv(vars, fn) {
 const NO_DECISION_ENV = {
   PR_MONITOR_LLM_CMD: undefined,
   PR_MONITOR_LLM_CMD_TIMEOUT_MS: undefined,
+  PR_MONITOR_LLM_ENDPOINT: undefined,
+  PR_MONITOR_LLM_API_KEY: undefined,
   OPENROUTER_API_KEY: undefined,
 };
 
@@ -1922,7 +1925,14 @@ test("an explicit decision command wins over model+credential", async () => {
   };
   try {
     const out = await withEnv(
-      { ...NO_DECISION_ENV, HOME: dir, PR_MONITOR_LLM_CMD: command, OPENROUTER_API_KEY: "test-key" },
+      {
+        ...NO_DECISION_ENV,
+        HOME: dir,
+        PR_MONITOR_LLM_CMD: command,
+        PR_MONITOR_LLM_ENDPOINT: "http://127.0.0.1:1/v1/chat/completions",
+        PR_MONITOR_LLM_API_KEY: "custom-test-key",
+        OPENROUTER_API_KEY: "test-key",
+      },
       () => runMonitorOnce({
         repos: [REPO],
         state: {},
@@ -1995,6 +2005,7 @@ test("no decision source resolves to an actionable wait without notification or 
     assert.equal(report.terminal, null);
     assert.deepEqual(report.owner_notifications, []);
     assert.match(report.reason, /PR_MONITOR_LLM_CMD/);
+    assert.match(report.reason, /PR_MONITOR_LLM_API_KEY/);
     assert.match(report.reason, /OPENROUTER_API_KEY/);
     assert.equal(tick.output, "", "a configuration gap must stay silent");
     assert.equal(Object.hasOwn(tick.state[`${REPO}#7`], "llm_failures"), false);
@@ -2052,13 +2063,176 @@ test("model+credential remains the deployed decision source when no command is d
     assert.equal(calls.length, 1);
     assert.equal(calls[0].url, "https://openrouter.ai/api/v1/chat/completions");
     assert.equal(calls[0].init.headers.Authorization, "Bearer test-key");
+    assert.equal(calls[0].init.headers["Content-Type"], "application/json");
     const requestBody = JSON.parse(calls[0].init.body);
     assert.equal(requestBody.temperature, 0);
+    assert.equal(requestBody.response_format.type, "json_object");
+    assert.equal(requestBody.messages[0].role, "system");
     assert.equal(JSON.parse(requestBody.messages[1].content).head_sha, "model123");
     assert.equal(out.reports[0].action, "wait");
     assert.equal(out.reports[0].reason, "model decided");
     assert.equal(out.reports[0].decision_source, "model_credential");
   } finally {
     globalThis.fetch = originalFetch;
+  }
+});
+/** A loopback stub of a chat-completions provider: records every request and
+ * answers with a fixed decision. No external network. */
+function startStubChatProvider(decision) {
+  const requests = [];
+  const server = http.createServer((req, res) => {
+    let body = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => { body += chunk; });
+    req.on("end", () => {
+      requests.push({ method: req.method, url: req.url, headers: req.headers, body });
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({
+        choices: [{ message: { content: JSON.stringify(decision) } }],
+      }));
+    });
+  });
+  return new Promise((resolve, reject) => {
+    server.on("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      resolve({
+        endpoint: `http://127.0.0.1:${server.address().port}/v1/chat/completions`,
+        requests,
+        close: () => new Promise((done) => server.close(done)),
+      });
+    });
+  });
+}
+
+test("a configurable provider endpoint and credential drive the decision through the configured chat-completions provider", async () => {
+  const home = makeTempDir("pr-monitor-provider-home-");
+  const secret = "sk-custom-provider-secret-108";
+  const stub = await startStubChatProvider({ action: "request_review", reason: "provider decided" });
+  const stderr = [];
+  const originalConsoleError = console.error;
+  console.error = (...args) => { stderr.push(args.map(String).join(" ")); };
+  try {
+    const out = await withEnv(
+      {
+        ...NO_DECISION_ENV,
+        HOME: home,
+        PR_MONITOR_LLM_ENDPOINT: stub.endpoint,
+        PR_MONITOR_LLM_API_KEY: secret,
+      },
+      () => runMonitorOnce({
+        repos: [REPO],
+        state: {},
+        nowMs: Date.parse("2026-09-08T00:00:00.000Z"),
+        dryRun: true,
+        emitJsonReport: true,
+        runGhFn: repoScopeGh("provider123"),
+        collectPrStateFn: async () => makeCtx({ headSha: "provider123" }),
+      })
+    );
+
+    assert.equal(stub.requests.length, 1);
+    const request = stub.requests[0];
+    assert.equal(request.method, "POST");
+    assert.equal(request.url, "/v1/chat/completions");
+    assert.equal(request.headers.authorization, `Bearer ${secret}`);
+    assert.equal(request.headers["content-type"], "application/json");
+    const body = JSON.parse(request.body);
+    assert.equal(typeof body.model, "string");
+    assert.equal(body.temperature, 0);
+    assert.equal(body.response_format.type, "json_object");
+    assert.equal(body.messages[0].role, "system");
+    assert.equal(JSON.parse(body.messages[1].content).head_sha, "provider123");
+
+    assert.equal(out.reports[0].action, "request_review");
+    assert.equal(out.reports[0].reason, "provider decided");
+    assert.equal(out.reports[0].decision_source, "model_credential");
+    assert.match(out.output, /\[DRY-RUN\].*@copilot code review/);
+
+    for (const surface of [out.output, JSON.stringify(out.reports), JSON.stringify(out.state), stderr.join("\n")]) {
+      assert.doesNotMatch(surface, new RegExp(secret));
+    }
+    assert.deepEqual(stderr, []);
+  } finally {
+    console.error = originalConsoleError;
+    await stub.close();
+  }
+});
+
+test("PR_MONITOR_LLM_API_KEY defaults to OPENROUTER_API_KEY for a custom endpoint", async () => {
+  const stub = await startStubChatProvider({ action: "wait", reason: "legacy key at custom endpoint" });
+  try {
+    const out = await withEnv(
+      {
+        ...NO_DECISION_ENV,
+        HOME: makeTempDir("pr-monitor-provider-legacy-home-"),
+        PR_MONITOR_LLM_ENDPOINT: stub.endpoint,
+        OPENROUTER_API_KEY: "legacy-openrouter-key",
+      },
+      () => runMonitorOnce({
+        repos: [REPO],
+        state: {},
+        nowMs: Date.parse("2026-09-08T00:00:00.000Z"),
+        dryRun: true,
+        runGhFn: repoScopeGh("providerlegacy123"),
+        collectPrStateFn: async () => makeCtx({ headSha: "providerlegacy123" }),
+      })
+    );
+
+    assert.equal(stub.requests.length, 1);
+    assert.equal(stub.requests[0].headers.authorization, "Bearer legacy-openrouter-key");
+    assert.equal(out.reports[0].action, "wait");
+    assert.equal(out.reports[0].reason, "legacy key at custom endpoint");
+    assert.equal(out.reports[0].decision_source, "model_credential");
+  } finally {
+    await stub.close();
+  }
+});
+
+test("the provider credential never reaches the report, output, state or stderr when the provider fails", async () => {
+  const home = makeTempDir("pr-monitor-provider-fail-home-");
+  const secret = "sk-provider-secret-must-not-leak-108";
+  const stderr = [];
+  const originalFetch = globalThis.fetch;
+  const originalConsoleError = console.error;
+  globalThis.fetch = async () => { throw new TypeError("provider unavailable"); };
+  console.error = (...args) => { stderr.push(args.map(String).join(" ")); };
+  try {
+    let state = {};
+    const ticks = [];
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const tick = await withEnv(
+        {
+          ...NO_DECISION_ENV,
+          HOME: home,
+          PR_MONITOR_LLM_ENDPOINT: "http://127.0.0.1:1/v1/chat/completions",
+          PR_MONITOR_LLM_API_KEY: secret,
+        },
+        () => runMonitorOnce({
+          repos: [REPO],
+          state,
+          nowMs: Date.parse("2026-09-08T00:00:00.000Z") + attempt * 600_000,
+          dryRun: true,
+          emitJsonReport: true,
+          runGhFn: repoScopeGh("providerfail123"),
+          collectPrStateFn: async () => makeCtx({ headSha: "providerfail123" }),
+        })
+      );
+      ticks.push(tick);
+      state = tick.state;
+    }
+
+    assert.equal(ticks[2].reports[0].action, "llm_failed");
+    for (const surface of [
+      ...ticks.map((tick) => tick.output),
+      ...ticks.map((tick) => JSON.stringify(tick.reports)),
+      JSON.stringify(ticks.at(-1).state),
+      stderr.join("\n"),
+    ]) {
+      assert.doesNotMatch(surface, new RegExp(secret));
+    }
+    assert.deepEqual(stderr, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.error = originalConsoleError;
   }
 });
