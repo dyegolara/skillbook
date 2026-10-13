@@ -21,12 +21,9 @@ launches into a visible Kepler terminal from the shared worktree, started by
 **Standalone entry**: `/create-pr` without a task or a spec asks the user
 which one — the spec issue, or the tracker issue at hand — before it reads
 the handoff doc; the answer names the run's subject and the issues the PR
-closes. The ids resolve from the answer's context — the standalone session's
-own Kepler metadata (`GET /agent/sessions`, filtered by the worktree) or a
-live worktree entry (`GET /terminal/list`, chain-labeled preferred) — and
-ride the helper's explicit `--repo-id/--worktree-id/--task-id` flags. The
-helper's no-anchor-no-flags hard error stands as the standalone path —
-standalone invocations are outside the chain's contract.
+closes. Standalone invocations are outside the chain's contract; `create-pr`
+is the chain's last stage and launches nothing, so no ids resolve and no
+helper flags apply on this path.
 
 ## Process
 
