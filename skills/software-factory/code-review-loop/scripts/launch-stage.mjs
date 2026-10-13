@@ -96,13 +96,25 @@ export const VERIFY_TIMEOUT_MS = 5000;
 export const VERIFY_MAX_RELAUNCHES = 1;
 
 /**
+ * The `chain #<spec> <stage>` core, built once and shared by the three
+ * emitted shapes: the label (`chain #N: S`), the sentinel
+ * (`CHAIN-STAGE-START: chain #N S`) and the FAILED marker
+ * (`FAILED: chain #N S gave up after N attempts`). The label's colon is the
+ * shapes' one difference, so the separator between spec and stage is a
+ * parameter; the spec goes through `specNumber` here, once for all three.
+ */
+export function chainCore(spec, stage, separator = " ") {
+  return `chain #${specNumber(spec)}${separator}${stage}`;
+}
+
+/**
  * The execution sentinel the wrapper prints before attempt 1. It is the
  * stable string the helper greps the terminal buffer for; the PTY's echo of
  * the injected command contains it too, so only a standalone line counts as
  * execution (see `sentinelSeen`).
  */
 export function stageSentinel(spec, stage) {
-  return `${SENTINEL_PREFIX} chain #${specNumber(spec)} ${stage}`;
+  return `${SENTINEL_PREFIX} ${chainCore(spec, stage)}`;
 }
 
 /**
@@ -228,7 +240,7 @@ export function buildRetryWrapper(stage, spec, pointers, worktreePath) {
   const sentinel = stageSentinel(spec, stage); // the first action, before attempt 1
   const resumeCommand = buildResumeCommand({ stage, spec, pointers, worktreePath });
   const marker = [
-    `FAILED: chain #${spec} ${stage} gave up after ${RETRY_ATTEMPTS} attempts`,
+    `FAILED: ${chainCore(spec, stage)} gave up after ${RETRY_ATTEMPTS} attempts`,
     `FAILED: resume with: ${resumeCommand}`,
   ];
   const sleepCases = RETRY_SLEEPS_SECONDS.map((seconds, index) => `${index + 1}) sleep ${seconds};;`).join(" ");
@@ -249,10 +261,10 @@ export function buildTerminalInput(stage, spec, pointers, worktreePath) {
 }
 
 export function stageLabel(spec, stage) {
-  return `chain #${specNumber(spec)}: ${stage}`;
+  return chainCore(spec, stage, ": ");
 }
 
-/** The one spec-number guard: both the label and the sentinel carry it. */
+/** The one spec-number guard: the label, the sentinel and the FAILED marker all carry it. */
 function specNumber(spec) {
   const text = String(spec ?? "");
   if (!/^\d+$/.test(text)) {
@@ -623,7 +635,7 @@ export async function launchStage({ stage, spec, pointers, flags, deps = {} }) {
     worktreePath,
     apiBase,
     fetchImpl,
-    sleepImpl: deps.verifySleep,
+    sleepImpl: deps.sleepImpl,
   });
   return { path: "api", ...launched };
 }

@@ -18,6 +18,7 @@ import {
   buildResumeCommand,
   buildRetryWrapper,
   buildTerminalInput,
+  chainCore,
   createLabeledSession,
   failureLines,
   isConnectionError,
@@ -92,6 +93,19 @@ test("buildTerminalInput terminates the injected retry wrapper with a newline", 
 });
 
 // --- verified-inject: the execution sentinel ---
+
+test("chainCore builds the chain #<spec> <stage> core the three emitted shapes share", () => {
+  assert.equal(chainCore("55", "dev-flow"), "chain #55 dev-flow");
+  assert.equal(chainCore(77, "code-review-loop"), "chain #77 code-review-loop");
+  assert.equal(chainCore("55", "dev-flow", ": "), "chain #55: dev-flow");
+  assert.throws(() => chainCore("abc", "dev-flow"), { message: 'spec must be a number — got "abc"' });
+  assert.ok(stageSentinel("55", "dev-flow").includes(chainCore("55", "dev-flow")));
+  assert.ok(
+    buildRetryWrapper("dev-flow", "55", "pointers", WORKTREE_PATH).includes(
+      `FAILED: ${chainCore("55", "dev-flow")} gave up after ${RETRY_ATTEMPTS} attempts`
+    )
+  );
+});
 
 test("stageSentinel is the documented CHAIN-STAGE-START line and guards the spec", () => {
   assert.equal(SENTINEL_PREFIX, "CHAIN-STAGE-START:");
@@ -881,7 +895,7 @@ function verifyDeps({ fetchImpl, spawnImpl } = {}) {
     worktreePath: "/work/tree",
     spawnImpl,
     write: () => {},
-    verifySleep: async () => {},
+    sleepImpl: async () => {},
   };
 }
 
