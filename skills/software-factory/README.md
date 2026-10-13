@@ -33,7 +33,7 @@ Routes out of `code-review-loop`:
 |---|---|
 | Normal — the fix is obvious and derivable from the code, task or spec | `dev-flow` (fix tickets) |
 | Clean — nothing on either review axis | `create-pr` |
-| Decision-forcing — the fix is not obvious, or the decision is not in the code, task or spec | `grill-with-spec` (re-entry), which pauses the chain on the maintainer |
+| Decision-forcing — the fix is not obvious, or the decision is not in the code, task or spec, or it would change the project's commitments instead of satisfying them | `grill-with-spec` (re-entry), which pauses the chain on the maintainer |
 
 ## How context travels between stages
 
