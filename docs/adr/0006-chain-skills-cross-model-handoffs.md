@@ -182,7 +182,16 @@ context is not independent.
   anchor; on a resume the check line reads the triple from the matched
   terminal's `GET /terminal/list` entry — session → status terminal →
   anchor, one seeded holder rather than two competing mechanisms, so B3
-  is suppressed by documented standard, like B1.
+  is suppressed by documented standard, like B1. Amended 2026-10-13,
+  in-ticket design (ticket #114, fifth decision `6135580212`'s fix-ticket
+  scope item 2) filling open gap (iii): the single echo sits after the
+  triple's resolution and before the fresh path's `POST /terminal/start`
+  — both paths print it once, and when that start fails on a reachable
+  API the triple is already on the buffer, so the fresh form's stage
+  launch still passes the three explicit flags. A failed status terminal
+  costs the live view, not the id bootstrap the fresh launch depends on;
+  the recipe does not retry the start — the missing terminal is the
+  liveness gap (i), not a bootstrap failure.
 - Context travels by pointers, never by conversation: each stage runs the
   `handoff` skill (compacted doc in the OS temp dir) and the next session reads
   durable artifacts — the spec issue, tickets, ADRs, `GLOSSARY.md`, the

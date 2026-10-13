@@ -35,24 +35,43 @@ fresh form launches it once the spec is published; the re-entry form makes
 sure it is alive when the chain resumes. The check reuses an existing live
 terminal on the worktree and never creates a duplicate.
 
-The repo/worktree/task ids come from this grilling session's own Kepler
-metadata: `GET /agent/sessions` filtered by the worktree exposes `repoId`,
-`worktreeId` and `taskId`. With `SPEC` set to the spec issue number, run:
+The repo/worktree/task id triple has one resolution point: this snippet. On a
+resume the check line lifts `repoId`, `worktreeId` and `taskId` from the
+matched terminal's `GET /terminal/list` entry; on a fresh chain the ids resolve
+from this grilling session's own Kepler metadata — `GET /agent/sessions`
+filtered by the worktree exposes `repoId`, `worktreeId` and `taskId`. A single
+echo prints the triple on one line in a stable order (`CHAIN-IDS <repoId>
+<worktreeId> <taskId>`) before the fresh path attempts `POST /terminal/start`,
+so the fresh form's step 4 can pass the echoed values as the three explicit
+`--repo-id/--worktree-id/--task-id` flags even if the start fails. With `SPEC`
+set to the spec issue number, run:
 
 ```bash
 SPEC=<spec>             # the chain's spec issue number
 WORKTREE=$(pwd)         # the shared worktree of this session
 API="http://$(cat ~/.kepler-server/data/server.host):$(cat ~/.kepler-server/data/server.port)"
 
-# Reuse an existing live status terminal; never create a duplicate.
-EXISTING=$(curl -s "$API/terminal/list" | jq -r --arg wt "$WORKTREE" --arg want "chain #$SPEC: status" \
-  '.[] | select(.worktreePath == $wt and .label == $want and (.exited == false)) | .id')
+# Reuse an existing live status terminal; never create a duplicate. The
+# matched entry carries the id triple, so the reuse path needs no second
+# source.
+entry=$(curl -s "$API/terminal/list" | jq -r --arg wt "$WORKTREE" --arg want "chain #$SPEC: status" \
+  '.[] | select(.worktreePath == $wt and .label == $want and (.exited == false)) | "\(.id) \(.repoId) \(.worktreeId) \(.taskId)"' | head -n1)
+read -r EXISTING REPO_ID WORKTREE_ID TASK_ID <<<"$entry"
+
 if [ -z "$EXISTING" ]; then
-  # The ids: this session's own metadata on the same worktree.
+  # Fresh chain: this session's own metadata on the same worktree is the
+  # only id source; the created terminal seeds the anchor.
   ids=$(curl -s "$API/agent/sessions" | jq -r --arg wt "$WORKTREE" \
     '.[] | select(.worktreePath == $wt) | "\(.repoId) \(.worktreeId) \(.taskId)"' | head -n1)
   read -r REPO_ID WORKTREE_ID TASK_ID <<<"$ids"
+fi
 
+# One echo closes both paths: the triple, repoId worktreeId taskId, on one
+# line. It precedes the start attempt, so a failed start still leaves it
+# standing for the fresh form's step 4.
+echo "CHAIN-IDS $REPO_ID $WORKTREE_ID $TASK_ID"
+
+if [ -z "$EXISTING" ]; then
   # Start the labeled terminal, then run the loop in it.
   TERMINAL_ID=$(curl -s -X POST "$API/terminal/start" -H 'content-type: application/json' \
     -d "$(jq -n --arg repoId "$REPO_ID" --arg worktreeId "$WORKTREE_ID" --arg taskId "$TASK_ID" \
