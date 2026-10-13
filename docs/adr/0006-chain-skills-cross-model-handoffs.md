@@ -48,7 +48,23 @@ context is not independent.
   which launches dev-flow exactly as the fresh form — wire the decided
   bootstrap flags, whose values come from the grilling session's own Kepler
   metadata (`GET /agent/sessions` filtered by the worktree);
-  grill-with-spec remains the one stage holding the ids.
+  grill-with-spec remains the one stage holding the ids. Amended
+  2026-10-13, maintainer decision (fifth, the same review's
+  decision-forcing route — this note corrects ticket #100's note above):
+  the explicit id flags are scoped to fresh runs only; the re-entry form's
+  stage launch anchors like every mid-chain launch — its step 1 guarantees
+  the live status terminal that seeds the anchor, and the anchor's
+  chain-label preference yields the same triple the session would resolve.
+  The flags' values travel once: the §Status terminal snippet is the one
+  resolution point — its check line extracts the triple from the matched
+  terminal's entry on a resume, the grilling session's own metadata
+  resolves it on a fresh chain, and a single echo closes both paths — and
+  the fresh form's stage launch passes the echoed triple as the three
+  flags, with no second curl in the launch snippet. Standalone entry
+  without a task or spec asks the user for one; the helper's
+  no-anchor-no-flags hard error stands as the standalone path. Ticket
+  #100's re-entry clause and its in-snippet curl are corrected by the next
+  fix wave.
 - A stage that fails to run or dies mid-run does not stall the chain
   silently. The injected command is a retry wrapper around the stage's
   pinned agent command — whatever the harness, `pi` is not load-bearing —
@@ -151,6 +167,31 @@ context is not independent.
   publication). Open gaps, left undecided: mid-chain liveness — nothing
   re-launches an exited status terminal between the start/resume
   checkpoints — and the label key assumes one chain per worktree.
+  Amended 2026-10-13, maintainer decision (fifth, the wave-7 review's
+  S2/B3): the recipe stays this SKILL.md's bash recipe — "one mechanism"
+  means the helper is the one stage-launch mechanism, the status terminal
+  is not a stage launch, and the scope line decided in the same comment
+  as the bootstrap contract (`grill-with-spec/SKILL.md` launches the
+  status bash-loop terminal) stands; a helper status mode was rejected —
+  it would amend that scope line and grow the helper a mode with no
+  model pin and a second internal id source (ticket #103, the extraction
+  of the recipe into a helper, was closed as superseded by this
+  decision). The snippet's id resolution is the documented two-phase
+  flow — on a fresh chain the grilling session's own metadata is the only
+  source (`GET /agent/sessions`); the created status terminal seeds the
+  anchor; on a resume the check line reads the triple from the matched
+  terminal's `GET /terminal/list` entry — session → status terminal →
+  anchor, one seeded holder rather than two competing mechanisms, so B3
+  is suppressed by documented standard, like B1. Amended 2026-10-13,
+  in-ticket design (ticket #114, fifth decision `6135580212`'s fix-ticket
+  scope item 2) filling open gap (iii): the single echo sits after the
+  triple's resolution and before the fresh path's `POST /terminal/start`
+  — both paths print it once, and when that start fails on a reachable
+  API the triple is already on the buffer, so the fresh form's stage
+  launch still passes the three explicit flags. A failed status terminal
+  costs the live view, not the id bootstrap the fresh launch depends on;
+  the recipe does not retry the start — the missing terminal is the
+  liveness gap (i), not a bootstrap failure.
 - Context travels by pointers, never by conversation: each stage runs the
   `handoff` skill (compacted doc in the OS temp dir) and the next session reads
   durable artifacts — the spec issue, tickets, ADRs, `GLOSSARY.md`, the
