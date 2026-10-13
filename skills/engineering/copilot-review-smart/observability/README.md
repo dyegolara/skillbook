@@ -34,6 +34,32 @@ Zero dependencies beyond Node (`node:http`); plain ESM. The watchdog core
 imports nothing from this package; this package imports only the Tick's
 exported `tickInFlight` liveness reader from `../pr_monitor.mjs`.
 
+## TUI
+
+The coloured terminal client of the same contract ships in this package:
+
+```bash
+node pr_monitor_tui.mjs        # from the skill root
+npm run tui                    # or, from inside this package
+```
+
+It polls `GET /timeline` and `GET /flows` every 2s by default and redraws one
+frame: a header with the loop's tick timeline (done, in-flight, scheduled and
+the next check) and one line per watched PR with its Stage sequence in
+glossary order — past green, current bold yellow, next grey — then the
+terminal outcome in the glossary's words. It never reads the state files: the
+API is the only seam. With the API down it names the URL, says what to start
+and keeps retrying; Ctrl-C exits cleanly.
+
+| Setting | Flag | Env | Default |
+|---|---|---|---|
+| API base URL | `--url` | `PR_MONITOR_OBSERVABILITY_URL` | built from the host/port below |
+| Refresh | `--interval` | `PR_MONITOR_TUI_INTERVAL_MS` | `2000` ms |
+| One frame | `--once` | — | off |
+| Colour | `--color` / `--no-color` | `NO_COLOR` | auto on a TTY |
+
+Zero dependencies; ANSI colour is hand-rolled over `node:*`.
+
 ## Routes
 
 GET only; any other verb answers `405` with `Allow: GET`, any unknown path or
@@ -208,3 +234,9 @@ routes and their payloads, the refusal of other verbs and paths, loopback
 binding, byte-identical state files before and after a full pass (hashed),
 answering with no watchdog process running, live versus dead/absent health,
 and the one-command CLI start.
+
+`test/tui.test.mjs` renders the TUI frame from the same fixture server —
+Stage colours and ANSI sequences included, without a real TTY — runs the live
+refresh loop against it, asserts Ctrl-C exits `0` and that an unreachable API
+prints the actionable message and keeps retrying. A `node:fs` audit preloaded
+into the TUI process proves it never opens the state files.
