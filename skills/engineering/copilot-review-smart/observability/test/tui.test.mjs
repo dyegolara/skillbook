@@ -19,6 +19,17 @@ import { createObservabilityServer } from "../src/server.mjs";
 const SHIM = new URL("../../pr_monitor_tui.mjs", import.meta.url).pathname;
 const AUDIT = new URL("./audit-fs.mjs", import.meta.url);
 
+/** The entry the package's own script names, so the suite fails if the
+ * documented `npm run tui` is a dead script. */
+function packageTuiScript() {
+  const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const command = pkg.scripts?.tui;
+  assert.ok(command, "package.json must define a tui script");
+  const match = /^node\s+(.+)$/.exec(command);
+  assert.ok(match, `the tui script must run a Node entry: ${command}`);
+  return new URL(`../${match[1]}`, import.meta.url).pathname;
+}
+
 const NOW = Date.parse("2026-09-08T00:00:00.000Z");
 const HOUR = 3600_000;
 const iso = (ms) => new Date(ms).toISOString();
@@ -195,7 +206,7 @@ class Fixture {
           last_head_sha: "sha-7",
           next_check_at: iso(NOW + 2 * HOUR),
           tick_history: [
-            { ts: iso(NOW - HOUR), action: "request_fix", reason: "unaddressed inline comments", terminal: null, decision_source: "command" },
+            { ts: iso(NOW - HOUR), action: "request_fix", reason: "unaddressed inline comments", terminal: null, decision_source: "decision_command" },
           ],
         },
         "acme/widgets#9": {
@@ -288,6 +299,25 @@ async function stopWithSigint(child) {
   const [code] = await once(child, "exit");
   return code;
 }
+
+test("the package's tui script renders a frame against the API", async () => {
+  const fixture = new Fixture();
+  await fixture.start();
+  try {
+    const child = spawn(
+      process.execPath,
+      [packageTuiScript(), "--url", fixture.baseUrl, "--once", "--no-color"],
+      { stdio: ["ignore", "pipe", "pipe"] }
+    );
+    const out = collectOutput(child.stdout);
+    const [code] = await once(child, "exit");
+    assert.equal(code, 0, out.text);
+    assert.match(out.text, /acme\/widgets#7/);
+    assert.match(out.text, /Stuck PR/);
+  } finally {
+    await fixture.stop();
+  }
+});
 
 test("the TUI frame is built from the API payloads", async () => {
   const fixture = new Fixture();

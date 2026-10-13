@@ -1,7 +1,13 @@
 /** Pure projections: state files in, JSON payloads out. Nothing here reads or
  * writes; `server.mjs` loads the files and hands them to these functions. */
 
-import { tickInFlight } from "../../pr_monitor.mjs";
+import { tickInFlight } from "../../tick_liveness.mjs";
+import { isGateWaitReason } from "../../decision.mjs";
+import { STAGES } from "./stages.mjs";
+import {
+  isNoDecisionSource,
+  NO_DECISION_SOURCE_STAGE_OUTCOME,
+} from "../../decision_source.mjs";
 
 const FLOW_KEY_RE = /^([^/\s#]+\/[^/\s#]+)#(\d+)$/;
 
@@ -37,6 +43,19 @@ export function flowKeys(tickState, listenerState) {
   return [...keys].sort();
 }
 
+/** One persisted tick record, projected for a client. The timeline and the
+ * Flow's tick history must expose the same fields with the same defaults, so
+ * both go through here. */
+function tickRecordFields(record) {
+  return {
+    ts: record?.ts ?? null,
+    action: record?.action ?? null,
+    reason: record?.reason ?? null,
+    terminal: record?.terminal ?? null,
+    ...(record?.decision_source ? { decision_source: record.decision_source } : {}),
+  };
+}
+
 /** `GET /health`: the Listener's health shape, projected from disk. The
  * `status` answers whether the watchdog is alive (`ok` / `dead` / `absent`);
  * `last_delivery` is in-memory in the live Listener and is therefore `null`
@@ -69,11 +88,7 @@ export function projectTimeline({ tickState, listenerState, nowMs, isAliveFn }) 
         key: flow.key,
         repo: flow.repo,
         pr: flow.num,
-        ts: record?.ts ?? null,
-        action: record?.action ?? null,
-        reason: record?.reason ?? null,
-        terminal: record?.terminal ?? null,
-        ...(record?.decision_source ? { decision_source: record.decision_source } : {}),
+        ...tickRecordFields(record),
       });
     }
   }
@@ -133,10 +148,7 @@ export function projectTimeline({ tickState, listenerState, nowMs, isAliveFn }) 
 // projection derives, from the latest Tick record for a Flow, which Stages
 // that Tick demonstrably completed. The README documents the full table.
 
-const STAGE_ORDER = ["collect", "check", "reuse", "decide", "act", "schedule"];
-
 const FETCH_FAILED_RE = /could not fetch/i;
-const GATE_WAIT_RE = /conflict-resolution request is newer than|rebase retry budget exhausted|mergeability|has not computed/i;
 const LLM_REASON_RE = /\bLLM\b/i;
 
 /** Stages the latest Tick demonstrably completed, excluding `schedule` (which
@@ -155,8 +167,16 @@ function reachedStages(record) {
   } else if (action === "wait") {
     // Gate waits stop at `check`; every other wait passed the signature
     // cache. Only explicit evidence proves the LLM ran.
-    if (!GATE_WAIT_RE.test(reason)) reached.add("reuse");
-    if (record?.decision_source || LLM_REASON_RE.test(reason)) reached.add("decide");
+    if (!isGateWaitReason(reason)) reached.add("reuse");
+    // Layer 3 carries decision_source "none" and its reason says "LLM" (no
+    // decision source configured), which is a configuration gap, not a
+    // decision: the caller marks `decide` current for that record instead.
+    if (
+      !isNoDecisionSource(record?.decision_source) &&
+      (record?.decision_source || LLM_REASON_RE.test(reason))
+    ) {
+      reached.add("decide");
+    }
     if (record?.terminal === "needs-human") reached.add("act");
   }
   // `skip_wip` is the draft/WIP gate: collect + check only.
@@ -170,11 +190,12 @@ function stageOutcome(stage, { last, action, reason, decisionSource, allClear, d
     case "check":
       if (action === "skip_wip") return "draft/WIP — skipped";
       if (action === "request_rebase") return "merge conflicts — conflict-resolution policy";
-      if (GATE_WAIT_RE.test(reason)) return `gate held: ${reason}`;
+      if (isGateWaitReason(reason)) return `gate held: ${reason}`;
       return "deterministic gates passed";
     case "reuse":
       return "signature cache checked";
     case "decide":
+      if (isNoDecisionSource(decisionSource)) return NO_DECISION_SOURCE_STAGE_OUTCOME;
       if (decisionSource) return `decision made by ${decisionSource}`;
       if (action === "llm_failed") return "LLM decision failed";
       return "LLM decision made";
@@ -203,9 +224,12 @@ function projectStages({ entry, expectation, deadlineIso }) {
   const allClear = action === "notify_ready" && last?.terminal === "done";
   const armed = deadlineIso !== null && deadlineIso !== undefined;
 
-  const statuses = Object.fromEntries(STAGE_ORDER.map((stage) => [stage, "next"]));
+  const statuses = Object.fromEntries(STAGES.map((stage) => [stage, "next"]));
   if (last) {
     for (const stage of reachedStages(last)) statuses[stage] = "past";
+    // Layer 3 is a configuration gap: the Flow waits at `decide` for a
+    // decision source rather than having completed a decision.
+    if (isNoDecisionSource(last.decision_source)) statuses.decide = "current";
     statuses.schedule = allClear && !armed ? "past" : "current";
   } else if (armed || expectation) {
     statuses.schedule = "current";
@@ -213,7 +237,7 @@ function projectStages({ entry, expectation, deadlineIso }) {
     statuses.collect = "current";
   }
 
-  return STAGE_ORDER.map((stage) => {
+  return STAGES.map((stage) => {
     const status = statuses[stage];
     if (status === "next") return { stage, status, outcome: null, at: null };
     return {
@@ -249,16 +273,6 @@ function effectiveDeadline(entry, expectation) {
   return Number.isNaN(persisted) ? null : persisted;
 }
 
-function normalizeTick(record) {
-  return {
-    ts: record?.ts ?? null,
-    action: record?.action ?? null,
-    reason: record?.reason ?? null,
-    terminal: record?.terminal ?? null,
-    ...(record?.decision_source ? { decision_source: record.decision_source } : {}),
-  };
-}
-
 /** One Flow in full: the row fields plus the Stage sequence, the Tick history
  * and the armed Expectation. Returns null when neither state file knows the
  * key. */
@@ -288,7 +302,7 @@ export function projectFlow({ key, tickState, listenerState, nowMs }) {
     next_check_at: deadlineIso,
     terminal: terminalOutcome(entry, last),
     done: Boolean(last?.terminal === "done" && !armed),
-    tick_history: history.map(normalizeTick),
+    tick_history: history.map(tickRecordFields),
     expectation: expectation
       ? {
           repo: flow.repo,

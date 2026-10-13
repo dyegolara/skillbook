@@ -25,9 +25,9 @@ function defaultTickState() {
       last_head_sha: "sha-7",
       next_check_at: new Date(NOW + 6 * HOUR).toISOString(),
       tick_history: [
-        record(NOW - 13 * HOUR, "request_fix", "unaddressed inline comments", null, { decision_source: "command" }),
+        record(NOW - 13 * HOUR, "request_fix", "unaddressed inline comments", null, { decision_source: "decision_command" }),
         record(NOW - 1 * HOUR, "request_fix", "pending fix older than 12h with no new feedback; retrying.", null, {
-          decision_source: "command",
+          decision_source: "decision_command",
         }),
       ],
     },
@@ -56,7 +56,7 @@ function defaultTickState() {
     "acme/gadgets#3": {
       last_head_sha: "sha-3",
       next_check_at: new Date(NOW + 1 * HOUR).toISOString(),
-      tick_history: [record(NOW - 1 * HOUR, "wait", "Mergeability unknown", null)],
+      tick_history: [record(NOW - 1 * HOUR, "wait", "GitHub has not computed PR mergeability yet; wait for next tick.", null)],
     },
     tick_in_flight: {
       pid: process.pid,
@@ -164,6 +164,14 @@ function firstLine(stream, predicate, timeoutMs = 10_000) {
   });
 }
 
+/** Stop a spawned CLI whether it is still running or exited early. */
+async function reapChild(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return;
+  const exited = once(child, "exit").catch(() => {});
+  child.kill("SIGTERM");
+  await exited;
+}
+
 // ---------------------------------------------------------------------------
 // GET /health — the Listener's health shape, driven by the pid file
 // ---------------------------------------------------------------------------
@@ -236,7 +244,7 @@ test("GET /timeline projects executed, in-flight and scheduled ticks", async () 
     assert.equal(body.executed[0].repo, "acme/widgets");
     assert.equal(body.executed[0].pr, 7);
     assert.equal(body.executed[0].terminal, null);
-    assert.equal(body.executed[0].decision_source, "command");
+    assert.equal(body.executed[0].decision_source, "decision_command");
 
     assert.deepEqual(body.in_flight, {
       pid: process.pid,
@@ -311,7 +319,7 @@ test("GET /flows returns one row per watched PR in the glossary's Stage words", 
       act: "past",
       schedule: "current",
     });
-    assert.equal(stageOf(widgets7, "decide").outcome, "decision made by command");
+    assert.equal(stageOf(widgets7, "decide").outcome, "decision made by decision_command");
     assert.equal(stageOf(widgets7, "act").outcome, "asked Copilot to fix review comments");
     assert.match(stageOf(widgets7, "schedule").outcome, /^next check at /);
     assert.equal(stageOf(widgets7, "collect").at, new Date(NOW - 1 * HOUR).toISOString());
@@ -345,6 +353,10 @@ test("GET /flows returns one row per watched PR in the glossary's Stage words", 
     assert.equal(gadgets3.terminal, null);
     assert.equal(gadgets3.done, false);
     assert.equal(gadgets3.next_check_at, new Date(NOW + 1 * HOUR).toISOString());
+    assert.match(
+      stageOf(gadgets3, "check").outcome,
+      /^gate held: GitHub has not computed PR mergeability/
+    );
     assert.deepEqual(statusesOf(gadgets3), {
       collect: "past",
       check: "past",
@@ -377,6 +389,39 @@ test("a needs-human Flow keeps its glossary outcome and is not done", async () =
     assert.equal(flow.terminal, "Needs-human");
     assert.equal(flow.done, false);
     assert.equal(stageOf(flow, "act").status, "past");
+  } finally {
+    await fixture.stop();
+  }
+});
+
+test("a Flow with decision_source none reads as a configuration gap, not a decision made", async () => {
+  const state = defaultTickState();
+  state["acme/widgets#14"] = {
+    last_head_sha: "sha-14",
+    next_check_at: new Date(NOW + 1 * HOUR).toISOString(),
+    tick_history: [
+      record(
+        NOW - 1 * HOUR,
+        "wait",
+        "No LLM decision source is configured: define the PR_MONITOR_LLM_CMD environment " +
+          "variable or a chat-completions provider with PR_MONITOR_LLM_API_KEY.",
+        null,
+        { decision_source: "none" }
+      ),
+    ],
+  };
+  const fixture = new Fixture({ state });
+  await fixture.start();
+  try {
+    const { status, body } = await fixture.get("/flows/acme/widgets/14");
+    assert.equal(status, 200);
+    // The decide Stage is current — the Flow waits on a configuration gap —
+    // not past, and it must never read as an adapter that ran.
+    assert.equal(stageOf(body, "decide").status, "current");
+    assert.equal(body.stage, "decide");
+    assert.match(stageOf(body, "decide").outcome, /no decision source configured/);
+    assert.match(stageOf(body, "decide").outcome, /PR_MONITOR_LLM_CMD|PR_MONITOR_LLM_API_KEY/);
+    assert.doesNotMatch(JSON.stringify(body.stages), /decision made by none/);
   } finally {
     await fixture.stop();
   }
@@ -424,7 +469,7 @@ test("GET /flows/:owner/:repo/:num returns the Flow in full and 404s an unknown 
       action: "request_fix",
       reason: "unaddressed inline comments",
       terminal: null,
-      decision_source: "command",
+      decision_source: "decision_command",
     });
     assert.deepEqual(body.expectation, {
       repo: "acme/widgets",
@@ -507,10 +552,67 @@ test("the server binds loopback only", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// the package boundary: a projection must not load the writer
+// ---------------------------------------------------------------------------
+
+test("the observability package never imports the watchdog's writer script", () => {
+  const srcDir = new URL("../src/", import.meta.url).pathname;
+  for (const file of fs.readdirSync(srcDir)) {
+    const source = fs.readFileSync(path.join(srcDir, file), "utf8");
+    assert.doesNotMatch(
+      source,
+      /from\s+["'][^"']*pr_monitor\.mjs["']/,
+      `${file} must not import the writer; shared liveness lives in ../../tick_liveness.mjs`
+    );
+  }
+});
+
+// ---------------------------------------------------------------------------
 // the documented one-command start
 // ---------------------------------------------------------------------------
 
 const SHIM = new URL("../../pr_monitor_observability.mjs", import.meta.url).pathname;
+
+/** The entry the package's own script names, so the suite fails if the
+ * documented `npm start` is a dead script. */
+function packageStartScript() {
+  const pkg = JSON.parse(fs.readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const command = pkg.scripts?.start;
+  assert.ok(command, "package.json must define a start script");
+  const match = /^node\s+(.+)$/.exec(command);
+  assert.ok(match, `the start script must run a Node entry: ${command}`);
+  return new URL(`../${match[1]}`, import.meta.url).pathname;
+}
+
+test("the package's start script runs the observability server", async () => {
+  const fixture = new Fixture({ pid: null });
+  const child = spawn(
+    process.execPath,
+    [
+      packageStartScript(),
+      "--port",
+      "0",
+      "--state",
+      fixture.statePath,
+      "--listener-state",
+      fixture.listenerStatePath,
+      "--pid",
+      fixture.pidPath,
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] }
+  );
+  try {
+    const line = await firstLine(child.stdout, (l) => l.includes("observability listening"));
+    const url = line.match(/http:\/\/127\.0\.0\.1:\d+/)?.[0];
+    assert.ok(url, `no loopback URL in: ${line}`);
+    const response = await fetch(`${url}/health`);
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).status, "absent");
+  } finally {
+    await reapChild(child);
+    await fixture.stop();
+  }
+});
 
 test("the CLI starts the server with one command and honours port and state paths", async () => {
   const fixture = new Fixture({ pid: null });
@@ -540,8 +642,7 @@ test("the CLI starts the server with one command and honours port and state path
     assert.deepEqual(body.tracked_flows, ["acme/gadgets#3", "acme/widgets#11", "acme/widgets#7", "acme/widgets#9"]);
     assert.deepEqual(body.pending_expectations, ["acme/widgets#7", "acme/widgets#9"]);
   } finally {
-    child.kill("SIGTERM");
-    await once(child, "exit").catch(() => {});
+    await reapChild(child);
     await fixture.stop();
   }
 });

@@ -321,7 +321,13 @@ A Tick resolves one decider per invocation, first match wins:
    |---|---|---|---|
    | `pi` | `PI_CODING_AGENT=true` or `AI_AGENT=pi` | `PI_PROVIDER` / `PI_MODEL` | `pi --print [--provider …] [--model …] …` |
    | `claude` | `CLAUDECODE=1` or `AI_AGENT=claude-code…` | `ANTHROPIC_MODEL` | `claude --print [--model …] …` |
-   | `opencode` | `OPENCODE=1` or `OPENCODE_CLIENT` | `OPENCODE_CONFIG_CONTENT.model` | `opencode run [--model …] …` |
+   | `opencode` | `OPENCODE=1`, `OPENCODE_CLIENT` or `AI_AGENT=opencode` | `OPENCODE_CONFIG_CONTENT.model` | `opencode run [--model …] …` |
+
+   Discovery is innermost-first: a nested agent session inherits the outer
+   session's env, so when several markers coexist the explicit `AI_AGENT`
+   marker names the session that actually surrounds the process and selects
+   that adapter (when its CLI is runnable). Without `AI_AGENT`, the table's
+   registry order is the deterministic fallback.
 
    Each adapter authenticates through its own CLI; the skill never reads or
    prints another tool's credential store. Claude Code authentication through
@@ -352,8 +358,9 @@ deployed cron location), and never printed:
 Traceability: every LLM decision carries `decision_source` in the Tick's JSON
 report — `decision_command`, `model_credential`,
 `auto:<agent>` or `auto:<agent>:<provider>/<model>` (the provider part only
-when the host exposes one) or `none` (deterministic gate decisions carry
-none). The same value persists into the per-PR Tick history
+when the host exposes one), or `none` when no decision source is configured
+(a configuration gap, not a decision). Deterministic gate decisions carry no
+`decision_source` field at all. The same value persists into the per-PR Tick history
 (`tick_history` in the state file), so a decision can be traced after the
 fact; the observability API projects it (see "Observability API" above).
 

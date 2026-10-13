@@ -7,9 +7,9 @@
  */
 
 import { fetchFrame, renderApiError, renderFrame } from "./tui.mjs";
+import { pathToFileURL } from "node:url";
+import { DEFAULT_HOST, DEFAULT_PORT } from "./paths.mjs";
 
-export const DEFAULT_HOST = "127.0.0.1";
-export const DEFAULT_PORT = 8788;
 export const DEFAULT_INTERVAL_MS = 2000;
 
 const USAGE = `Usage: node pr_monitor_tui.mjs [options]
@@ -144,4 +144,13 @@ export async function main(
   };
 
   await tick();
+}
+
+// Running this module directly (the package's `npm run tui`) is the same
+// command as the root shim; importing it for tests must do nothing.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((error) => {
+    console.error(`⚠️ TUI crashed: ${error?.stack || error}`);
+    process.exitCode = 1;
+  });
 }

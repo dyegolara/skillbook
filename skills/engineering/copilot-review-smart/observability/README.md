@@ -31,8 +31,13 @@ It prints the bound URL and listens on `http://127.0.0.1:8788` by default.
 | Listener pid | `--pid` | `PR_MONITOR_WEBHOOK_PID_PATH` | `~/.cache/pr-monitor/listener.pid` |
 
 Zero dependencies beyond Node (`node:http`); plain ESM. The watchdog core
-imports nothing from this package; this package imports only the Tick's
-exported `tickInFlight` liveness reader from `../pr_monitor.mjs`.
+imports nothing from this package; this package imports no watchdog module
+that carries process state. The Tick's liveness rule (`tickInFlight`) and
+`isPidAlive` live in the dependency-free `tick_liveness.mjs` at the skill
+root, which both the Tick and this package import. The canonical
+`decision_source` vocabulary comes from `decision_source.mjs`, another pure
+constant module, and the gate-wait matcher from `decision.mjs` (pure: no
+process state, no env reads).
 
 ## TUI
 
@@ -104,7 +109,7 @@ Listener is not running.
   "executed": [
     { "key": "owner/repo#7", "repo": "owner/repo", "pr": 7, "ts": "…",
       "action": "request_review", "reason": "…", "terminal": null,
-      "decision_source": "command" }
+      "decision_source": "decision_command" }
   ],
   "in_flight": { "pid": 12345, "started_at": "…", "heartbeat_at": "…", "alive": true },
   "scheduled": [
@@ -118,7 +123,7 @@ Listener is not running.
 - `executed` is every persisted Tick outcome, oldest first, tagged with its
   Flow.
 - `in_flight` is the run-level `tick_in_flight` marker filtered through the
-  Tick's exported `tickInFlight`: `alive` is true only while the recorded pid
+  shared `tickInFlight` liveness rule (`tick_liveness.mjs`): `alive` is true only while the recorded pid
   exists and the heartbeat is fresh; a crashed Tick reads `alive: false`, and
   no marker reads `null`. The marker is run-level, so it names no Flow.
 - `scheduled` is the armed Expectations with their deadlines, plus a persisted
@@ -140,7 +145,7 @@ One row per watched PR, sorted by key:
     { "stage": "collect", "status": "past", "outcome": "PR state collected", "at": "…" },
     { "stage": "check", "status": "past", "outcome": "deterministic gates passed", "at": "…" },
     { "stage": "reuse", "status": "past", "outcome": "signature cache checked", "at": "…" },
-    { "stage": "decide", "status": "past", "outcome": "decision made by command", "at": "…" },
+    { "stage": "decide", "status": "past", "outcome": "decision made by decision_command", "at": "…" },
     { "stage": "act", "status": "past", "outcome": "asked Copilot to review", "at": "…" },
     { "stage": "schedule", "status": "current", "outcome": "next check at …", "at": "…" }
   ],
@@ -177,7 +182,8 @@ A Stage is `past` when the latest Tick record proves it ran:
 | `action: request_rebase` | `act` (the conflict gate decided; cache and LLM skipped) |
 | `action: request_review`, `request_fix`, `notify_ready`, `llm_failed` | `reuse`, `decide`, `act` |
 | `action: wait`, gate reason (conflict window, rebase budget, unknown mergeability) | — (the gate held before the cache) |
-| `action: wait`, any other reason | `reuse`; plus `decide` when `decision_source` is present or the reason names the LLM |
+| `action: wait`, any other reason | `reuse`; plus `decide` when `decision_source` is present and is not `none`, or the reason names the LLM |
+| `action: wait`, `decision_source: none` (no LLM configured) | `reuse`; `decide` stays `current` — a configuration gap waiting for setup, never a completed decision |
 | `action: wait`, `terminal: needs-human` | plus `act` (the escalation notification) |
 | reason says the PR state could not be fetched | `collect` only |
 
@@ -201,7 +207,8 @@ Stage outcomes are fixed strings: `collect` ("PR state collected" /
 "PR state collection failed"), `check` ("deterministic gates passed",
 "draft/WIP — skipped", the conflict-policy label, or "gate held: …"), `reuse`
 ("signature cache checked"), `decide` ("decision made by <adapter>",
-"LLM decision made", "LLM decision failed"), `act` (the action taken, or
+"LLM decision made", "LLM decision failed", or "no decision source configured
+— waiting for setup (PR_MONITOR_LLM_CMD or PR_MONITOR_LLM_API_KEY)"), `act` (the action taken, or
 "escalated to owner", or "no action taken"), and `schedule` as above.
 
 ### Terminal outcomes

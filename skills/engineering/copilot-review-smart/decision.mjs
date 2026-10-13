@@ -1,3 +1,5 @@
+import { DECISION_SOURCES } from "./decision_source.mjs";
+
 const COPILOT_SUBSTR = "copilot";
 const WIP_TITLE_RE = /^\s*\[?(wip|draft|dnm|do not merge|work in progress)\b/i;
 const H = (h) => h * 3600_000;
@@ -45,6 +47,27 @@ function newestRebaseRequestTsMs(issueTranscript, copilotSubstr = COPILOT_SUBSTR
   return best;
 }
 
+/** The opening words of every deterministic gate wait emitted before the
+ * signature cache. The reasons are the interface the observability
+ * projection reads, so they are defined here beside the gate that emits
+ * them: `isGateWaitReason` and the emitters can never drift apart. */
+const CONFLICT_WINDOW_PREFIX = "Conflict-resolution request is newer than";
+const REBASE_BUDGET_PREFIX = "Rebase retry budget exhausted";
+const MERGE_UNKNOWN_REASON = "GitHub has not computed PR mergeability yet; wait for next tick.";
+
+/** Did a deterministic gate hold this wait before the cache? The persisted
+ * Tick record has no Stage field (#107), so the projection asks the module
+ * that emitted the reason instead of matching the prose on its own. */
+export function isGateWaitReason(reason) {
+  const text = String(reason || "");
+  return (
+    text.startsWith(CONFLICT_WINDOW_PREFIX) ||
+    text.startsWith(REBASE_BUDGET_PREFIX) ||
+    text === MERGE_UNKNOWN_REASON ||
+    /mergeability|has not computed/i.test(text)
+  );
+}
+
 export function decideDeterministic({
   ctx,
   stateEntry = {},
@@ -82,7 +105,7 @@ export function decideDeterministic({
     } else if (nowMs - reqTsMs < H(rebaseRetryHours)) {
       action = "wait";
       reason =
-        `Conflict-resolution request is newer than ${rebaseRetryHours}h and no ` +
+        `${CONFLICT_WINDOW_PREFIX} ${rebaseRetryHours}h and no ` +
         "new commits were pushed: wait before retrying.";
     } else if (rebasePings >= rebaseMaxPings) {
       const lastPingMs = toMs(st.last_ping_ts);
@@ -103,7 +126,7 @@ export function decideDeterministic({
       } else {
         action = "wait";
         reason =
-          `Rebase retry budget exhausted (${rebasePings} pings on this sha) and ` +
+          `${REBASE_BUDGET_PREFIX} (${rebasePings} pings on this sha) and ` +
           "PR is still conflicted: owner escalated; weekly retry only.";
         if (st.stuck_notified_sha !== ctx.headSha) {
           st.stuck_notified_sha = ctx.headSha;
@@ -127,7 +150,7 @@ export function decideDeterministic({
     }
   } else if (ctx.mergeUnknown) {
     action = "wait";
-    reason = "GitHub has not computed PR mergeability yet; wait for next tick.";
+    reason = MERGE_UNKNOWN_REASON;
   } else if (cachedSig === sig && cachedAction) {
     action = cachedAction;
     reason = st._reason || action;
@@ -214,7 +237,7 @@ export async function decideWithLlm({
         action: "wait",
         reason: e.message,
         reused: false,
-        decision_source: "none",
+        decision_source: DECISION_SOURCES.none,
         stateEntry: st,
         notifications,
       };

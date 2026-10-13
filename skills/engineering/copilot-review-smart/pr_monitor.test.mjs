@@ -5,7 +5,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { runMonitorOnce, tickInFlight } from "./pr_monitor.mjs";
+import { heartbeatTickInFlight, runMonitorOnce, tickInFlight } from "./pr_monitor.mjs";
 import { AGENT_ADAPTERS, cliOnPath, resolveAutoDecisionSource } from "./agents.mjs";
 
 const REPO = "dyegolara/skillbook";
@@ -1513,7 +1513,7 @@ test("a Tick-history record carries the report's action, reason, terminal and op
       handled: true,
       action: "request_review",
       reason: "no review yet",
-      decision_source: "command",
+      decision_source: "decision_command",
       reused: false,
       stateEntry,
       notifications: [],
@@ -1521,7 +1521,7 @@ test("a Tick-history record carries the report's action, reason, terminal and op
   });
 
   const report = prJsonLine(first);
-  assert.equal(report.decision_source, "command");
+  assert.equal(report.decision_source, "decision_command");
   const history = first.state[`${REPO}#7`].tick_history;
   assert.equal(history.length, 1);
   assert.deepEqual(history[0], {
@@ -1529,7 +1529,7 @@ test("a Tick-history record carries the report's action, reason, terminal and op
     action: "request_review",
     reason: "no review yet",
     terminal: null,
-    decision_source: "command",
+    decision_source: "decision_command",
   });
 
   const done = await runMonitorOnce({
@@ -1611,6 +1611,43 @@ test("an in-flight marker reads as running only while its owner can still be run
     tickInFlight({ tick_in_flight: live }, { nowMs: liveNow, isAliveFn: () => false }).alive,
     false
   );
+});
+
+test("the in-flight heartbeat writes only while the Tick still owns the state lock", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pr-monitor-heartbeat-"));
+  try {
+    const statePath = path.join(dir, "state.json");
+    const lockPath = `${statePath}.lock`;
+    const started = "2026-09-08T00:00:00.000Z";
+    const owner = { pid: process.pid, token: "tok" };
+    fs.writeFileSync(
+      statePath,
+      JSON.stringify({
+        tick_in_flight: { pid: process.pid, token: "tok", started_at: started, heartbeat_at: started },
+        "acme/widgets#7": { sentinel: "kept" },
+      })
+    );
+
+    // No lock: nobody holds the file, so a beat must not write.
+    assert.equal(heartbeatTickInFlight(owner, { lockPath, statePath }), false);
+    // A foreign lock: a concurrent writer owns the file, so a beat must not
+    // load-modify-save over it.
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, token: "other" }));
+    assert.equal(heartbeatTickInFlight(owner, { lockPath, statePath }), false);
+    const untouched = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.equal(untouched.tick_in_flight.heartbeat_at, started);
+    assert.equal(untouched["acme/widgets#7"].sentinel, "kept");
+
+    // Our own lock: the beat refreshes the marker and preserves the rest of
+    // the state it loaded.
+    fs.writeFileSync(lockPath, JSON.stringify(owner));
+    assert.equal(heartbeatTickInFlight(owner, { lockPath, statePath }), true);
+    const beaten = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.notEqual(beaten.tick_in_flight.heartbeat_at, started);
+    assert.equal(beaten["acme/widgets#7"].sentinel, "kept");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 function writeSpawnedStubs(dir) {
@@ -2378,6 +2415,42 @@ for (const route of AUTO_ROUTES) {
     assert.equal(out.reports[0].decision_source, route.decisionSource);
   });
 }
+
+test("auto layer: a nested session routes to the innermost agent, not the inherited outer marker", async () => {
+  const dir = makeTempDir("pr-monitor-auto-nested-");
+  const piCapture = path.join(dir, "pi-capture.json");
+  const claudeCapture = path.join(dir, "claude-capture.json");
+  writeStubAgentCli(dir, "pi", {
+    action: "wait",
+    reason: "outer pi must not run",
+    capturePath: piCapture,
+  });
+  writeStubAgentCli(dir, "claude", {
+    action: "request_review",
+    reason: "inner claude decided",
+    capturePath: claudeCapture,
+  });
+
+  const out = await runAutoTick({
+    binDir: dir,
+    headSha: "nested123",
+    env: {
+      // CLAUDECODE names the session that actually surrounds the process;
+      // PI_CODING_AGENT is the outer session's marker inherited into it.
+      AI_AGENT: "claude-code",
+      CLAUDECODE: "1",
+      ANTHROPIC_MODEL: "claude-inner-model",
+      PI_CODING_AGENT: "true",
+      PI_MODEL: "pi-outer-model",
+    },
+  });
+
+  const captured = readStubCapture(claudeCapture);
+  assert.equal(captured.argv[captured.argv.indexOf("--model") + 1], "claude-inner-model");
+  assert.equal(out.reports[0].reason, "inner claude decided");
+  assert.equal(out.reports[0].decision_source, "auto:claude:claude-inner-model");
+  assert.equal(fs.existsSync(piCapture), false, "the outer agent's stub must not run");
+});
 
 test("auto layer: an explicit decision command still wins over agent discovery", async () => {
   const dir = makeTempDir("pr-monitor-auto-cmd-");

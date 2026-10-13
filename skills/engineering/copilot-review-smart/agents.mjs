@@ -10,14 +10,19 @@
  *                 matches when it resolves on PATH
  *   helpArgs      argv for the offline contract check (`--help`)
  *   detect(env)   true when the environment carries this agent's markers
+ *   aiAgentNames  the `AI_AGENT` values that name this agent session — the
+ *                 explicit innermost-session marker
  *   modelPin(env) { provider, model } the host exposes, or null — an exposed
  *                 model is always pinned explicitly in the command
  *   buildCommand(env) the synthesized decision command
  *
  * Adding an agent is appending one unit to AGENT_ADAPTERS: nothing in
- * pr_monitor.mjs or decision.mjs changes. Registry order is the precedence
- * when several session markers coexist (a nested agent session inherits the
- * outer agent's markers).
+ * pr_monitor.mjs or decision.mjs changes. Discovery is innermost-first:
+ * `AI_AGENT` is written by the session that actually surrounds the process,
+ * so when it names a registered adapter whose CLI is runnable, that adapter
+ * wins even though an outer session's own markers survive as inherited env
+ * vars in a nested session. Without `AI_AGENT`, registry order is the
+ * deterministic fallback when several session markers coexist.
  *
  * The skill never reads or prints another tool's credentials: units read only
  * their own markers and exposed model, and each agent CLI resolves its own
@@ -26,6 +31,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { autoDecisionSource } from "./decision_source.mjs";
 
 const DECISION_INSTRUCTION =
   "You are the decision step of a GitHub PR watchdog. The JSON decision " +
@@ -56,6 +62,7 @@ const pi = {
   cli: "pi",
   helpArgs: ["--help"],
   detect: (env) => env.PI_CODING_AGENT === "true" || env.AI_AGENT === "pi",
+  aiAgentNames: ["pi"],
   modelPin: (env) =>
     env.PI_MODEL ? { provider: env.PI_PROVIDER || null, model: env.PI_MODEL } : null,
   buildCommand(env) {
@@ -73,6 +80,7 @@ const claudeCode = {
   helpArgs: ["--help"],
   detect: (env) =>
     env.CLAUDECODE === "1" || String(env.AI_AGENT || "").startsWith("claude-code"),
+  aiAgentNames: ["claude-code"],
   // Where the host exposes a session model it lands in ANTHROPIC_MODEL
   // (Claude Code reads it); otherwise the CLI's configured default applies.
   modelPin: (env) =>
@@ -92,7 +100,9 @@ const opencode = {
   name: "opencode",
   cli: "opencode",
   helpArgs: ["run", "--help"],
-  detect: (env) => env.OPENCODE === "1" || Boolean(env.OPENCODE_CLIENT),
+  detect: (env) =>
+    env.OPENCODE === "1" || Boolean(env.OPENCODE_CLIENT) || env.AI_AGENT === "opencode",
+  aiAgentNames: ["opencode"],
   // opencode exports no session model; a host that launches it with inline
   // config exposes `model` there.
   modelPin: (env) => {
@@ -124,11 +134,25 @@ export function cliOnPath(name, env = process.env) {
   return false;
 }
 
+/** The adapter named by the explicit innermost-session marker, when the
+ * environment sets one. An outer session's markers survive as inherited env
+ * vars in a nested session, so they must not win over the named session. */
+function innermostAdapter(env, adapters) {
+  const named = String(env.AI_AGENT || "").trim().toLowerCase();
+  if (!named) return null;
+  return (
+    adapters.find((unit) =>
+      (unit.aiAgentNames || []).some((name) => named === name || named.startsWith(`${name}-`))
+    ) ?? null
+  );
+}
+
 /** The innermost registered agent whose marker is set and whose CLI is
  * runnable, or null when no agent session surrounds this process. */
 export function discoverAgent({ env = process.env, cliExists, adapters = AGENT_ADAPTERS } = {}) {
   const exists = cliExists || ((name) => cliOnPath(name, env));
-  return adapters.find((unit) => unit.detect(env) && exists(unit.cli)) || null;
+  const runnable = adapters.filter((unit) => exists(unit.cli));
+  return innermostAdapter(env, runnable) ?? runnable.find((unit) => unit.detect(env)) ?? null;
 }
 
 /** Resolve the auto layer: `{ adapter, command }` for the discovered agent,
@@ -143,7 +167,7 @@ export function resolveAutoDecisionSource({
   const pin = adapter.modelPin(env);
   const model = pin ? [pin.provider, pin.model].filter(Boolean).join("/") : null;
   return {
-    adapter: model ? `auto:${adapter.name}:${model}` : `auto:${adapter.name}`,
+    adapter: autoDecisionSource(adapter.name, model),
     command: adapter.buildCommand(env),
   };
 }
