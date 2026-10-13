@@ -274,7 +274,7 @@ const CHAIN_LABEL = /^chain #\d+: /;
 const ID_FLAG_HINT = "--repo-id/--worktree-id/--task-id";
 
 // The bootstrap flags, and the one place the three field names are spelled:
-// `toTaskIds` reads them from this table to construct the named triple.
+// `toIdFlags` reads them from this table to construct the named triple.
 const ID_FIELD_BY_FLAG = {
   "--repo-id": "repoId",
   "--worktree-id": "worktreeId",
@@ -293,7 +293,7 @@ const ID_FIELD_BY_FLAG = {
 
 /**
  * The repo/worktree/task id triple identifying the task a stage acts on.
- * Every triple is built by `toTaskIds`; a resolved triple is fully populated
+ * Every triple is built by `toIdFlags`; a resolved triple is fully populated
  * before any launch.
  *
  * @typedef {Object} TaskIds
@@ -310,7 +310,7 @@ const ID_FIELD_BY_FLAG = {
  * @param {IdFlags|TaskIds|Object} source
  * @returns {IdFlags}
  */
-function toTaskIds(source) {
+function toIdFlags(source) {
   return Object.fromEntries(Object.values(ID_FIELD_BY_FLAG).map((field) => [field, source?.[field]]));
 }
 
@@ -362,7 +362,7 @@ export function parseIdFlags(argv = []) {
     flags[field] = value;
     i += 1;
   }
-  const ids = toTaskIds(flags);
+  const ids = toIdFlags(flags);
   assertCompleteIdFlags(ids);
   return ids;
 }
@@ -409,7 +409,7 @@ export async function requestJson(fetchImpl, url, init) {
  * @returns {Promise<TaskIds>}
  */
 export async function resolveIds({ apiBase, fetchImpl = fetch, worktreePath, flags = {} }) {
-  const explicit = toTaskIds(flags);
+  const explicit = toIdFlags(flags);
   assertCompleteIdFlags(explicit);
   if (Object.values(explicit).some((value) => value !== undefined)) return explicit;
 
@@ -420,7 +420,7 @@ export async function resolveIds({ apiBase, fetchImpl = fetch, worktreePath, fla
   }
   // The anchor is an external `GET /terminal/list` entry: construct it like
   // every other triple.
-  return toTaskIds(anchor);
+  return toIdFlags(anchor);
 }
 
 /**
