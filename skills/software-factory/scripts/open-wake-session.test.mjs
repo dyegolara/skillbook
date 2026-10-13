@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { readFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildWakePrompt, failureLines, main, wakeLabel } from "./open-wake-session.mjs";
+import { buildWakePrompt, main, wakeLabel } from "./open-wake-session.mjs";
+import { failureLines } from "./launch-stage.mjs";
 
 // A realistic pinned resume command: the code-review-loop pin from ADR-0006.
 const RESUME_COMMAND =
@@ -29,12 +30,15 @@ test("the wake prompt carries the stage, the spec and the exact resume command",
   );
 });
 
-test("the wake helper reuses the launch helper's reach-the-API step", () => {
+test("the wake helper reuses the launch helper's reach-the-API step, create orchestration and failure lines", () => {
   const source = readFileSync(new URL("./open-wake-session.mjs", import.meta.url), "utf8");
   assert.match(source, /from\s+"\.\/launch-stage\.mjs"/);
   assert.match(source, /\bparseIdFlags\b/);
   assert.match(source, /\breachApi\b/);
   assert.match(source, /\bisConnectionError\b/); // the post-session guard stays local
+  assert.match(source, /\bcreateLabeledSession\b/);
+  assert.match(source, /\bfailureLines\b/);
+  assert.match(source, /failureLines\("open-wake-session",/);
   assert.doesNotMatch(source, /\bresolveIds\b/);
   assert.doesNotMatch(source, /\breadKeplerApiBase\b/);
 });
@@ -264,7 +268,7 @@ test("a failure after the session exists is a hard error carrying the session id
     }
   );
   assert.deepEqual(lines, []);
-  assert.deepEqual(failureLines({ message: "HTTP 500", sessionId: "sess-created" }), [
+  assert.deepEqual(failureLines("open-wake-session", { message: "HTTP 500", sessionId: "sess-created" }), [
     "open-wake-session: HTTP 500",
     "open-wake-session: session sess-created was already created — terminate it or reuse it",
   ]);
@@ -294,7 +298,7 @@ test("a connection-level failure after the session exists is still a hard error 
     }
   );
   assert.deepEqual(lines, []);
-  assert.deepEqual(failureLines({ message: "fetch failed: socket hang up", sessionId: "sess-created" }), [
+  assert.deepEqual(failureLines("open-wake-session", { message: "fetch failed: socket hang up", sessionId: "sess-created" }), [
     "open-wake-session: fetch failed: socket hang up",
     "open-wake-session: session sess-created was already created — terminate it or reuse it",
   ]);
@@ -375,7 +379,7 @@ test("a missing Kepler data dir falls back with the read error's message and the
 });
 
 test("failureLines prints only the error when no session was created", () => {
-  assert.deepEqual(failureLines({ message: "fetch failed: ECONNREFUSED" }), [
+  assert.deepEqual(failureLines("open-wake-session", { message: "fetch failed: ECONNREFUSED" }), [
     "open-wake-session: fetch failed: ECONNREFUSED",
   ]);
 });

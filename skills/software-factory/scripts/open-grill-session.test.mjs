@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GRILL_PIN, buildPauseLines, failureLines, main } from "./open-grill-session.mjs";
+import { GRILL_PIN, buildPauseLines, main } from "./open-grill-session.mjs";
+import { failureLines } from "./launch-stage.mjs";
 
 // Independent source of truth: grill-with-spec/SKILL.md frontmatter and ADR-0006's grill pin.
 const RECORDED_GRILL_PIN = { model: "opencode-go/glm-5.3", effort: "max" };
@@ -14,12 +15,15 @@ test("the grill pin matches the recorded grill-with-spec pin", () => {
   assert.deepEqual(GRILL_PIN, RECORDED_GRILL_PIN);
 });
 
-test("the grill-session helper reuses the launch helper's reach-the-API step", () => {
+test("the grill-session helper reuses the launch helper's reach-the-API step, create orchestration and failure lines", () => {
   const source = readFileSync(new URL("./open-grill-session.mjs", import.meta.url), "utf8");
   assert.match(source, /from\s+"\.\/launch-stage\.mjs"/);
   assert.match(source, /\bparseIdFlags\b/);
   assert.match(source, /\breachApi\b/);
   assert.match(source, /\bisConnectionError\b/); // the post-session guard stays local
+  assert.match(source, /\bcreateLabeledSession\b/);
+  assert.match(source, /\bfailureLines\b/);
+  assert.match(source, /failureLines\("open-grill-session",/);
   assert.doesNotMatch(source, /\bresolveIds\b/);
   assert.doesNotMatch(source, /\breadKeplerApiBase\b/);
 });
@@ -319,7 +323,7 @@ test("a failure after the session exists is a hard error carrying the session id
     }
   );
   assert.deepEqual(lines, []);
-  assert.deepEqual(failureLines({ message: "HTTP 500", sessionId: "sess-created" }), [
+  assert.deepEqual(failureLines("open-grill-session", { message: "HTTP 500", sessionId: "sess-created" }), [
     "open-grill-session: HTTP 500",
     "open-grill-session: session sess-created was already created — terminate it or reuse it",
   ]);
@@ -349,14 +353,14 @@ test("a connection-level failure after the session exists is still a hard error 
     }
   );
   assert.deepEqual(lines, []);
-  assert.deepEqual(failureLines({ message: "fetch failed: socket hang up", sessionId: "sess-created" }), [
+  assert.deepEqual(failureLines("open-grill-session", { message: "fetch failed: socket hang up", sessionId: "sess-created" }), [
     "open-grill-session: fetch failed: socket hang up",
     "open-grill-session: session sess-created was already created — terminate it or reuse it",
   ]);
 });
 
 test("failureLines prints only the error when no session was created", () => {
-  assert.deepEqual(failureLines({ message: "fetch failed: ECONNREFUSED" }), [
+  assert.deepEqual(failureLines("open-grill-session", { message: "fetch failed: ECONNREFUSED" }), [
     "open-grill-session: fetch failed: ECONNREFUSED",
   ]);
 });

@@ -18,6 +18,8 @@ import {
   buildResumeCommand,
   buildRetryWrapper,
   buildTerminalInput,
+  createLabeledSession,
+  failureLines,
   isConnectionError,
   launchHelperPath,
   main,
@@ -397,6 +399,105 @@ test("reachApi throws an HTTP error from a reachable API — never a classificat
   await assert.rejects(
     reachApi({ apiBase: "http://api.test", fetchImpl, worktreePath: "/work/tree" }),
     /HTTP 500/
+  );
+});
+
+// --- the session routes' shared failure report ---
+
+test("failureLines names the route's tool, the error and the created session's id", () => {
+  assert.deepEqual(failureLines("open-grill-session", { message: "HTTP 500", sessionId: "sess-1" }), [
+    "open-grill-session: HTTP 500",
+    "open-grill-session: session sess-1 was already created — terminate it or reuse it",
+  ]);
+  assert.deepEqual(failureLines("open-wake-session", { message: "fetch failed: ECONNREFUSED" }), [
+    "open-wake-session: fetch failed: ECONNREFUSED",
+  ]);
+});
+
+// --- the session routes' shared create orchestration ---
+
+test("createLabeledSession creates, renames, runs the route's pre-send step, then sends the prompt", async () => {
+  const { fetchImpl, calls } = mockAgentApi();
+  const preSend = [];
+  const result = await createLabeledSession({
+    label: "chain #55: grill-with-spec",
+    prompt: "Re-enter the grill for spec #55.",
+    ids: { repoId: "r", worktreeId: "w", taskId: "t" },
+    worktreePath: "/work/tree",
+    apiBase: "http://api.test",
+    fetchImpl,
+    beforeSend: async (sessionId) => {
+      preSend.push(sessionId);
+    },
+  });
+
+  assert.deepEqual(result, { sessionId: "sess-new", label: "chain #55: grill-with-spec" });
+  assert.deepEqual(preSend, ["sess-new"]);
+  assert.deepEqual(calls, [
+    {
+      url: "http://api.test/agent/sessions",
+      method: "POST",
+      body: { adapterId: "opencode", worktreePath: "/work/tree", repoId: "r", worktreeId: "w", taskId: "t" },
+    },
+    {
+      url: "http://api.test/agent/rename-session",
+      method: "POST",
+      body: { sessionId: "sess-new", name: "chain #55: grill-with-spec" },
+    },
+    {
+      url: "http://api.test/agent/send-prompt",
+      method: "POST",
+      body: { sessionId: "sess-new", prompt: "Re-enter the grill for spec #55." },
+    },
+  ]);
+});
+
+test("createLabeledSession hard-errors when the create response carries no sessionId", async () => {
+  const { fetchImpl, calls } = mockAgentApi({ handlers: { sessions: () => okResponse({}) } });
+  await assert.rejects(
+    createLabeledSession({
+      label: "chain #55: wake — dev-flow",
+      prompt: "WAKE NOTICE",
+      ids: { repoId: "r", worktreeId: "w", taskId: "t" },
+      worktreePath: "/work/tree",
+      apiBase: "http://api.test",
+      fetchImpl,
+    }),
+    /sessionId/
+  );
+  assert.deepEqual(calls.map((call) => call.url), ["http://api.test/agent/sessions"]);
+});
+
+test("createLabeledSession tags every failure after creation with the session id", async () => {
+  const base = {
+    label: "chain #55: wake — dev-flow",
+    prompt: "WAKE NOTICE",
+    ids: { repoId: "r", worktreeId: "w", taskId: "t" },
+    worktreePath: "/work/tree",
+    apiBase: "http://api.test",
+  };
+
+  const rename = mockAgentApi({ handlers: { rename: () => errorResponse(500) } });
+  await assert.rejects(createLabeledSession({ ...base, fetchImpl: rename.fetchImpl }), (error) => {
+    assert.match(error.message, /HTTP 500/);
+    assert.equal(error.sessionId, "sess-new");
+    return true;
+  });
+
+  const preSend = mockAgentApi();
+  await assert.rejects(
+    createLabeledSession({
+      ...base,
+      fetchImpl: preSend.fetchImpl,
+      beforeSend: async () => {
+        throw new Error("pin failed");
+      },
+    }),
+    (error) => {
+      assert.match(error.message, /pin failed/);
+      assert.equal(error.sessionId, "sess-new");
+      return true;
+    }
   );
 });
 
@@ -1113,4 +1214,24 @@ function spawnRecorder() {
       return { unref() {} };
     },
   };
+}
+
+function mockAgentApi({ sessionId = "sess-new", handlers = {} } = {}) {
+  const calls = [];
+  const fetchImpl = async (url, init = {}) => {
+    const method = init.method ?? "GET";
+    const call = { url, method, body: init.body ? JSON.parse(init.body) : undefined };
+    calls.push(call);
+    if (method === "POST" && url.endsWith("/agent/sessions")) {
+      return handlers.sessions ? handlers.sessions(call) : okResponse({ sessionId });
+    }
+    if (method === "POST" && url.endsWith("/agent/rename-session")) {
+      return handlers.rename ? handlers.rename(call) : okResponse(null);
+    }
+    if (method === "POST" && url.endsWith("/agent/send-prompt")) {
+      return handlers.send ? handlers.send(call) : okResponse(null);
+    }
+    throw new Error(`unexpected ${method} ${url}`);
+  };
+  return { fetchImpl, calls };
 }
