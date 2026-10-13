@@ -28,7 +28,10 @@
  *      wrapper (buildRetryWrapper) around the pinned command (buildPiCommand),
  *      the wrapper's give-up path carries the FAILED marker and references the
  *      wake helper ADR-0006 names, and the pinned-command builder emits the
- *      explicit --provider/--model/--thinking flags.
+ *      explicit --provider/--model/--thinking flags;
+ *   9. the shared `## Handoff rules` block is byte-identical between the two
+ *      block-carrying skills: dev-flow and code-review-loop close with the
+ *      same block, and a drift between them is a pack-contract problem.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -59,6 +62,8 @@ const ADR_FILE = "docs/adr/0006-chain-skills-cross-model-handoffs.md";
 const LAUNCH_STAGES = ["dev-flow", "implement-spec", "code-review-loop", "create-pr"];
 // The three own pi stages carry frontmatter pins; implement-spec is referenced and pinned via ADR-0006.
 const OWN_PI_STAGE_SKILLS = ["dev-flow", "code-review-loop", "create-pr"];
+// The skills that close with the shared `## Handoff rules` block.
+const HANDOFF_RULES_SKILLS = ["dev-flow", "code-review-loop"];
 
 export function verifySoftwareFactoryPack(packDir) {
   const problems = [];
@@ -110,6 +115,7 @@ export function verifySoftwareFactoryPack(packDir) {
   checkLaunchMechanism(problems, packDir, repoRoot, frontmatter);
   checkGrillMechanism(problems, packDir, frontmatter);
   checkWakeMechanism(problems, packDir);
+  checkHandoffRules(problems, packDir);
 
   if (!existsSync(join(packDir, "README.md"))) {
     problems.push("skills/software-factory/README.md: missing");
@@ -446,6 +452,37 @@ function checkGrillMechanism(problems, packDir, frontmatter) {
 function checkWakeMechanism(problems, packDir) {
   if (!existsSync(join(packDir, "scripts", "open-wake-session.mjs"))) {
     problems.push(`${WAKE_HELPER_FILE}: missing`);
+  }
+}
+
+/**
+ * The closing `## Handoff rules` block: the heading line to EOF, or null when
+ * the file does not carry it. The block-carrying skills must carry
+ * byte-identical copies; a one-byte drift between them is the pack-contract
+ * problem this check pins.
+ */
+function handoffRulesBlock(text) {
+  const match = /^## Handoff rules[ \t]*$/m.exec(text);
+  return match === null ? null : text.slice(match.index);
+}
+
+function checkHandoffRules(problems, packDir) {
+  const blocks = new Map();
+  for (const skill of HANDOFF_RULES_SKILLS) {
+    const label = `skills/software-factory/${skill}/SKILL.md`;
+    const file = join(packDir, skill, "SKILL.md");
+    if (!existsSync(file)) continue; // the skill's own check already reports the missing file
+    const block = handoffRulesBlock(readFileSync(file, "utf8"));
+    if (block === null) {
+      problems.push(`${label}: missing the closing "## Handoff rules" block`);
+    } else {
+      blocks.set(label, block);
+    }
+  }
+  if (blocks.size !== HANDOFF_RULES_SKILLS.length) return;
+  const [[firstLabel, firstBlock], [secondLabel, secondBlock]] = [...blocks.entries()];
+  if (firstBlock !== secondBlock) {
+    problems.push(`${firstLabel}: "## Handoff rules" block differs from ${secondLabel}`);
   }
 }
 

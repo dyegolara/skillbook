@@ -77,6 +77,20 @@ const GRILL_ROUTE = [
   "",
 ].join("\n");
 
+const HANDOFF_RULES = [
+  "## Handoff rules",
+  "",
+  "The chain's rules apply at this stage and every later one:",
+  "",
+  "- Every stage shares one git worktree.",
+  "",
+].join("\n");
+
+const DRIFTED_HANDOFF_RULES = HANDOFF_RULES.replace(
+  "Every stage shares one git worktree.",
+  "Every stage shares one worktree."
+);
+
 const adr = [
   "# 0006 — Chain skills hand off across pinned agent/model sessions",
   "",
@@ -174,8 +188,11 @@ function skillFrontmatter(name, overrides = {}) {
 }
 
 function skillContent(name, overrides = {}) {
-  const { body, ...frontmatterOverrides } = overrides;
-  return `${skillFrontmatter(name, frontmatterOverrides)}\n${body ?? defaultSkillBody(name)}`;
+  const { body, omitHandoffRules, ...frontmatterOverrides } = overrides;
+  const content = body ?? defaultSkillBody(name);
+  const carriesHandoff = ["dev-flow", "code-review-loop"].includes(name) && !omitHandoffRules;
+  const handoff = carriesHandoff ? `\n${HANDOFF_RULES}` : "";
+  return `${skillFrontmatter(name, frontmatterOverrides)}\n${content}${handoff}`;
 }
 
 function defaultSkillBody(name, { includeGrillRoute = true } = {}) {
@@ -217,6 +234,7 @@ function makeRepo({
   omitGrillRoute = false,
   omitAdr = false,
   adrText = adr,
+  omitHandoffRules = null,
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), "software-factory-verify-"));
   roots.push(root);
@@ -226,7 +244,11 @@ function makeRepo({
       name === "code-review-loop" && omitGrillRoute
         ? { ...skillOverrides[name], body: "The route prints a pause and waits.\n" }
         : skillOverrides[name];
-    write(root, `skills/software-factory/${name}/SKILL.md`, skillContent(name, overrides));
+    write(
+      root,
+      `skills/software-factory/${name}/SKILL.md`,
+      skillContent(name, { ...overrides, omitHandoffRules: omitHandoffRules === name })
+    );
     if (name !== "create-pr" && !omitHelper) {
       write(root, `skills/software-factory/${name}/scripts/launch-stage.mjs`, helperText);
     }
@@ -277,6 +299,41 @@ after(() => {
 
 test("a conforming fixture pack has no problems", () => {
   assert.deepEqual(verify(makeRepo()), []);
+});
+
+test("accepts the byte-identical Handoff rules pair", () => {
+  assert.deepEqual(verify(makeRepo()), []);
+});
+
+test("rejects a Handoff rules block that drifts from its shared copy", () => {
+  const problems = verify(
+    makeRepo({
+      omitHandoffRules: "code-review-loop",
+      skillOverrides: {
+        "code-review-loop": {
+          body: `${defaultSkillBody("code-review-loop")}\n${DRIFTED_HANDOFF_RULES}`,
+        },
+      },
+    })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        'skills/software-factory/dev-flow/SKILL.md: "## Handoff rules" block differs from skills/software-factory/code-review-loop/SKILL.md'
+      )
+    )
+  );
+});
+
+test("rejects a block-carrying skill missing its closing Handoff rules block", () => {
+  const problems = verify(makeRepo({ omitHandoffRules: "code-review-loop" }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        'skills/software-factory/code-review-loop/SKILL.md: missing the closing "## Handoff rules" block'
+      )
+    )
+  );
 });
 
 test("rejects a registered skill missing its local launch helper", () => {
