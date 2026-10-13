@@ -11,12 +11,14 @@ import {
   RETRY_SLEEPS_SECONDS,
   SENTINEL_PREFIX,
   STAGE_PINS,
-  VERIFY_MAX_REINJECTS,
+  VERIFY_MAX_RELAUNCHES,
   VERIFY_POLL_INTERVAL_MS,
   VERIFY_TIMEOUT_MS,
   buildPiCommand,
+  buildResumeCommand,
   buildRetryWrapper,
   buildTerminalInput,
+  launchHelperPath,
   main,
   parseIdFlags,
   pickAnchor,
@@ -38,6 +40,13 @@ const ADR_0006_PINS = {
   "code-review-loop": { provider: "opencode-go", model: "opencode-go/mimo-v2.6-pro", thinking: "high" },
   "create-pr": { provider: "opencode-go", model: "opencode-go/muse-spark-1.3-contributor", thinking: "xhigh" },
 };
+
+// The worktree the wrapper tests resume from; the resume command cds into it.
+const WORKTREE_PATH = "/work/tree";
+
+function resumeCommand(stage, spec, pointers) {
+  return buildResumeCommand({ stage, spec, pointers, worktreePath: WORKTREE_PATH });
+}
 
 test("pins table carries the four ADR-0006 pi-stage pins", () => {
   assert.deepEqual(STAGE_PINS, ADR_0006_PINS);
@@ -72,7 +81,10 @@ test("pointers with an embedded single quote are shell-quoted safely", () => {
 });
 
 test("buildTerminalInput terminates the injected retry wrapper with a newline", () => {
-  assert.equal(buildTerminalInput("dev-flow", "55", "pointers"), `${buildRetryWrapper("dev-flow", "55", "pointers")}\n`);
+  assert.equal(
+    buildTerminalInput("dev-flow", "55", "pointers", WORKTREE_PATH),
+    `${buildRetryWrapper("dev-flow", "55", "pointers", WORKTREE_PATH)}\n`
+  );
 });
 
 // --- verified-inject: the execution sentinel ---
@@ -84,28 +96,28 @@ test("stageSentinel is the documented CHAIN-STAGE-START line and guards the spec
 });
 
 test("the wrapper prints the sentinel as its first action, before attempt 1", () => {
-  const wrapper = buildRetryWrapper("dev-flow", "55", "pointers");
+  const wrapper = buildRetryWrapper("dev-flow", "55", "pointers", WORKTREE_PATH);
   assert.ok(wrapper.startsWith(`printf '%s\\n' ${shellQuote(stageSentinel("55", "dev-flow"))}; chain_attempt=1;`));
 });
 
 test("sentinelSeen counts only a standalone sentinel line, never the echoed injection", () => {
   const sentinel = stageSentinel("55", "dev-flow");
-  const echoed = `user@host:~/worktree$ ${buildTerminalInput("dev-flow", "55", "pointers")}`;
+  const echoed = `user@host:~/worktree$ ${buildTerminalInput("dev-flow", "55", "pointers", WORKTREE_PATH)}`;
   assert.equal(sentinelSeen(echoed, sentinel), false);
   assert.equal(sentinelSeen(`user@host:~/worktree$ \r\n${sentinel}\r\n`, sentinel), true);
   assert.equal(stripAnsi(`\u001b[32m${sentinel}\u001b[0m\r\n`), `${sentinel}\r\n`);
 });
 
-test("the verification constants are the recorded choices: 250 ms poll, 5000 ms timeout, one re-inject", () => {
+test("the verification constants are the recorded choices: 250 ms poll, 5000 ms timeout, one relaunch", () => {
   assert.equal(VERIFY_POLL_INTERVAL_MS, 250);
   assert.equal(VERIFY_TIMEOUT_MS, 5000);
-  assert.equal(VERIFY_MAX_REINJECTS, 1);
+  assert.equal(VERIFY_MAX_RELAUNCHES, 1);
 });
 
 // --- the retry wrapper ---
 
 test("the retry wrapper attempts the command 5 times with doubling sleeps over a 10-minute window", () => {
-  const wrapper = buildRetryWrapper("dev-flow", "55", "pointers");
+  const wrapper = buildRetryWrapper("dev-flow", "55", "pointers", WORKTREE_PATH);
   assert.equal(RETRY_ATTEMPTS, 5);
   assert.deepEqual(RETRY_SLEEPS_SECONDS, [40, 80, 160, 320]);
   assert.equal(RETRY_SLEEPS_SECONDS.reduce((total, seconds) => total + seconds, 0), 600);
@@ -116,27 +128,46 @@ test("the retry wrapper attempts the command 5 times with doubling sleeps over a
 });
 
 test("the pinned command sits inside the wrapper unchanged", () => {
-  const wrapper = buildRetryWrapper("dev-flow", "55", "pointers");
+  const wrapper = buildRetryWrapper("dev-flow", "55", "pointers", WORKTREE_PATH);
   assert.ok(wrapper.includes(`do ${buildPiCommand("dev-flow", "pointers")}; chain_status=$?;`));
 });
 
-test("the give-up marker names the spec, the stage and the exact resume command on one line each", () => {
-  const wrapper = buildRetryWrapper("code-review-loop", "55", "pointers");
-  assert.ok(wrapper.includes(shellQuote("FAILED: chain #55 code-review-loop gave up after 5 attempts")));
-  assert.ok(
-    wrapper.includes(
-      shellQuote("FAILED: resume with: pi --print --provider opencode-go --model opencode-go/mimo-v2.6-pro --thinking high 'pointers'")
-    )
+test("the resume command re-enters the protected launch route from the worktree", () => {
+  assert.equal(launchHelperPath(), fileURLToPath(new URL("./launch-stage.mjs", import.meta.url)));
+  assert.equal(
+    buildResumeCommand({ stage: "dev-flow", spec: "55", pointers: "pointers", worktreePath: WORKTREE_PATH }),
+    `cd '${WORKTREE_PATH}' && node '${launchHelperPath()}' dev-flow 55 'pointers'`
   );
 });
 
-test("the wrapper actuates the wake through the sibling helper's absolute path", () => {
-  const wrapper = buildRetryWrapper("dev-flow", "55", "pointers");
+test("the give-up marker names the spec, the stage and the launch-helper resume command on one line each", () => {
+  const wrapper = buildRetryWrapper("code-review-loop", "55", "pointers", WORKTREE_PATH);
+  const resume = buildResumeCommand({
+    stage: "code-review-loop",
+    spec: "55",
+    pointers: "pointers",
+    worktreePath: WORKTREE_PATH,
+  });
+  assert.ok(wrapper.includes(shellQuote("FAILED: chain #55 code-review-loop gave up after 5 attempts")));
+  assert.ok(wrapper.includes(shellQuote(`FAILED: resume with: ${resume}`)));
+  assert.ok(
+    !wrapper.includes(
+      shellQuote(
+        "FAILED: resume with: pi --print --provider opencode-go --model opencode-go/mimo-v2.6-pro --thinking high 'pointers'"
+      )
+    ),
+    "the resume line is the launch invocation, not the bare pinned command"
+  );
+});
+
+test("the wrapper actuates the wake through the sibling helper's absolute path and the resume command", () => {
+  const wrapper = buildRetryWrapper("dev-flow", "55", "pointers", WORKTREE_PATH);
   const wakePath = wakeHelperPath();
   assert.equal(wakePath, fileURLToPath(new URL("./open-wake-session.mjs", import.meta.url)));
   assert.ok(
-    wrapper.includes(`node ${shellQuote(wakePath)} dev-flow 55 ${shellQuote(buildPiCommand("dev-flow", "pointers"))};`)
+    wrapper.includes(`node ${shellQuote(wakePath)} dev-flow 55 ${shellQuote(resumeCommand("dev-flow", "55", "pointers"))};`)
   );
+  assert.ok(!wrapper.includes(`node ${shellQuote(wakePath)} dev-flow 55 ${shellQuote(buildPiCommand("dev-flow", "pointers"))};`));
 });
 
 test("each launching skill runs its helpers from an isolated installed folder", async () => {
@@ -323,7 +354,7 @@ test("the spec argument builds the label — never the anchor terminal's label",
   assert.equal(input.url, "http://api.test/terminal/input");
   assert.deepEqual(input.body, {
     terminalId: "term-new",
-    input: buildTerminalInput("code-review-loop", "77", "the maintainer's pointers"),
+    input: buildTerminalInput("code-review-loop", "77", "the maintainer's pointers", worktreePath),
   });
 });
 
@@ -665,7 +696,7 @@ function verifyDeps({ fetchImpl, spawnImpl } = {}) {
   };
 }
 
-test("verified-inject: a sentinel present on the first poll launches with no re-inject", async () => {
+test("verified-inject: a sentinel present on the first poll launches with no relaunch", async () => {
   const { fetchImpl, calls, inputs } = mockKeplerApi({ terminals: [VERIFY_TERMINAL] });
   const result = await main(["dev-flow", "55", "pointers"], verifyDeps({ fetchImpl }));
   assert.equal(result.path, "api");
@@ -673,23 +704,36 @@ test("verified-inject: a sentinel present on the first poll launches with no re-
   assert.equal(calls.filter((call) => call.url.includes("/terminal/buffer")).length, 1);
 });
 
-test("verified-inject: a wedged injection is re-injected once, and the stage runs when the sentinel then appears", async () => {
-  const { fetchImpl, inputs, bufferText } = mockKeplerApi({
+test("verified-inject: a wedged terminal is closed and relaunched once, and the new terminal passes verification", async () => {
+  const { fetchImpl, calls, inputs, bufferText } = mockKeplerApi({
     terminals: [VERIFY_TERMINAL],
     handlers: {
-      // The PTY echo is present, the sentinel was never executed: a wedge until the re-inject lands.
+      // The PTY echo is present, the sentinel was never executed: a wedge
+      // until the relaunched terminal's input lands.
       buffer: () => okResponse(inputs().length >= 2 ? bufferText() : "dev-flow@host$ printf '%s\\n' ...\r\n"),
     },
   });
   const result = await main(["dev-flow", "55", "pointers"], verifyDeps({ fetchImpl }));
+
   assert.equal(result.path, "api");
-  assert.equal(result.terminalId, "term-new");
-  assert.equal(inputs().length, 2);
-  assert.deepEqual(inputs()[0], inputs()[1]);
+  assert.equal(result.terminalId, "term-new-2");
+  assert.deepEqual(
+    inputs().map((body) => body.terminalId),
+    ["term-new", "term-new-2"],
+    "the old terminal never receives a second input"
+  );
+  assert.deepEqual(inputs()[0].input, inputs()[1].input, "the relaunched terminal receives the same input");
+
+  const events = calls.map((call) => `${call.method} ${call.url.replace("http://api.test", "")}`);
+  const closeAt = events.findIndex((event) => event === "POST /terminal/close");
+  const startAts = events.flatMap((event, index) => (event === "POST /terminal/start" ? [index] : []));
+  assert.equal(startAts.length, 2, "one initial start and one relaunch");
+  assert.ok(closeAt > startAts[0] && closeAt < startAts[1], "the wedged terminal is closed before the new one starts");
+  assert.deepEqual(calls[closeAt].body, { terminalId: "term-new" });
 });
 
-test("verified-inject: a double wedge is a hard error after exactly one re-inject", async () => {
-  const { fetchImpl, inputs } = mockKeplerApi({
+test("verified-inject: a second timeout after the relaunch is a hard error, never a silent pass", async () => {
+  const { fetchImpl, calls, inputs } = mockKeplerApi({
     terminals: [VERIFY_TERMINAL],
     handlers: { buffer: () => okResponse("echoed, never executed\r\n") },
   });
@@ -697,12 +741,47 @@ test("verified-inject: a double wedge is a hard error after exactly one re-injec
   await assert.rejects(
     main(["dev-flow", "55", "pointers"], verifyDeps({ fetchImpl, spawnImpl })),
     (error) => {
-      assert.match(error.message, /CHAIN-STAGE-START: chain #55 dev-flow/);
-      assert.match(error.message, /after one re-inject/);
+      assert.match(error.message, /terminal term-new-2 did not show "CHAIN-STAGE-START: chain #55 dev-flow"/);
+      assert.match(error.message, /after one relaunch/);
       return true;
     }
   );
-  assert.equal(inputs().length, 2);
+  assert.deepEqual(inputs().map((body) => body.terminalId), ["term-new", "term-new-2"]);
+  assert.equal(calls.filter((call) => call.url.endsWith("/terminal/close")).length, 1);
+  assert.equal(calls.filter((call) => call.url.endsWith("/terminal/start")).length, 2);
+  assert.equal(spawnCalls.length, 0);
+});
+
+test("verified-inject: a close failure after a wedge is a hard error and the relaunch never starts", async () => {
+  const { fetchImpl, calls, inputs } = mockKeplerApi({
+    terminals: [VERIFY_TERMINAL],
+    handlers: {
+      buffer: () => okResponse("echoed, never executed\r\n"),
+      close: () => errorResponse(500),
+    },
+  });
+  const { spawnImpl, calls: spawnCalls } = spawnRecorder();
+  await assert.rejects(main(["dev-flow", "55", "pointers"], verifyDeps({ fetchImpl, spawnImpl })), /HTTP 500/);
+  assert.equal(inputs().length, 1);
+  assert.equal(calls.filter((call) => call.url.endsWith("/terminal/start")).length, 1);
+  assert.equal(calls.filter((call) => call.url.endsWith("/terminal/close")).length, 1);
+  assert.equal(spawnCalls.length, 0);
+});
+
+test("verified-inject: a start failure after a wedge is a hard error, never a silent pass", async () => {
+  let starts = 0;
+  const { fetchImpl, calls, inputs } = mockKeplerApi({
+    terminals: [VERIFY_TERMINAL],
+    handlers: {
+      buffer: () => okResponse("echoed, never executed\r\n"),
+      start: () => (++starts === 1 ? okResponse({ terminalId: "term-new" }) : errorResponse(500)),
+    },
+  });
+  const { spawnImpl, calls: spawnCalls } = spawnRecorder();
+  await assert.rejects(main(["dev-flow", "55", "pointers"], verifyDeps({ fetchImpl, spawnImpl })), /HTTP 500/);
+  assert.equal(inputs().length, 1);
+  assert.equal(starts, 2, "the relaunch start was attempted");
+  assert.equal(calls.filter((call) => call.url.endsWith("/terminal/close")).length, 1);
   assert.equal(spawnCalls.length, 0);
 });
 
@@ -731,7 +810,7 @@ test("verified-inject: ANSI escapes in the buffer are stripped before matching",
   assert.equal(inputs().length, 1);
 });
 
-test("verified-inject: a buffer-read HTTP error is a hard error with no re-inject", async () => {
+test("verified-inject: a buffer-read HTTP error is a hard error with no relaunch", async () => {
   const { fetchImpl, inputs } = mockKeplerApi({
     terminals: [VERIFY_TERMINAL],
     handlers: { buffer: () => errorResponse(500) },
@@ -742,7 +821,7 @@ test("verified-inject: a buffer-read HTTP error is a hard error with no re-injec
   assert.equal(spawnCalls.length, 0);
 });
 
-test("verified-inject: a connection-level buffer failure is a hard error with no re-inject", async () => {
+test("verified-inject: a connection-level buffer failure is a hard error with no relaunch", async () => {
   const { fetchImpl, inputs } = mockKeplerApi({
     terminals: [VERIFY_TERMINAL],
     handlers: {
@@ -760,7 +839,7 @@ test("verified-inject: a connection-level buffer failure is a hard error with no
   assert.equal(spawnCalls.length, 0);
 });
 
-test("verified-inject: a malformed buffer body is a hard error with no re-inject", async () => {
+test("verified-inject: a malformed buffer body is a hard error with no relaunch", async () => {
   const { fetchImpl, inputs } = mockKeplerApi({
     terminals: [VERIFY_TERMINAL],
     handlers: { buffer: () => ({ ok: true, status: 200, text: async () => "{not json" }) },
@@ -829,14 +908,14 @@ function stubEnvironment({ failTimes = 0, wakeStatus = 0 } = {}) {
 }
 
 function runWrapper(stage, spec, pointers, env) {
-  return spawnSync("bash", ["-c", buildRetryWrapper(stage, spec, pointers)], { encoding: "utf8", env });
+  return spawnSync("bash", ["-c", buildRetryWrapper(stage, spec, pointers, WORKTREE_PATH)], { encoding: "utf8", env });
 }
 
 test("after 5 failed attempts the wrapper prints the marker and actuates the wake", () => {
   const { dir, log, env } = stubEnvironment({ failTimes: 5 });
   try {
     const result = runWrapper("dev-flow", "55", "pointers", env);
-    const resume = buildPiCommand("dev-flow", "pointers");
+    const resume = resumeCommand("dev-flow", "55", "pointers");
     assert.equal(result.status, 0);
     assert.deepEqual(readFileSync(log, "utf8").trim().split("\n"), [
       "pi attempt 1",
@@ -884,9 +963,9 @@ test("a failed wake leaves the marker printed and the helper's failure visible",
     assert.equal(result.status, 7);
     assert.ok(result.stdout.startsWith(`${stageSentinel("55", "dev-flow")}\n`));
     assert.match(result.stdout, /FAILED: chain #55 dev-flow gave up after 5 attempts\n/);
-    assert.match(result.stdout, /FAILED: resume with: pi --print /);
+    assert.match(result.stdout, /FAILED: resume with: cd '\/work\/tree' && node '.*launch-stage\.mjs' dev-flow 55 /);
     assert.match(result.stderr, /wake-stub/);
-    assert.match(readFileSync(log, "utf8"), /wake .*open-wake-session\.mjs/);
+    assert.match(readFileSync(log, "utf8"), /wake .*open-wake-session\.mjs dev-flow 55 cd '\/work\/tree' && node '.*launch-stage\.mjs'/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -906,6 +985,7 @@ function mockKeplerApi({ terminals, terminalId = "term-new", handlers = {} }) {
   const calls = [];
   const inputBodies = [];
   let buffer = "";
+  let starts = 0;
   const fetchImpl = async (url, init = {}) => {
     const method = init.method ?? "GET";
     const call = { url, method, body: init.body ? JSON.parse(init.body) : undefined };
@@ -914,7 +994,11 @@ function mockKeplerApi({ terminals, terminalId = "term-new", handlers = {} }) {
       return handlers.list ? handlers.list(call) : okResponse(terminals);
     }
     if (method === "POST" && url.endsWith("/terminal/start")) {
-      return handlers.start ? handlers.start(call) : okResponse({ terminalId });
+      starts += 1;
+      return handlers.start ? handlers.start(call) : okResponse({ terminalId: starts === 1 ? terminalId : `${terminalId}-${starts}` });
+    }
+    if (method === "POST" && url.endsWith("/terminal/close")) {
+      return handlers.close ? handlers.close(call) : okResponse(null);
     }
     if (method === "POST" && url.endsWith("/terminal/input")) {
       inputBodies.push(call.body);

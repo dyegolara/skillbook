@@ -851,6 +851,19 @@ test("reads the wake helper name from ADR-0006, not a hardcoded copy", () => {
   ]);
 });
 
+test("rejects a resolver pointed at another helper while the ADR name survives in a comment", () => {
+  const problems = verify(
+    makeRepo({
+      helperText: helper
+        .replace('new URL("./open-wake-session.mjs", import.meta.url)', 'new URL("./open-snooze-session.mjs", import.meta.url)')
+        .replace("export const STAGE_PINS = {", "// The wake helper is open-wake-session.mjs.\nexport const STAGE_PINS = {"),
+    })
+  );
+  assert.deepEqual(problems, [
+    "skills/software-factory/scripts/launch-stage.mjs: give-up path resolves a different wake helper than open-wake-session.mjs",
+  ]);
+});
+
 test("the CLI reports the real pack as OK", () => {
   const script = fileURLToPath(new URL("./verify-software-factory.mjs", import.meta.url));
   const result = spawnSync(process.execPath, [script], { encoding: "utf8" });

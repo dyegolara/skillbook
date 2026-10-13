@@ -18,9 +18,15 @@
  * ANSI escapes stripped, on its own line — the PTY echo of the injected
  * command carries the same text mid-line and is not proof of execution)
  * every 250 ms for up to 5000 ms. A timed-out wait is a wedge: the helper
- * re-injects the same input into the same terminal once and re-verifies; a
- * second timeout is a hard error carrying `error.message`. On exhaustion the
- * wrapper prints the FAILED marker (stage, spec, the exact resume command)
+ * closes the wedged terminal, relaunches it with the same ids/worktree/label
+ * and injects the same input into the new terminal, then re-verifies; a
+ * second timeout, a close failure or a start failure is a hard error carrying
+ * `error.message`. Closing the wedged terminal is what makes the
+ * no-double-launch guarantee structural — a late first injection cannot run
+ * a second stage command in a closed terminal. On exhaustion the
+ * wrapper prints the FAILED marker (stage, spec, the exact resume command —
+ * the launch-helper invocation, so a resume re-enters the retry wrapper and
+ * verified-inject, never the bare pinned command)
  * into the buffer and actuates the sibling wake helper; the terminal stays
  * open after the stage exits, and its buffer is the stage log. The detached
  * `nohup` fallback fires only on a connection-level failure to the terminal
@@ -79,14 +85,15 @@ export const RETRY_SLEEPS_SECONDS = [40, 80, 160, 320];
 /**
  * verified-inject's parameters: the wrapper prints the sentinel as its first
  * action, and the helper polls the terminal buffer every 250 ms for up to
- * 5000 ms before calling the launch wedged. A timed-out wait re-injects the
- * same input into the same terminal exactly once; a second timeout is a hard
- * error. Explicit, like the retry schedule, so the behaviour is deterministic.
+ * 5000 ms before calling the launch wedged. A timed-out wait closes the
+ * wedged terminal and relaunches it with the same input exactly once; a
+ * second timeout is a hard error. Explicit, like the retry schedule, so the
+ * behaviour is deterministic.
  */
 export const SENTINEL_PREFIX = "CHAIN-STAGE-START:";
 export const VERIFY_POLL_INTERVAL_MS = 250;
 export const VERIFY_TIMEOUT_MS = 5000;
-export const VERIFY_MAX_REINJECTS = 1;
+export const VERIFY_MAX_RELAUNCHES = 1;
 
 /**
  * The execution sentinel the wrapper prints before attempt 1. It is the
@@ -119,12 +126,12 @@ export function stripAnsi(text) {
   return String(text).replace(ANSI_PATTERN, "");
 }
 
-/** The wedge signal: the sentinel wait timed out, so verified-inject re-injects once. */
+/** The wedge signal: the sentinel wait timed out, so verified-inject relaunches once. */
 export class SentinelTimeoutError extends Error {
-  constructor({ terminalId, sentinel, timeoutMs, reinjected }) {
+  constructor({ terminalId, sentinel, timeoutMs, relaunched }) {
     super(
       `terminal ${terminalId} did not show "${sentinel}" within ${timeoutMs}ms` +
-        (reinjected ? " after one re-inject" : "") +
+        (relaunched ? " after one relaunch" : "") +
         " — the stage launch is wedged"
     );
     this.name = "SentinelTimeoutError";
@@ -145,7 +152,7 @@ export function sleep(ms) {
  * Read the terminal's scrollback: `GET /terminal/buffer` returns the text as a
  * bare JSON string with ANSI escapes. A non-string body is a hard error — an
  * empty or malformed read must never pass as "sentinel absent" and trigger a
- * re-inject against a terminal the helper cannot actually see.
+ * relaunch against a terminal the helper cannot actually see.
  */
 export async function readTerminalBuffer({ apiBase, fetchImpl = fetch, terminalId }) {
   const body = await requestJson(
@@ -174,7 +181,7 @@ export async function waitForSentinel({
   timeoutMs = VERIFY_TIMEOUT_MS,
   pollIntervalMs = VERIFY_POLL_INTERVAL_MS,
   sleepImpl = sleep,
-  reinjected = false,
+  relaunched = false,
 }) {
   const polls = Math.max(1, Math.ceil(timeoutMs / pollIntervalMs));
   for (let poll = 0; poll < polls; poll += 1) {
@@ -182,12 +189,27 @@ export async function waitForSentinel({
     const buffer = await readTerminalBuffer({ apiBase, fetchImpl, terminalId });
     if (sentinelSeen(buffer, sentinel)) return buffer;
   }
-  throw new SentinelTimeoutError({ terminalId, sentinel, timeoutMs, reinjected });
+  throw new SentinelTimeoutError({ terminalId, sentinel, timeoutMs, relaunched });
 }
 
 /** The sibling wake helper, resolved from this module's own installed location. */
 export function wakeHelperPath() {
   return fileURLToPath(new URL("./open-wake-session.mjs", import.meta.url));
+}
+
+/** This launch helper's installed path — the resume command re-enters through it. */
+export function launchHelperPath() {
+  return fileURLToPath(new URL("./launch-stage.mjs", import.meta.url));
+}
+
+/**
+ * The resume command the give-up marker and the wake carry: re-enter this
+ * protected route — the launch helper from the stage's worktree — so a resume
+ * runs under the retry wrapper and verified-inject, never the bare pinned
+ * command.
+ */
+export function buildResumeCommand({ stage, spec, pointers, worktreePath }) {
+  return `cd ${shellQuote(worktreePath)} && node ${shellQuote(launchHelperPath())} ${stage} ${spec} ${shellQuote(pointers)}`;
 }
 
 /**
@@ -197,14 +219,17 @@ export function wakeHelperPath() {
  * prints the FAILED marker — stage, spec and the exact resume command, one
  * greppable line each — into the terminal buffer (the stage log), then
  * actuates the wake by running the sibling helper; the wake's output and
- * exit status are never swallowed.
+ * exit status are never swallowed. The pinned command inside stays unchanged;
+ * the resume command is the launch-helper invocation, so a resume re-enters
+ * the retry wrapper and verified-inject.
  */
-export function buildRetryWrapper(stage, spec, pointers) {
+export function buildRetryWrapper(stage, spec, pointers, worktreePath) {
   const command = buildPiCommand(stage, pointers); // the stage's pinned command, unchanged inside
   const sentinel = stageSentinel(spec, stage); // the first action, before attempt 1
+  const resumeCommand = buildResumeCommand({ stage, spec, pointers, worktreePath });
   const marker = [
     `FAILED: chain #${spec} ${stage} gave up after ${RETRY_ATTEMPTS} attempts`,
-    `FAILED: resume with: ${command}`,
+    `FAILED: resume with: ${resumeCommand}`,
   ];
   const sleepCases = RETRY_SLEEPS_SECONDS.map((seconds, index) => `${index + 1}) sleep ${seconds};;`).join(" ");
   return (
@@ -215,12 +240,12 @@ export function buildRetryWrapper(stage, spec, pointers) {
     "chain_attempt=$((chain_attempt+1)); done; " +
     `if [ "$chain_status" -ne 0 ]; then ` +
     `printf '%s\\n' ${marker.map(shellQuote).join(" ")}; ` +
-    `node ${shellQuote(wakeHelperPath())} ${stage} ${spec} ${shellQuote(command)}; fi`
+    `node ${shellQuote(wakeHelperPath())} ${stage} ${spec} ${shellQuote(resumeCommand)}; fi`
   );
 }
 
-export function buildTerminalInput(stage, spec, pointers) {
-  return `${buildRetryWrapper(stage, spec, pointers)}\n`;
+export function buildTerminalInput(stage, spec, pointers, worktreePath) {
+  return `${buildRetryWrapper(stage, spec, pointers, worktreePath)}\n`;
 }
 
 export function stageLabel(spec, stage) {
@@ -417,16 +442,20 @@ export async function launchInTerminal({
   fetchImpl = fetch,
   sleepImpl = sleep,
 }) {
-  const started = await requestJson(fetchImpl, `${apiBase}/terminal/start`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ ...ids, worktreePath, label }),
-  });
-  const terminalId = started?.terminalId;
-  if (!terminalId) throw new Error("Kepler terminal start returned no terminalId");
+  const startTerminal = async () => {
+    const started = await requestJson(fetchImpl, `${apiBase}/terminal/start`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...ids, worktreePath, label }),
+    });
+    const terminalId = started?.terminalId;
+    if (!terminalId) throw new Error("Kepler terminal start returned no terminalId");
+    return terminalId;
+  };
 
+  let terminalId = await startTerminal();
   const sentinel = stageSentinel(spec, stage);
-  const input = buildTerminalInput(stage, spec, pointers);
+  const input = buildTerminalInput(stage, spec, pointers, worktreePath);
   const postInput = () =>
     requestJson(fetchImpl, `${apiBase}/terminal/input`, {
       method: "POST",
@@ -435,19 +464,27 @@ export async function launchInTerminal({
     });
 
   await postInput();
-  for (let reinjects = 0; ; reinjects += 1) {
+  for (let relaunches = 0; ; relaunches += 1) {
     try {
       // The wrapper prints the sentinel immediately on execution, so a wait
-      // that times out means the command never started: re-inject the same
-      // input into the same terminal, bounded to VERIFY_MAX_REINJECTS, and
-      // re-verify. Once the sentinel is seen the helper returns without
-      // touching the terminal's input again — no double-launch.
-      await waitForSentinel({ apiBase, fetchImpl, terminalId, sentinel, sleepImpl, reinjected: reinjects > 0 });
+      // that times out means the command never started.
+      await waitForSentinel({ apiBase, fetchImpl, terminalId, sentinel, sleepImpl, relaunched: relaunches > 0 });
       return { terminalId, label };
     } catch (error) {
       // A non-wedge failure (buffer read HTTP error, connection failure,
-      // malformed body) is a hard error, never a silent pass.
-      if (!isSentinelTimeout(error) || reinjects >= VERIFY_MAX_REINJECTS) throw error;
+      // malformed body) is a hard error, never a silent pass. A second
+      // timeout after the relaunch is a hard error too.
+      if (!isSentinelTimeout(error) || relaunches >= VERIFY_MAX_RELAUNCHES) throw error;
+      // The wedge: close the terminal before relaunching it. Closing, not
+      // re-injecting, is what makes no-double-launch structural — a late
+      // first injection can never run a second stage command. A close or
+      // start failure here propagates as a hard error carrying its message.
+      await requestJson(fetchImpl, `${apiBase}/terminal/close`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ terminalId }),
+      });
+      terminalId = await startTerminal();
       await postInput();
     }
   }

@@ -555,10 +555,27 @@ function readWakeHelperName(repoRoot, problems) {
 }
 
 /**
+ * Parse the wake-helper filename `wakeHelperPath` resolves: the
+ * `new URL("...", import.meta.url)` literal in its function body. Returns the
+ * literal's basename, or null when the resolver is missing or carries no
+ * such literal — a resolver that cannot be parsed is treated as resolving a
+ * different helper.
+ */
+function resolveWakeHelperName(text) {
+  const body = functionBody(text, "wakeHelperPath");
+  if (body === null) return null;
+  const match = /new URL\(\s*"([^"]+)"\s*,\s*import\.meta\.url\s*\)/.exec(body);
+  if (!match) return null;
+  return match[1].split("/").pop();
+}
+
+/**
  * (b) The wrapper's give-up path — the buildRetryWrapper body where the FAILED
  * marker lives — references the wake helper ADR-0006 names: directly, or by
- * calling the file-local wakeHelperPath resolver, which must then resolve the
- * named helper.
+ * calling the file-local wakeHelperPath resolver, whose literal filename must
+ * then equal the named helper. The whole-file presence of the name is not
+ * enough: a resolver pointed elsewhere must fail even if the ADR name survives
+ * in a comment.
  */
 function checkWakeReference(problems, repoRoot, text, wrapper) {
   if (wrapper === null) return;
@@ -567,11 +584,12 @@ function checkWakeReference(problems, repoRoot, text, wrapper) {
   if (!wrapper.includes("FAILED")) {
     problems.push(`${HELPER_FILE}: retry wrapper's give-up path has no FAILED marker`);
   }
-  if (!wrapper.includes(wakeName) && !/\bwakeHelperPath\s*\(/.test(wrapper)) {
+  const callsResolver = /\bwakeHelperPath\s*\(/.test(wrapper);
+  if (!wrapper.includes(wakeName) && !callsResolver) {
     problems.push(`${HELPER_FILE}: give-up path does not reference the wake helper ${wakeName}`);
     return;
   }
-  if (/\bwakeHelperPath\s*\(/.test(wrapper) && !text.includes(wakeName)) {
+  if (callsResolver && resolveWakeHelperName(text) !== wakeName) {
     problems.push(`${HELPER_FILE}: give-up path resolves a different wake helper than ${wakeName}`);
   }
 }

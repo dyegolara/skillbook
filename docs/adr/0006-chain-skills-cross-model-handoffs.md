@@ -48,7 +48,11 @@ context is not independent.
   silently. The injected command is a retry wrapper around the stage's
   pinned agent command — whatever the harness, `pi` is not load-bearing —
   running 5 attempts with exponential backoff (~10 min), the pinned
-  command inside unchanged with its explicit pins. On exhaustion the
+  command inside unchanged with its explicit pins. The resume command is
+  the launch invocation — `cd <worktree> && node "<skill-dir>/scripts/
+  launch-stage.mjs" <stage> <spec> '<thin pointers>'` — so a resume
+  re-enters the retry wrapper and verified-inject instead of running the
+  bare pinned command. On exhaustion the
   wrapper leaves a loud FAILED marker in the terminal buffer (stage,
   spec, the exact resume command) and actuates a wake — an unread
   session on the task carrying that resume command — the same
@@ -66,12 +70,14 @@ context is not independent.
   stripping ANSI escapes, every 250 ms until the sentinel appears on its
   own line or a 5000 ms timeout elapses (the PTY echoes the injected
   command, so only a standalone line proves execution; a process probe
-  has no verified endpoint). The wedge recovery is a re-inject of the
-  same terminal input into the same terminal, bounded to one re-inject,
-  then a hard error carrying `error.message`; because the wrapper emits
-  its sentinel immediately on execution, a re-inject only follows a
-  timed-out wait and the helper never touches the input again once the
-  sentinel is seen, so no two stage commands run in one terminal. Any
+  has no verified endpoint). The wedge recovery closes the wedged
+  terminal (`POST /terminal/close`), relaunches it with the same ids,
+  worktree and label (`POST /terminal/start`) and injects the same input
+  into the new terminal, bounded to one relaunch; a second timeout, a
+  close failure or a start failure is a hard error carrying
+  `error.message`. Closing the wedged terminal is what makes the
+  no-double-launch guarantee structural: a late first injection cannot
+  run a second stage command in a closed terminal. Any
   verification failure that is not a wedge — a buffer-read HTTP error, a
   connection failure to a reachable API, a malformed buffer body — is a
   hard error, not a silent pass. The wake gap is filled (#93): a new
