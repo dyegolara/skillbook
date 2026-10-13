@@ -28,7 +28,9 @@ code-review-loop → (dev-flow | create-pr | this skill)`. The full map is in
 
 A pi stage prints nothing until it finishes, so the chain keeps a live view in
 its own Kepler terminal: `chain #<spec>: status` runs a plain bash loop —
-branch log, fix tickets, chain terminals — refreshed every 30 seconds. The
+branch log, fix tickets, chain terminals, failed stages — refreshed every
+30 seconds. The failed-stages check skips the status terminal itself and
+matches the marker as printed, not the injected wrapper's quoted echo of it. The
 fresh form launches it once the spec is published; the re-entry form makes
 sure it is alive when the chain resumes. The check reuses an existing live
 terminal on the worktree and never creates a duplicate.
@@ -73,6 +75,20 @@ while true; do
   echo
   echo "-- chain terminals:"
   curl -s "__API__/terminal/list" | grep -o '"label":"chain[^"]*"'
+  echo
+  echo "-- failed stages:"
+  failed=0
+  while IFS=$'\t' read -r tid tlabel; do
+    [ -z "$tid" ] && continue
+    buffer=$(curl -s "__API__/terminal/buffer?terminalId=$tid" \
+      | jq -r 'gsub("\u001b\\[[0-9;?]*[A-Za-z]"; "")' 2>/dev/null)
+    if printf '%s\n' "$buffer" | grep -Eq "(^|[^'])FAILED: chain #__SPEC__ "; then
+      echo "  $tlabel"
+      failed=1
+    fi
+  done < <(curl -s "__API__/terminal/list" | jq -r --arg wt "__WORKTREE__" --arg status "chain #__SPEC__: status" \
+    '.[] | select(.worktreePath == $wt and (.label | startswith("chain #")) and .label != $status) | "\(.id)\t\(.label)"')
+  [ "$failed" -eq 0 ] && echo "  (none)"
   sleep 30
 done
 LOOP_BODY
