@@ -57,13 +57,15 @@ node pr_monitor_webhook.mjs --serve --setup-hooks
 ```
 
 Other env: `PR_MONITOR_STATE_PATH` (default `~/.cache/pr-monitor/state.json`),
-`PR_MONITOR_MODEL` (OpenRouter model), `OPENROUTER_API_KEY` (env or
-`~/.pr-monitor.env` / `~/.hermes/.env`), `DRY_RUN=1` (print would-be
+`PR_MONITOR_MODEL`, `PR_MONITOR_LLM_ENDPOINT` (default
+`https://openrouter.ai/api/v1/chat/completions`) and `PR_MONITOR_LLM_API_KEY`
+(default `OPENROUTER_API_KEY`) for the decision provider, `OPENROUTER_API_KEY`
+(env or `~/.pr-monitor.env` / `~/.hermes/.env`), `DRY_RUN=1` (print would-be
 comments, never post, never persist state). `PR_MONITOR_LLM_CMD` (decision
 request on stdin, JSON decision on stdout; timeout
-`PR_MONITOR_LLM_CMD_TIMEOUT_MS`, default 60000) always wins over
-`PR_MONITOR_MODEL` + `OPENROUTER_API_KEY`; with neither defined the Tick
-returns an actionable `wait` without notifying or escalating.
+`PR_MONITOR_LLM_CMD_TIMEOUT_MS`, default 60000) always wins over the
+provider pair; with neither defined the Tick returns an actionable `wait`
+without notifying or escalating.
 
 ## Invocation API
 
@@ -293,10 +295,12 @@ Weekly retries anchor at the escalation moment recorded in state
 - `repos/{r}/pulls/{n}/commits` → last commit ts (oldest-first; take
   `max(author.date)`).
 
-LLM: OpenRouter `chat/completions`, temperature 0, `response_format:
-json_object`, four-action prompt (`request_rebase` is deterministic — the
-LLM never picks it; English reasoning, see `callLlm` in the script). Key
-from `OPENROUTER_API_KEY` (env, `~/.pr-monitor.env`, or `~/.hermes/.env`).
+LLM: a chat-completions provider (OpenRouter by default), temperature 0,
+`response_format: json_object`, four-action prompt (`request_rebase` is
+deterministic — the LLM never picks it; English reasoning, see `callLlm` in
+the script). Endpoint and key from `PR_MONITOR_LLM_ENDPOINT` and
+`PR_MONITOR_LLM_API_KEY` (default: `OPENROUTER_API_KEY`; env,
+`~/.pr-monitor.env`, or `~/.hermes/.env`).
 
 Decision architecture and policy intent are documented in ADRs:
 - `resources/docs/adr/0003-llm-decision-maker-behind-deterministic-gates.md`
