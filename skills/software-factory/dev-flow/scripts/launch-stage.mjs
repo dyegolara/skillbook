@@ -97,15 +97,18 @@ export const VERIFY_TIMEOUT_MS = 5000;
 export const VERIFY_MAX_RELAUNCHES = 1;
 
 /**
- * The `chain #<spec> <stage>` core, built once and shared by the three
- * emitted shapes: the label (`chain #N: S`), the sentinel
- * (`CHAIN-STAGE-START: chain #N S`) and the FAILED marker
- * (`FAILED: chain #N S gave up after N attempts`). The label's colon is the
- * shapes' one difference, so the separator between spec and stage is a
- * parameter; the spec goes through `specNumber` here, once for all three.
+ * The `chain #<spec> <stage>` core, built by the two emitted shapes that use
+ * it: the sentinel (`CHAIN-STAGE-START: chain #N S`) and the FAILED marker
+ * (`FAILED: chain #N S gave up after N attempts`). The spec goes through
+ * `specNumber` here, once for all shapes.
  */
-export function chainCore(spec, stage, separator = " ") {
-  return `chain #${specNumber(spec)}${separator}${stage}`;
+export function chainCore(spec, stage) {
+  return `chain #${specNumber(spec)} ${stage}`;
+}
+
+/** The `chain #<spec>: <stage>` terminal label — the second named shape. */
+export function chainLabel(spec, stage) {
+  return `chain #${specNumber(spec)}: ${stage}`;
 }
 
 /**
@@ -265,8 +268,9 @@ export function buildTerminalInput(stage, spec, pointers, worktreePath) {
   return `${buildRetryWrapper(stage, spec, pointers, worktreePath)}\n`;
 }
 
+/** The packaged helpers' name for the label shape; delegates to `chainLabel`. */
 export function stageLabel(spec, stage) {
-  return chainCore(spec, stage, ": ");
+  return chainLabel(spec, stage);
 }
 
 /** The one spec-number guard: the label, the sentinel and the FAILED marker all carry it. */

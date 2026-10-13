@@ -19,6 +19,7 @@ import {
   buildRetryWrapper,
   buildTerminalInput,
   chainCore,
+  chainLabel,
   createLabeledSession,
   failureLines,
   isConnectionError,
@@ -94,10 +95,9 @@ test("buildTerminalInput terminates the injected retry wrapper with a newline", 
 
 // --- the helper's post-injection check: the execution sentinel ---
 
-test("chainCore builds the chain #<spec> <stage> core the three emitted shapes share", () => {
+test("chainCore builds the chain #<spec> <stage> core the sentinel and the FAILED marker use", () => {
   assert.equal(chainCore("55", "dev-flow"), "chain #55 dev-flow");
   assert.equal(chainCore(77, "code-review-loop"), "chain #77 code-review-loop");
-  assert.equal(chainCore("55", "dev-flow", ": "), "chain #55: dev-flow");
   assert.throws(() => chainCore("abc", "dev-flow"), { message: 'spec must be a number — got "abc"' });
   assert.ok(stageSentinel("55", "dev-flow").includes(chainCore("55", "dev-flow")));
   assert.ok(
@@ -105,6 +105,12 @@ test("chainCore builds the chain #<spec> <stage> core the three emitted shapes s
       `FAILED: ${chainCore("55", "dev-flow")} gave up after ${RETRY_ATTEMPTS} attempts`
     )
   );
+});
+
+test("chainLabel builds the chain #<spec>: <stage> terminal label — the named label shape", () => {
+  assert.equal(chainLabel("55", "dev-flow"), "chain #55: dev-flow");
+  assert.equal(chainLabel(77, "code-review-loop"), "chain #77: code-review-loop");
+  assert.throws(() => chainLabel("abc", "dev-flow"), { message: 'spec must be a number — got "abc"' });
 });
 
 test("stageSentinel is the documented CHAIN-STAGE-START line and guards the spec", () => {
@@ -244,7 +250,7 @@ test("the status loop surfaces printed FAILED markers and ignores the wrapper's 
   assert.equal(matches("FAILED: resume with: pi --print ...\n"), false);
 });
 
-test("stageLabel builds chain #<spec>: <stage> from the explicit spec argument", () => {
+test("stageLabel delegates to chainLabel for the packaged helpers", () => {
   assert.equal(stageLabel(77, "code-review-loop"), "chain #77: code-review-loop");
   assert.equal(stageLabel("55", "dev-flow"), "chain #55: dev-flow");
   assert.throws(() => stageLabel("not-a-number", "dev-flow"), /spec/i);
