@@ -14,7 +14,10 @@
  *      and the skills:install command;
  *   5. the pack helpers exist and are referenced: every SKILL.md stage
  *      launch goes through launch-stage.mjs with the explicit `<stage> <spec>
- *      '<thin pointers>'` positionals, code-review-loop's decision-forcing
+ *      '<thin pointers>'` positionals, and grill-with-spec's fresh-form launch
+ *      additionally carries the three explicit `--repo-id/--worktree-id/
+ *      --task-id` flags (re-entry and mid-chain launches stay unpinned),
+ *      code-review-loop's decision-forcing
  *      route goes through open-grill-session.mjs, and every launching skill
  *      packages open-wake-session.mjs byte-identically beside launch-stage.mjs;
  *   6. both pin tables match their records: the launch helper's STAGE_PINS
@@ -81,7 +84,7 @@ export function verifySoftwareFactoryPack(packDir) {
     const text = readFileSync(file, "utf8");
     const { data } = parseFrontmatter(text);
     frontmatter.set(skill.name, data);
-    checkLaunchSnippets(problems, label, text);
+    checkLaunchSnippets(problems, label, text, skill.name);
     checkPackagedHelpers(problems, packDir, skill.name, text);
     if (
       skill.name === "code-review-loop" &&
@@ -247,6 +250,18 @@ function scanShellArgs(text) {
 
 const LAUNCH_VALUE_FLAGS = new Set(["--repo-id", "--worktree-id", "--task-id"]);
 
+/**
+ * The fresh-form launch: the fenced helper invocation whose first positional is
+ * the dev-flow stage — the fresh chain's bootstrap. The token scan keeps a bare
+ * mention or an invocation of another stage from matching.
+ */
+function isFreshFormLaunch(block) {
+  const match = /launch-stage\.mjs["']?/.exec(block);
+  if (match === null) return false;
+  const tokens = scanShellArgs(block.slice(match.index + match[0].length));
+  return tokens[0] === "dev-flow";
+}
+
 /** Positionals only: the known id flags consume their value; other flags are ignored. */
 function positionalCount(tokens) {
   let count = 0;
@@ -311,7 +326,7 @@ function isStageLaunch(block, spawns) {
   );
 }
 
-function checkLaunchSnippets(problems, label, text) {
+function checkLaunchSnippets(problems, label, text, skill) {
   for (const block of fencedCodeBlocks(text)) {
     const spawns = piSpawnCommands(block);
     if (isStageLaunch(block, spawns) && !block.includes("launch-stage.mjs")) {
@@ -319,6 +334,20 @@ function checkLaunchSnippets(problems, label, text) {
     }
     if (spawns.length > 0 && !spawns.every((command) => command.includes("--model"))) {
       problems.push(`${label}: spawn snippet lacks an explicit --model`);
+    }
+    // The id flags are scoped to grill-with-spec's fresh form (the fifth
+    // decision's fix-ticket scope item 4): its fenced step-4 dev-flow launch
+    // passes the triple the status snippet echoed. Mid-chain and re-entry
+    // launches anchor on the live terminal instead, and the §Handoff rules
+    // inline mention carries no stage — neither is required to pass the flags.
+    if (skill === "grill-with-spec" && isFreshFormLaunch(block)) {
+      for (const flag of LAUNCH_VALUE_FLAGS) {
+        if (!block.includes(flag)) {
+          problems.push(
+            `${label}: fresh-form launch snippet lacks the explicit ${flag} — pass the status snippet's echoed chain-ids triple`
+          );
+        }
+      }
     }
   }
   for (const segment of codeSegments(text)) {

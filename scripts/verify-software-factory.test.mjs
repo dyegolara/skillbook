@@ -115,6 +115,10 @@ const SKILL_LAUNCHES = {
   "create-pr": [],
 };
 
+// The fresh form's decided launch shape: the triple the status snippet echoed
+// rides the three explicit id flags (the fifth decision, item 2).
+const FRESH_FORM_FLAGS = "--repo-id <repoId> --worktree-id <worktreeId> --task-id <taskId>";
+
 const readme = [
   "# Skillbook",
   "",
@@ -201,16 +205,18 @@ function defaultSkillBody(name, { includeGrillRoute = true } = {}) {
     stages.length === 0
       ? "The terminal stage launches nothing.\n"
       : stages
-          .map((stage) =>
-            [
+          .map((stage) => {
+            const flags =
+              name === "grill-with-spec" && stage === "dev-flow" ? ` ${FRESH_FORM_FLAGS}` : "";
+            return [
               `Launch ${stage}:`,
               "",
               "```bash",
-              `node "<skill-dir>/scripts/launch-stage.mjs" ${stage} <spec> 'Run the ${stage} skill.'`,
+              `node "<skill-dir>/scripts/launch-stage.mjs" ${stage} <spec> 'Run the ${stage} skill.'${flags}`,
               "```",
               "",
-            ].join("\n")
-          )
+            ].join("\n");
+          })
           .join("\n");
   if (name !== "code-review-loop" || !includeGrillRoute) return launches;
   return `${launches}\n${GRILL_ROUTE}`;
@@ -704,6 +710,91 @@ test("accepts the three-position form followed by id flags", () => {
     })
   );
   assert.deepEqual(problems, []);
+});
+
+test("accepts the decided fresh-form launch shape with the echoed id triple", () => {
+  const decided = [
+    "Launch dev-flow:",
+    "",
+    "```bash",
+    `node "<skill-dir>/scripts/launch-stage.mjs" dev-flow <spec> 'Run the dev-flow skill.' ${FRESH_FORM_FLAGS}`,
+    "```",
+    "",
+  ].join("\n");
+  assert.deepEqual(verify(makeRepo({ skillOverrides: { "grill-with-spec": { body: decided } } })), []);
+});
+
+test("rejects a fresh-form launch snippet missing the repo-id flag", () => {
+  const problems = verify(
+    makeRepo({
+      skillOverrides: {
+        "grill-with-spec": {
+          body: defaultSkillBody("grill-with-spec").replace("--repo-id <repoId> ", ""),
+        },
+      },
+    })
+  );
+  assert.ok(
+    problems.some((problem) => problem.includes("fresh-form launch snippet lacks the explicit --repo-id"))
+  );
+});
+
+test("rejects a fresh-form launch snippet missing the worktree-id flag", () => {
+  const problems = verify(
+    makeRepo({
+      skillOverrides: {
+        "grill-with-spec": {
+          body: defaultSkillBody("grill-with-spec").replace("--worktree-id <worktreeId> ", ""),
+        },
+      },
+    })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes("fresh-form launch snippet lacks the explicit --worktree-id")
+    )
+  );
+});
+
+test("rejects a fresh-form launch snippet missing the task-id flag", () => {
+  const problems = verify(
+    makeRepo({
+      skillOverrides: {
+        "grill-with-spec": {
+          body: defaultSkillBody("grill-with-spec").replace(" --task-id <taskId>", ""),
+        },
+      },
+    })
+  );
+  assert.ok(
+    problems.some((problem) => problem.includes("fresh-form launch snippet lacks the explicit --task-id"))
+  );
+});
+
+test("accepts a mid-chain launch in grill-with-spec without the id flags", () => {
+  const body = [
+    defaultSkillBody("grill-with-spec"),
+    "Re-entry resumes without the bootstrap flags:",
+    "",
+    "```bash",
+    `node "<skill-dir>/scripts/launch-stage.mjs" implement-spec <spec> 'Run the implement-spec skill.'`,
+    "```",
+    "",
+  ].join("\n");
+  assert.deepEqual(verify(makeRepo({ skillOverrides: { "grill-with-spec": { body } } })), []);
+});
+
+test("accepts a dev-flow launch in a mid-chain skill without the id flags", () => {
+  const body = [
+    "Launch dev-flow:",
+    "",
+    "```bash",
+    `node "<skill-dir>/scripts/launch-stage.mjs" dev-flow <spec> 'Run the dev-flow skill.'`,
+    "```",
+    "",
+    GRILL_ROUTE,
+  ].join("\n");
+  assert.deepEqual(verify(makeRepo({ skillOverrides: { "code-review-loop": { body } } })), []);
 });
 
 test("rejects a stale launch line even when a following line has more words", () => {
