@@ -1,11 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { runMonitorOnce, tickInFlight } from "./pr_monitor.mjs";
+import { AGENT_ADAPTERS, cliOnPath, resolveAutoDecisionSource } from "./agents.mjs";
 
 const REPO = "dyegolara/skillbook";
 const PR_MONITOR_PATH = new URL("./pr_monitor.mjs", import.meta.url).pathname;
@@ -1796,6 +1797,18 @@ const NO_DECISION_ENV = {
   PR_MONITOR_LLM_ENDPOINT: undefined,
   PR_MONITOR_LLM_API_KEY: undefined,
   OPENROUTER_API_KEY: undefined,
+  // The agent markers of whatever session runs this suite: the auto layer
+  // (#109) must never see the test host's own agent unless a test sets one.
+  AI_AGENT: undefined,
+  PI_CODING_AGENT: undefined,
+  PI_PROVIDER: undefined,
+  PI_MODEL: undefined,
+  CLAUDECODE: undefined,
+  CLAUDE_CODE_ENTRYPOINT: undefined,
+  ANTHROPIC_MODEL: undefined,
+  OPENCODE: undefined,
+  OPENCODE_CLIENT: undefined,
+  OPENCODE_CONFIG_CONTENT: undefined,
 };
 
 async function runThreeCommandTicks(command, envOverrides = {}) {
@@ -2076,6 +2089,7 @@ test("model+credential remains the deployed decision source when no command is d
     globalThis.fetch = originalFetch;
   }
 });
+
 /** A loopback stub of a chat-completions provider: records every request and
  * answers with a fixed decision. No external network. */
 function startStubChatProvider(decision) {
@@ -2236,3 +2250,256 @@ test("the provider credential never reaches the report, output, state or stderr 
     console.error = originalConsoleError;
   }
 });
+
+// ---------------------------------------------------------------------------
+// Layer 2 (auto): discover the invoking agent and synthesize its command
+// ---------------------------------------------------------------------------
+
+/** Write an executable stub agent CLI named `name` in `binDir`. It records
+ * argv + stdin and answers layer 1's decision contract. */
+function writeStubAgentCli(binDir, name, { action = "wait", reason = "stub auto decision", capturePath }) {
+  const scriptPath = path.join(binDir, `${name}-stub.mjs`);
+  fs.writeFileSync(scriptPath, [
+    'import fs from "node:fs";',
+    'let input = "";',
+    'process.stdin.setEncoding("utf8");',
+    'process.stdin.on("data", (chunk) => { input += chunk; });',
+    'process.stdin.on("end", () => {',
+    `  fs.writeFileSync(${JSON.stringify(capturePath)}, JSON.stringify({ argv: process.argv.slice(2), stdin: input }));`,
+    `  process.stdout.write(JSON.stringify({ action: ${JSON.stringify(action)}, reason: ${JSON.stringify(reason)} }));`,
+    "});",
+    "",
+  ].join("\n"));
+  const cliPath = path.join(binDir, name);
+  fs.writeFileSync(
+    cliPath,
+    `#!/bin/sh\nexec ${JSON.stringify(process.execPath)} ${JSON.stringify(scriptPath)} "$@"\n`
+  );
+  fs.chmodSync(cliPath, 0o755);
+  return cliPath;
+}
+
+function readStubCapture(capturePath) {
+  return JSON.parse(fs.readFileSync(capturePath, "utf8"));
+}
+
+/** Run one Tick in-process with a bin dir prepended to PATH and no explicit
+ * decision source, so the resolution chain lands on the auto layer. */
+function runAutoTick({ binDir, env = {}, headSha }) {
+  return withEnv(
+    {
+      ...NO_DECISION_ENV,
+      HOME: binDir,
+      PATH: `${binDir}${path.delimiter}${process.env.PATH || ""}`,
+      ...env,
+    },
+    () => runMonitorOnce({
+      repos: [REPO],
+      state: {},
+      nowMs: Date.parse("2026-09-08T00:00:00.000Z"),
+      dryRun: true,
+      emitJsonReport: true,
+      runGhFn: repoScopeGh(headSha),
+      collectPrStateFn: async () => makeCtx({ headSha }),
+    })
+  );
+}
+
+test("auto layer: a Tick under pi decides with pi's session model and names the adapter", async () => {
+  const dir = makeTempDir("pr-monitor-auto-pi-");
+  const capturePath = path.join(dir, "capture.json");
+  writeStubAgentCli(dir, "pi", { action: "request_review", reason: "auto pi decided", capturePath });
+
+  const out = await runAutoTick({
+    binDir: dir,
+    headSha: "autopi123",
+    env: {
+      AI_AGENT: "pi",
+      PI_CODING_AGENT: "true",
+      PI_PROVIDER: "opencode-go",
+      PI_MODEL: "deepseek-v4.1-flash",
+    },
+  });
+
+  const captured = readStubCapture(capturePath);
+  assert.equal(captured.argv[0], "--print");
+  assert.equal(captured.argv[captured.argv.indexOf("--provider") + 1], "opencode-go");
+  assert.equal(captured.argv[captured.argv.indexOf("--model") + 1], "deepseek-v4.1-flash");
+  assert.match(captured.argv.at(-1), /"action"/);
+  assert.match(captured.argv.at(-1), /notify_ready/);
+  assert.equal(JSON.parse(captured.stdin).head_sha, "autopi123");
+
+  const report = out.reports[0];
+  assert.equal(report.action, "request_review");
+  assert.equal(report.reason, "auto pi decided");
+  assert.equal(report.decision_source, "auto:pi:opencode-go/deepseek-v4.1-flash");
+  assert.equal(
+    out.state[`${REPO}#7`].tick_history.at(-1).decision_source,
+    "auto:pi:opencode-go/deepseek-v4.1-flash"
+  );
+});
+
+const AUTO_ROUTES = [
+  {
+    agent: "pi",
+    env: { PI_CODING_AGENT: "true", PI_PROVIDER: "pi-provider", PI_MODEL: "pi-model" },
+    decisionSource: "auto:pi:pi-provider/pi-model",
+    model: "pi-model",
+  },
+  {
+    agent: "claude",
+    env: { CLAUDECODE: "1", ANTHROPIC_MODEL: "claude-model" },
+    decisionSource: "auto:claude:claude-model",
+    model: "claude-model",
+  },
+  {
+    agent: "opencode",
+    env: { OPENCODE: "1", OPENCODE_CONFIG_CONTENT: JSON.stringify({ model: "stub-provider/oc-model" }) },
+    decisionSource: "auto:opencode:stub-provider/oc-model",
+    model: "stub-provider/oc-model",
+  },
+];
+
+for (const route of AUTO_ROUTES) {
+  test(`auto layer routes a ${route.agent}-like environment to its own adapter`, async () => {
+    const dir = makeTempDir(`pr-monitor-auto-${route.agent}-`);
+    const capturePath = path.join(dir, "capture.json");
+    writeStubAgentCli(dir, route.agent, {
+      action: "wait",
+      reason: `${route.agent} decided`,
+      capturePath,
+    });
+
+    const out = await runAutoTick({ binDir: dir, headSha: `auto-${route.agent}`, env: route.env });
+
+    const captured = readStubCapture(capturePath);
+    assert.equal(captured.argv[captured.argv.indexOf("--model") + 1], route.model);
+    assert.equal(out.reports[0].reason, `${route.agent} decided`);
+    assert.equal(out.reports[0].decision_source, route.decisionSource);
+  });
+}
+
+test("auto layer: an explicit decision command still wins over agent discovery", async () => {
+  const dir = makeTempDir("pr-monitor-auto-cmd-");
+  const capturePath = path.join(dir, "capture.json");
+  writeStubAgentCli(dir, "pi", { action: "request_review", reason: "auto must not run", capturePath });
+  const command = writeDecisionCommand(
+    dir,
+    `process.stdout.write(JSON.stringify({ action: "wait", reason: "explicit command wins" }));`
+  );
+
+  const out = await withEnv(
+    {
+      ...NO_DECISION_ENV,
+      HOME: dir,
+      PATH: `${dir}${path.delimiter}${process.env.PATH || ""}`,
+      AI_AGENT: "pi",
+      PI_CODING_AGENT: "true",
+      PI_MODEL: "pi-model",
+      PR_MONITOR_LLM_CMD: command,
+    },
+    () => runMonitorOnce({
+      repos: [REPO],
+      state: {},
+      nowMs: Date.parse("2026-09-08T00:00:00.000Z"),
+      dryRun: true,
+      runGhFn: repoScopeGh("auto-cmd"),
+      collectPrStateFn: async () => makeCtx({ headSha: "auto-cmd" }),
+    })
+  );
+
+  assert.equal(out.reports[0].reason, "explicit command wins");
+  assert.equal(out.reports[0].decision_source, "decision_command");
+  assert.equal(fs.existsSync(capturePath), false, "the auto adapter must not run");
+});
+
+test("auto layer: model+credential still wins over agent discovery", async () => {
+  const dir = makeTempDir("pr-monitor-auto-model-");
+  const capturePath = path.join(dir, "capture.json");
+  writeStubAgentCli(dir, "pi", { action: "request_review", reason: "auto must not run", capturePath });
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(
+    JSON.stringify({
+      choices: [{ message: { content: JSON.stringify({ action: "wait", reason: "model won" }) } }],
+    }),
+    { status: 200, headers: { "content-type": "application/json" } }
+  );
+  try {
+    const out = await withEnv(
+      {
+        ...NO_DECISION_ENV,
+        HOME: dir,
+        PATH: `${dir}${path.delimiter}${process.env.PATH || ""}`,
+        AI_AGENT: "pi",
+        PI_CODING_AGENT: "true",
+        PI_MODEL: "pi-model",
+        OPENROUTER_API_KEY: "test-key",
+      },
+      () => runMonitorOnce({
+        repos: [REPO],
+        state: {},
+        nowMs: Date.parse("2026-09-08T00:00:00.000Z"),
+        dryRun: true,
+        runGhFn: repoScopeGh("auto-model"),
+        collectPrStateFn: async () => makeCtx({ headSha: "auto-model" }),
+      })
+    );
+
+    assert.equal(out.reports[0].reason, "model won");
+    assert.equal(out.reports[0].decision_source, "model_credential");
+    assert.equal(fs.existsSync(capturePath), false, "the auto adapter must not run");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("registering a new agent adds one adapter unit and touches no decision-path code", () => {
+  const stubAdapter = {
+    name: "stubagent",
+    cli: "stubagent",
+    helpArgs: ["--help"],
+    detect: (env) => env.STUB_AGENT === "1",
+    modelPin: (env) => (env.STUB_MODEL ? { provider: null, model: env.STUB_MODEL } : null),
+    buildCommand: (env) => `stubagent --decide --model ${env.STUB_MODEL}`,
+  };
+
+  const auto = resolveAutoDecisionSource({
+    env: { STUB_AGENT: "1", STUB_MODEL: "stub-model" },
+    cliExists: () => true,
+    adapters: [...AGENT_ADAPTERS, stubAdapter],
+  });
+  assert.equal(auto.adapter, "auto:stubagent:stub-model");
+  assert.equal(auto.command, "stubagent --decide --model stub-model");
+
+  assert.equal(
+    resolveAutoDecisionSource({ env: {}, cliExists: () => true }),
+    null,
+    "no marker means no adapter: the chain falls through to the handled none case"
+  );
+});
+
+const CONTRACT_ENV = {
+  PI_CODING_AGENT: "true",
+  PI_PROVIDER: "contract-provider",
+  PI_MODEL: "contract-model",
+  CLAUDECODE: "1",
+  ANTHROPIC_MODEL: "contract-model",
+  OPENCODE: "1",
+  OPENCODE_CONFIG_CONTENT: JSON.stringify({ model: "contract/model" }),
+};
+
+for (const adapter of AGENT_ADAPTERS) {
+  const onPath = cliOnPath(adapter.cli);
+  test(`contract: the ${adapter.name} CLI documents every flag in its synthesized command`, {
+    skip: onPath ? false : `${adapter.cli} is not on PATH`,
+  }, () => {
+    const helpRun = spawnSync(adapter.cli, adapter.helpArgs, { encoding: "utf8", timeout: 30_000 });
+    const help = `${helpRun.stdout || ""}\n${helpRun.stderr || ""}`;
+    const command = adapter.buildCommand(CONTRACT_ENV);
+    const flags = [...new Set(command.match(/--[a-z][a-z-]*/g) || [])];
+    assert.ok(flags.length > 0, `the ${adapter.name} command must use a long flag`);
+    for (const flag of flags) {
+      assert.match(help, new RegExp(`${flag}\\b`), `${adapter.cli} help must document ${flag}`);
+    }
+  });
+}

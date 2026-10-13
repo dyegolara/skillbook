@@ -24,6 +24,10 @@
  *   PR_MONITOR_LLM_CMD_TIMEOUT_MS  decision command timeout (default 60000)
  *   OPENROUTER_API_KEY     default credential for the OpenRouter endpoint
  *                          (or in ~/.hermes/.env / ~/.pr-monitor.env)
+ *   (auto)                 with none of the above defined, a Tick launched
+ *                          from an agent session decides with that agent's
+ *                          own CLI and model (pi, Claude Code or opencode)
+ *                          when discoverable
  *   DRY_RUN=1              print would-be comments; never post, never persist
  *
  * CLI flags:
@@ -40,6 +44,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { decideWithLlm, newestRebaseRequestTsMs, NoDecisionSourceError } from "./decision.mjs";
+import { resolveAutoDecisionSource } from "./agents.mjs";
 
 const execFileP = promisify(execFile);
 
@@ -784,11 +789,12 @@ function callDecisionCommand(command, decisionCtx) {
   });
 }
 
-/** The decision-source resolution chain (ADR-0007). Layer 1 is explicit and
- * always wins; a decision command is the more specific pin over
- * model+credential. Layer 2 (auto: current agent) slots here in #109, and
- * layer 3 (none: a handled case) in #106 — every layer yields a decider, so
- * the decide Stage consumes the chain without knowing which layer resolved. */
+/** The decision-source resolution chain (ADR-0007), in order: layer 1 is
+ * explicit and always wins (a decision command is the more specific pin over
+ * model+credential); layer 2 discovers the invoking agent and synthesizes its
+ * own CLI command; layer 3 is the handled none case. Every layer yields a
+ * decider, so the decide Stage consumes the chain without knowing which layer
+ * resolved. */
 function resolveDecisionSource() {
   const command = String(loadEnvKey("PR_MONITOR_LLM_CMD") || "").trim();
   if (command) {
@@ -797,12 +803,21 @@ function resolveDecisionSource() {
       decider: (decisionCtx) => callDecisionCommand(command, decisionCtx),
     };
   }
-  // Layer 2 (auto: current agent, current provider) resolves here in #109.
   // Layer 1b: a configured chat-completions provider (custom endpoint and
   // credential, or the legacy OpenRouter default) fills the model+credential slot.
   const providerKey = loadEnvKey("PR_MONITOR_LLM_API_KEY") || loadEnvKey("OPENROUTER_API_KEY");
   if (providerKey) {
     return { adapter: "model_credential", decider: callLlm };
+  }
+  // Layer 2 (auto: current agent, current provider). Only the markers of the
+  // agent session actually surrounding this process select an adapter, and
+  // that adapter's CLI must be runnable on PATH.
+  const auto = resolveAutoDecisionSource();
+  if (auto) {
+    return {
+      adapter: auto.adapter,
+      decider: (decisionCtx) => callDecisionCommand(auto.command, decisionCtx),
+    };
   }
   return {
     adapter: "none",
