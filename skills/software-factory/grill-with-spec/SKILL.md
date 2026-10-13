@@ -43,8 +43,11 @@ filtered by the worktree exposes `repoId`, `worktreeId` and `taskId`. A single
 echo prints the triple on one line in a stable order (`CHAIN-IDS <repoId>
 <worktreeId> <taskId>`) before the fresh path attempts `POST /terminal/start`,
 so the Fresh start's step 4 can pass the echoed values as the three explicit
-`--repo-id/--worktree-id/--task-id` flags even if the start fails. With `SPEC`
-set to the spec issue number, run:
+`--repo-id/--worktree-id/--task-id` flags even if the start fails. A fresh
+chain whose resolution comes back empty — no session on the worktree, or
+empty id fields — stops loudly with a non-zero exit before the echo, so empty
+values never reach the step-4 flags. With `SPEC` set to the spec issue number,
+run:
 
 ```bash
 SPEC=<spec>             # the chain's spec issue number
@@ -64,6 +67,13 @@ if [ -z "$EXISTING" ]; then
   ids=$(curl -s "$API/agent/sessions" | jq -r --arg wt "$WORKTREE" \
     '.[] | select(.worktreePath == $wt) | "\(.repoId) \(.worktreeId) \(.taskId)"' | head -n1)
   read -r REPO_ID WORKTREE_ID TASK_ID <<<"$ids"
+
+  # An empty resolution stops the run instead of guessing: the triple rides
+  # the Fresh start's step-4 flags, and empty values must never reach them.
+  if [ -z "$REPO_ID" ] || [ -z "$WORKTREE_ID" ] || [ -z "$TASK_ID" ]; then
+    echo "STOP: chain #$SPEC — no id triple resolved on $WORKTREE; refusing to launch with empty --repo-id/--worktree-id/--task-id values" >&2
+    exit 1
+  fi
 fi
 
 # One echo closes both paths: the triple, repoId worktreeId taskId, on one
