@@ -169,9 +169,11 @@ node "<skill-dir>/scripts/launch-stage.mjs" dev-flow <spec> 'Run the dev-flow sk
 
 Entered from `code-review-loop` when a decision-forcing finding arrives: the
 fix is not obvious, or the needed decision cannot be derived from the code,
-the task or the spec. The chain is paused while you work — the maintainer is
-the only actor who can settle the decision, and this form exists so the
-decision gets settled before an implementation guesses at it.
+the task or the spec — or the fix would change one of the project's
+commitments instead of satisfying them (the list in `code-review-loop` §4).
+The chain is paused while you work — the maintainer is the only actor who can
+settle the decision, and this form exists so the decision gets settled before
+an implementation guesses at it.
 
 The entry prompt carries the review report path, the original spec issue, the
 tickets and the PR.

@@ -231,7 +231,11 @@ context is not independent.
 - code-review-loop routes: normal findings → dev-flow; clean → create-pr;
   decision-forcing findings (the fix is not obvious, or the needed decision
   cannot be derived from the code, task or spec) → grill-with-spec, which
-  pauses the chain on the user.
+  pauses the chain on the user. Amended 2026-10-13, maintainer decision
+  (sixth): decision-forcing also covers a fix that would change the target
+  project's commitments — what the project is or promises — rather than
+  satisfy them (the enumerated list and its principle live in
+  code-review-loop/SKILL.md §4 and GLOSSARY.md).
 - Pins are hardcoded in v1 — a deliberate opencode+kepler-specific exception
   to the book's model-agnostic stance; remote/dynamic pin configuration is
   deferred to #54.

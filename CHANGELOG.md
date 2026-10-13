@@ -39,6 +39,10 @@
 - Teach the grill-with-spec re-entry form to list a decision's open gaps in
   its scope comment, so the implementer fills them in-ticket and records them
   in the ADR instead of making its own design call.
+- Extend the decision-forcing rule: a fix that would change one of the
+  project's commitments — what the project *is* or *promises* — instead of
+  satisfying them routes to `grill-with-spec`; a fix that satisfies them
+  stays normal.
 - Migrate the glossary to GLOSSARY.md, replacing CONTEXT.md.
 
 ## 1.1.0
