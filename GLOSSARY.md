@@ -127,6 +127,12 @@ deterministic gates first, at most one LLM decision and one GitHub action per
 PR. One invocation = exactly one tick.
 _Avoid_: run, pass, cycle, iteration.
 
+**Stage**:
+A named step of one Tick's decision pipeline over one PR, in order `collect`,
+`check`, `reuse`, `decide`, `act`, `schedule`. At any moment a stage is past,
+current or next.
+_Avoid_: step, phase, pass, substage (stages of parallel products do not nest).
+
 **Listener**:
 The long-running HTTP process shipped by the skill: it receives GitHub
 deliveries, verifies their signature, filters and coalesces them, and spawns
