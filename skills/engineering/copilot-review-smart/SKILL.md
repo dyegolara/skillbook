@@ -321,7 +321,13 @@ A Tick resolves one decider per invocation, first match wins:
    |---|---|---|---|
    | `pi` | `PI_CODING_AGENT=true` or `AI_AGENT=pi` | `PI_PROVIDER` / `PI_MODEL` | `pi --print [--provider …] [--model …] …` |
    | `claude` | `CLAUDECODE=1` or `AI_AGENT=claude-code…` | `ANTHROPIC_MODEL` | `claude --print [--model …] …` |
-   | `opencode` | `OPENCODE=1` or `OPENCODE_CLIENT` | `OPENCODE_CONFIG_CONTENT.model` | `opencode run [--model …] …` |
+   | `opencode` | `OPENCODE=1`, `OPENCODE_CLIENT` or `AI_AGENT=opencode` | `OPENCODE_CONFIG_CONTENT.model` | `opencode run [--model …] …` |
+
+   Discovery is innermost-first: a nested agent session inherits the outer
+   session's env, so when several markers coexist the explicit `AI_AGENT`
+   marker names the session that actually surrounds the process and selects
+   that adapter (when its CLI is runnable). Without `AI_AGENT`, the table's
+   registry order is the deterministic fallback.
 
    Each adapter authenticates through its own CLI; the skill never reads or
    prints another tool's credential store. Claude Code authentication through

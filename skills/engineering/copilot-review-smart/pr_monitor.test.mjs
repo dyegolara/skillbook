@@ -2416,6 +2416,42 @@ for (const route of AUTO_ROUTES) {
   });
 }
 
+test("auto layer: a nested session routes to the innermost agent, not the inherited outer marker", async () => {
+  const dir = makeTempDir("pr-monitor-auto-nested-");
+  const piCapture = path.join(dir, "pi-capture.json");
+  const claudeCapture = path.join(dir, "claude-capture.json");
+  writeStubAgentCli(dir, "pi", {
+    action: "wait",
+    reason: "outer pi must not run",
+    capturePath: piCapture,
+  });
+  writeStubAgentCli(dir, "claude", {
+    action: "request_review",
+    reason: "inner claude decided",
+    capturePath: claudeCapture,
+  });
+
+  const out = await runAutoTick({
+    binDir: dir,
+    headSha: "nested123",
+    env: {
+      // CLAUDECODE names the session that actually surrounds the process;
+      // PI_CODING_AGENT is the outer session's marker inherited into it.
+      AI_AGENT: "claude-code",
+      CLAUDECODE: "1",
+      ANTHROPIC_MODEL: "claude-inner-model",
+      PI_CODING_AGENT: "true",
+      PI_MODEL: "pi-outer-model",
+    },
+  });
+
+  const captured = readStubCapture(claudeCapture);
+  assert.equal(captured.argv[captured.argv.indexOf("--model") + 1], "claude-inner-model");
+  assert.equal(out.reports[0].reason, "inner claude decided");
+  assert.equal(out.reports[0].decision_source, "auto:claude:claude-inner-model");
+  assert.equal(fs.existsSync(piCapture), false, "the outer agent's stub must not run");
+});
+
 test("auto layer: an explicit decision command still wins over agent discovery", async () => {
   const dir = makeTempDir("pr-monitor-auto-cmd-");
   const capturePath = path.join(dir, "capture.json");
