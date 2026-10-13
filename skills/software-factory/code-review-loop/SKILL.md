@@ -76,32 +76,6 @@ Classify the findings, then take exactly one route:
 Always call the Skill tool for `handoff` first, tailored to the chosen stage.
 It points at the review report, the spec issue, the tickets and the PR.
 
-Launch the next pi stage through the pack helper from the shared worktree:
-`node "<skill-dir>/scripts/launch-stage.mjs" <stage> <spec> '<thin pointers>'`.
-The helper starts a visible `chain #<spec>: <stage>` Kepler terminal, injects
-the stage's pinned command under a retry wrapper and prints the terminal id.
-The wrapper is harness-agnostic — whatever the harness, `pi` is not
-load-bearing — and gives the pinned command 5 attempts with exponential
-backoff (a ~10-minute window). On exhaustion it leaves a loud FAILED marker in
-the terminal buffer (stage, spec, the exact resume command) and actuates a
-wake — an unread session on the task carrying that resume command. A launch
-that never executes is caught by verified-inject, which confirms the wrapper
-started after injection and recovers. The detached `nohup pi` fallback fires
-only on a connection-level failure to the terminal API and never after
-`POST /terminal/start` succeeded — a reachable API never silently degrades —
-and it preserves `error.message` while reporting which path it took.
-
-Every spawned `pi` command — the stage launch and each sub-agent — carries an
-explicit `--provider`, `--model` and `--thinking`; never rely on pi's ambient
-default (the kimi-k3 incident: three un-pinned spawns burned the most
-expensive model in the account — the ambient default is an environment fact,
-not a chain decision). Sub-agents run headless inside their stage's terminal —
-one terminal per stage, none per sub-agent — carrying the stage's pin.
-
-[ADR-0006](../../../docs/adr/0006-chain-skills-cross-model-handoffs.md) is the
-canonical record of the shared chain rules and the pins they carry; this copy
-stays for self-containment.
-
 - **dev-flow** — launch a new pi session:
 
   ```bash
@@ -136,3 +110,39 @@ grill-with-spec opens the pause itself: the grilling session is created on the
 task, and the durable report plus the handoff doc are the state it resumes
 from. Only when the helper cannot reach the API does the pause fall back to a
 printed notice waiting on a manual `/grill-with-spec` re-entry.
+
+## Handoff rules
+
+The chain's rules apply at this stage and every later one:
+
+- The `handoff` skill writes the compacted doc to the OS temp directory; the
+  next session reads it by pointer.
+- Context travels as pointers to durable artifacts — the spec issue, tickets,
+  ADRs, `GLOSSARY.md`, the review report — never as conversation.
+- Every stage is a new session. No stage inherits this session's context.
+- The pi stages launch through the pack helper from the shared worktree:
+  `node "<skill-dir>/scripts/launch-stage.mjs" <stage> <spec> '<thin pointers>'`.
+  The helper starts a visible `chain #<spec>: <stage>` Kepler terminal, injects
+  the stage's pinned command under a retry wrapper and prints the terminal id.
+  The wrapper is harness-agnostic — whatever the harness, `pi` is not
+  load-bearing — and gives the pinned command 5 attempts with exponential
+  backoff (a ~10-minute window). On exhaustion it leaves a loud FAILED marker
+  in the terminal buffer (stage, spec, the exact resume command) and actuates a
+  wake — an unread session on the task carrying that resume command. A launch
+  that never executes is caught by verified-inject, which confirms the wrapper
+  started after injection and recovers. The detached `nohup pi` fallback fires
+  only on a connection-level failure to the terminal API and never after
+  `POST /terminal/start` succeeded — a reachable API never silently degrades —
+  and it preserves `error.message` while reporting which path it took.
+- Every spawned `pi` command — the stage launch and each sub-agent — carries
+  an explicit `--provider`, `--model` and `--thinking`; never rely on pi's
+  ambient default (the kimi-k3 incident: three un-pinned spawns burned the
+  most expensive model in the account — the ambient default is an environment
+  fact, not a chain decision).
+- Sub-agents run headless inside their stage's terminal — one terminal per
+  stage, none per sub-agent — carrying the stage's pin.
+- Every stage shares one git worktree.
+
+[ADR-0006](../../../docs/adr/0006-chain-skills-cross-model-handoffs.md) is the
+canonical record of the shared chain rules and the pins they carry; this copy
+stays for self-containment.
