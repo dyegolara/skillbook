@@ -30,7 +30,7 @@
   README and the book's table rows, and the Matt Pocock dependency
   references, wired into npm run verify. It also checks that the three
   packaged helpers (`launch-stage.mjs`, `open-grill-session.mjs`, and
-  `open-wake-session.mjs`, the last with its own suite) exist and are
+  `open-wake-session.mjs`) exist and are
   referenced — all three are packaged byte-identically to their shared
   sources, `open-grill-session.mjs` by code-review-loop's decision-forcing
   route — that both pin tables match their records, that every launch
