@@ -59,7 +59,11 @@ node pr_monitor_webhook.mjs --serve --setup-hooks
 Other env: `PR_MONITOR_STATE_PATH` (default `~/.cache/pr-monitor/state.json`),
 `PR_MONITOR_MODEL` (OpenRouter model), `OPENROUTER_API_KEY` (env or
 `~/.pr-monitor.env` / `~/.hermes/.env`), `DRY_RUN=1` (print would-be
-comments, never post, never persist state).
+comments, never post, never persist state). `PR_MONITOR_LLM_CMD` (decision
+request on stdin, JSON decision on stdout; timeout
+`PR_MONITOR_LLM_CMD_TIMEOUT_MS`, default 60000) always wins over
+`PR_MONITOR_MODEL` + `OPENROUTER_API_KEY`; with neither defined the Tick
+returns an actionable `wait` without notifying or escalating.
 
 ## Invocation API
 

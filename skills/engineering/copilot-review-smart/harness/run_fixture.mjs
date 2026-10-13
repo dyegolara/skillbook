@@ -72,6 +72,7 @@ async function runFixtureTick(name, {
     PR_MONITOR_REPORT: "",
     DRY_RUN: scenario.dryRun ? "1" : "0",
     PR_MONITOR_STATE_PATH: statePath,
+    PR_MONITOR_LLM_CMD: "",
     PR_MONITOR_FIXTURE_SCENARIO: name,
     PR_MONITOR_FIXTURE_TICK: String(tick),
     PR_MONITOR_FIXTURE_LOG_DIR: logDir,

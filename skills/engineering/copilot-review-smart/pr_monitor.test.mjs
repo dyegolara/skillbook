@@ -1761,3 +1761,304 @@ test("DRY_RUN=1 leaves the state file byte-identical and writes no lock", async 
   assert.equal(fs.readFileSync(statePath, "utf8"), before);
   assert.equal(fs.existsSync(`${statePath}.lock`), false);
 });
+function makeTempDir(prefix) {
+  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+}
+
+/** Write a decision-command stub and return the shell command that runs it. */
+function writeDecisionCommand(dir, body) {
+  const scriptPath = path.join(dir, "decision-command.mjs");
+  fs.writeFileSync(scriptPath, body);
+  return `"${process.execPath}" "${scriptPath}"`;
+}
+
+async function withEnv(vars, fn) {
+  const saved = new Map();
+  for (const [key, value] of Object.entries(vars)) {
+    saved.set(key, process.env[key]);
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  try {
+    return await fn();
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
+
+const NO_DECISION_ENV = {
+  PR_MONITOR_LLM_CMD: undefined,
+  PR_MONITOR_LLM_CMD_TIMEOUT_MS: undefined,
+  OPENROUTER_API_KEY: undefined,
+};
+
+async function runThreeCommandTicks(command, envOverrides = {}) {
+  const home = makeTempDir("pr-monitor-cmd-home-");
+  const ticks = [];
+  await withEnv(
+    { ...NO_DECISION_ENV, HOME: home, PR_MONITOR_LLM_CMD: command, ...envOverrides },
+    async () => {
+      let state = {};
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const tick = await runMonitorOnce({
+          repos: [REPO],
+          state,
+          nowMs: Date.parse("2026-09-08T00:00:00.000Z") + attempt * 600_000,
+          dryRun: true,
+          runGhFn: repoScopeGh("cmdfail123"),
+          collectPrStateFn: async () => makeCtx({ headSha: "cmdfail123" }),
+        });
+        ticks.push(tick);
+        state = tick.state;
+      }
+    }
+  );
+  return ticks;
+}
+
+function assertCommandFailureEscalation(ticks, failurePattern) {
+  assert.equal(ticks[0].reports[0].action, "wait");
+  assert.match(ticks[0].reports[0].reason, failurePattern);
+  assert.match(ticks[0].reports[0].reason, /retrying \(1\/3\)/);
+  assert.equal(ticks[0].reports[0].decision_source, "decision_command");
+  assert.deepEqual(ticks[0].reports[0].owner_notifications, []);
+  assert.equal(ticks[0].state[`${REPO}#7`].llm_failures, 1);
+
+  assert.match(ticks[1].reports[0].reason, /retrying \(2\/3\)/);
+  assert.equal(ticks[1].state[`${REPO}#7`].llm_failures, 2);
+
+  const finalReport = ticks[2].reports[0];
+  assert.equal(finalReport.action, "llm_failed");
+  assert.equal(finalReport.terminal, "needs-human");
+  assert.equal(finalReport.done, true);
+  assert.equal(finalReport.owner_notifications.length, 1);
+  assert.equal(finalReport.owner_notifications[0].event, "needs-human");
+  assert.equal(finalReport.decision_source, "decision_command");
+  assert.match(finalReport.reason, /after 3 attempts on this head/i);
+  assert.equal(ticks[2].state[`${REPO}#7`].llm_failures, 3);
+}
+
+test("decision command drives the decide stage and receives the request on stdin", async () => {
+  const dir = makeTempDir("pr-monitor-cmd-");
+  const capturePath = path.join(dir, "captured-request.json");
+  const command = writeDecisionCommand(dir, `
+import fs from "node:fs";
+let input = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => { input += chunk; });
+process.stdin.on("end", () => {
+  fs.writeFileSync(${JSON.stringify(capturePath)}, input);
+  process.stdout.write(JSON.stringify({ action: "request_review", reason: "command says review" }));
+});
+`);
+
+  const out = await withEnv(
+    { ...NO_DECISION_ENV, HOME: dir, PR_MONITOR_LLM_CMD: command },
+    () => runMonitorOnce({
+      repos: [REPO],
+      state: {},
+      nowMs: Date.parse("2026-09-08T00:00:00.000Z"),
+      dryRun: true,
+      emitJsonReport: true,
+      runGhFn: repoScopeGh("cmd123"),
+      collectPrStateFn: async () => makeCtx({ headSha: "cmd123" }),
+    })
+  );
+
+  const captured = JSON.parse(fs.readFileSync(capturePath, "utf8"));
+  assert.equal(captured.repo, REPO);
+  assert.equal(captured.pr, 7);
+  assert.equal(captured.head_sha, "cmd123");
+
+  const [prLine] = out.output
+    .split("\n")
+    .filter((line) => line.startsWith("{"))
+    .map((line) => JSON.parse(line));
+  assert.equal(prLine.action, "request_review");
+  assert.equal(prLine.reason, "command says review");
+  assert.equal(prLine.decision_source, "decision_command");
+  assert.equal(out.state[`${REPO}#7`].tick_history.at(-1).decision_source, "decision_command");
+  assert.match(out.output, /\[DRY-RUN\].*@copilot code review/);
+});
+
+test("the skill env file can define the decision command", async () => {
+  const home = makeTempDir("pr-monitor-envfile-home-");
+  const dir = makeTempDir("pr-monitor-envfile-cmd-");
+  const command = writeDecisionCommand(
+    dir,
+    `process.stdout.write(JSON.stringify({ action: "request_fix", reason: "env file command" }));`
+  );
+  fs.writeFileSync(path.join(home, ".pr-monitor.env"), `PR_MONITOR_LLM_CMD=${command}\n`);
+
+  const out = await withEnv(
+    { ...NO_DECISION_ENV, HOME: home },
+    () => runMonitorOnce({
+      repos: [REPO],
+      state: {},
+      nowMs: Date.parse("2026-09-08T00:00:00.000Z"),
+      dryRun: true,
+      runGhFn: repoScopeGh("envfile123"),
+      collectPrStateFn: async () => makeCtx({ headSha: "envfile123" }),
+    })
+  );
+
+  assert.equal(out.reports[0].action, "request_fix");
+  assert.equal(out.reports[0].reason, "env file command");
+  assert.equal(out.reports[0].decision_source, "decision_command");
+});
+
+test("an explicit decision command wins over model+credential", async () => {
+  const dir = makeTempDir("pr-monitor-cmd-");
+  const command = writeDecisionCommand(
+    dir,
+    `process.stdout.write(JSON.stringify({ action: "wait", reason: "command wins" }));`
+  );
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    throw new Error("model path must not run when a decision command is defined");
+  };
+  try {
+    const out = await withEnv(
+      { ...NO_DECISION_ENV, HOME: dir, PR_MONITOR_LLM_CMD: command, OPENROUTER_API_KEY: "test-key" },
+      () => runMonitorOnce({
+        repos: [REPO],
+        state: {},
+        nowMs: Date.parse("2026-09-08T00:00:00.000Z"),
+        dryRun: true,
+        runGhFn: repoScopeGh("precedence123"),
+        collectPrStateFn: async () => makeCtx({ headSha: "precedence123" }),
+      })
+    );
+
+    assert.equal(out.reports[0].action, "wait");
+    assert.equal(out.reports[0].reason, "command wins");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("decision command non-zero exit consumes the failure budget and escalates on the third attempt", async () => {
+  const command = writeDecisionCommand(
+    makeTempDir("pr-monitor-cmd-"),
+    `process.stderr.write("boom"); process.exit(4);`
+  );
+  const ticks = await runThreeCommandTicks(command);
+  assertCommandFailureEscalation(ticks, /LLM command exited 4: boom/);
+});
+
+test("decision command timeout consumes the failure budget and escalates on the third attempt", async () => {
+  const command = writeDecisionCommand(
+    makeTempDir("pr-monitor-cmd-"),
+    `setTimeout(() => process.stdout.write(JSON.stringify({ action: "wait", reason: "too late" })), 30_000);`
+  );
+  const ticks = await runThreeCommandTicks(command, { PR_MONITOR_LLM_CMD_TIMEOUT_MS: "250" });
+  assertCommandFailureEscalation(ticks, /LLM command timed out after 250ms/);
+});
+
+test("unparseable decision command output consumes the failure budget and escalates on the third attempt", async () => {
+  const command = writeDecisionCommand(
+    makeTempDir("pr-monitor-cmd-"),
+    `process.stdout.write("not a JSON decision");`
+  );
+  const ticks = await runThreeCommandTicks(command);
+  assertCommandFailureEscalation(ticks, /unparseable LLM command JSON/i);
+});
+
+test("no decision source resolves to an actionable wait without notification or budget movement", async () => {
+  const home = makeTempDir("pr-monitor-none-home-");
+  const runTick = (state, nowMs) => runMonitorOnce({
+    repos: [REPO],
+    state,
+    nowMs,
+    dryRun: true,
+    runGhFn: repoScopeGh("nosource123"),
+    collectPrStateFn: async () => makeCtx({ headSha: "nosource123" }),
+  });
+
+  const result = await withEnv(
+    { ...NO_DECISION_ENV, HOME: home },
+    async () => {
+      const first = await runTick({}, Date.parse("2026-09-08T00:00:00.000Z"));
+      const second = await runTick(first.state, Date.parse("2026-09-08T01:00:00.000Z"));
+      return { first, second };
+    }
+  );
+
+  for (const tick of [result.first, result.second]) {
+    const [report] = tick.reports;
+    assert.equal(report.action, "wait");
+    assert.equal(report.decision_source, "none");
+    assert.equal(report.done, false);
+    assert.equal(report.terminal, null);
+    assert.deepEqual(report.owner_notifications, []);
+    assert.match(report.reason, /PR_MONITOR_LLM_CMD/);
+    assert.match(report.reason, /OPENROUTER_API_KEY/);
+    assert.equal(tick.output, "", "a configuration gap must stay silent");
+    assert.equal(Object.hasOwn(tick.state[`${REPO}#7`], "llm_failures"), false);
+  }
+});
+
+test("deterministic gates still decide without a decision source", async () => {
+  const home = makeTempDir("pr-monitor-none-home-");
+  const out = await withEnv(
+    { ...NO_DECISION_ENV, HOME: home },
+    () => runMonitorOnce({
+      repos: [REPO],
+      state: {},
+      nowMs: Date.parse("2026-09-08T00:00:00.000Z"),
+      dryRun: true,
+      emitJsonReport: true,
+      runGhFn: repoScopeGh("dirty-nosource"),
+      collectPrStateFn: async () =>
+        makeCtx({ headSha: "dirty-nosource", hasConflicts: true, mergeable: false, mergeableState: "dirty" }),
+    })
+  );
+
+  const prLine = prJsonLine(out);
+  assert.equal(prLine.action, "request_rebase");
+  assert.equal(prLine.decision_source, undefined);
+  assert.doesNotMatch(prLine.reason, /PR_MONITOR_LLM_CMD/);
+});
+
+test("model+credential remains the deployed decision source when no command is defined", async () => {
+  const home = makeTempDir("pr-monitor-model-home-");
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url, init });
+    return new Response(
+      JSON.stringify({
+        choices: [{ message: { content: JSON.stringify({ action: "wait", reason: "model decided" }) } }],
+      }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+  };
+  try {
+    const out = await withEnv(
+      { ...NO_DECISION_ENV, HOME: home, OPENROUTER_API_KEY: "test-key" },
+      () => runMonitorOnce({
+        repos: [REPO],
+        state: {},
+        nowMs: Date.parse("2026-09-08T00:00:00.000Z"),
+        dryRun: true,
+        runGhFn: repoScopeGh("model123"),
+        collectPrStateFn: async () => makeCtx({ headSha: "model123" }),
+      })
+    );
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, "https://openrouter.ai/api/v1/chat/completions");
+    assert.equal(calls[0].init.headers.Authorization, "Bearer test-key");
+    const requestBody = JSON.parse(calls[0].init.body);
+    assert.equal(requestBody.temperature, 0);
+    assert.equal(JSON.parse(requestBody.messages[1].content).head_sha, "model123");
+    assert.equal(out.reports[0].action, "wait");
+    assert.equal(out.reports[0].reason, "model decided");
+    assert.equal(out.reports[0].decision_source, "model_credential");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

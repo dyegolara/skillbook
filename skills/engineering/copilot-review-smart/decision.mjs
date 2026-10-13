@@ -3,6 +3,16 @@ const WIP_TITLE_RE = /^\s*\[?(wip|draft|dnm|do not merge|work in progress)\b/i;
 const H = (h) => h * 3600_000;
 const LLM_MAX_FAILURES_PER_HEAD = 3;
 
+/** Layer 3 of the resolution chain (ADR-0007): no decider resolved. This is a
+ * configuration gap, not a decision failure — it must never consume the
+ * per-head budget or escalate to Needs-human. */
+export class NoDecisionSourceError extends Error {
+  constructor(reason) {
+    super(reason);
+    this.name = "NoDecisionSourceError";
+  }
+}
+
 function toMs(ts) {
   if (!ts) return null;
   const d = new Date(ts);
@@ -175,6 +185,7 @@ export async function decideWithLlm({
   rebaseStaleRetryHours,
   llmContext,
   llmDecider,
+  decisionSource = null,
 }) {
   const deterministic = decideDeterministic({
     ctx,
@@ -194,6 +205,20 @@ export async function decideWithLlm({
   try {
     decision = await llmDecider(llmContext);
   } catch (e) {
+    // Layer 3: no source resolved. A configuration gap is not a decision
+    // failure: wait with the setup path, never touch the per-head budget,
+    // never escalate to Needs-human.
+    if (e instanceof NoDecisionSourceError) {
+      return {
+        handled: true,
+        action: "wait",
+        reason: e.message,
+        reused: false,
+        decision_source: "none",
+        stateEntry: st,
+        notifications,
+      };
+    }
     const failures = st.llm_failures_sha === ctx.headSha
       ? (Number(st.llm_failures) || 0) + 1
       : 1;
@@ -211,6 +236,7 @@ export async function decideWithLlm({
         action: "wait",
         reason: st._reason,
         reused: false,
+        decision_source: decisionSource,
         stateEntry: st,
         notifications,
       };
@@ -234,6 +260,7 @@ export async function decideWithLlm({
       action: "llm_failed",
       reason: st._reason,
       reused: false,
+      decision_source: decisionSource,
       stateEntry: st,
       notifications,
     };
@@ -250,6 +277,7 @@ export async function decideWithLlm({
     action,
     reason,
     reused: false,
+    decision_source: decisionSource,
     stateEntry: st,
     notifications,
   };
