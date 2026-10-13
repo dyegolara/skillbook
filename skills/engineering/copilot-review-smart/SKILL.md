@@ -57,13 +57,15 @@ node pr_monitor_webhook.mjs --serve --setup-hooks
 ```
 
 Other env: `PR_MONITOR_STATE_PATH` (default `~/.cache/pr-monitor/state.json`),
-`PR_MONITOR_MODEL` (OpenRouter model), `OPENROUTER_API_KEY` (env or
-`~/.pr-monitor.env` / `~/.hermes/.env`), `DRY_RUN=1` (print would-be
+`PR_MONITOR_MODEL`, `PR_MONITOR_LLM_ENDPOINT` (default
+`https://openrouter.ai/api/v1/chat/completions`) and `PR_MONITOR_LLM_API_KEY`
+(default `OPENROUTER_API_KEY`) for the decision provider, `OPENROUTER_API_KEY`
+(env or `~/.pr-monitor.env` / `~/.hermes/.env`), `DRY_RUN=1` (print would-be
 comments, never post, never persist state). `PR_MONITOR_LLM_CMD` (decision
 request on stdin, JSON decision on stdout; timeout
-`PR_MONITOR_LLM_CMD_TIMEOUT_MS`, default 60000) always wins over
-`PR_MONITOR_MODEL` + `OPENROUTER_API_KEY`; with neither defined the Tick
-returns an actionable `wait` without notifying or escalating.
+`PR_MONITOR_LLM_CMD_TIMEOUT_MS`, default 60000) always wins over the
+provider pair; with neither defined the Tick returns an actionable `wait`
+without notifying or escalating.
 
 ## Invocation API
 
@@ -186,6 +188,35 @@ Serving and management:
 Cron remains the alternate mode for Hosts that cannot expose a public
 endpoint; everything below applies unchanged.
 
+## Observability API (read-only)
+
+A separate loopback process projects the persisted state — it is not part of
+the Listener (which is ephemeral and absent under tick and cron), so it
+answers in every mode and whether or not the watchdog is running. It holds no
+state of its own and never writes; GET only, no version prefix:
+
+```bash
+node pr_monitor_observability.mjs            # http://127.0.0.1:8788 by default
+curl -s http://127.0.0.1:8788/flows | jq
+```
+
+Routes: `/health` (watchdog liveness, in the Listener's health shape),
+`/timeline` (executed, in-flight and scheduled ticks), `/flows` (one row per
+watched PR with its Stage sequence) and `/flows/:owner/:repo/:num` (one Flow
+in full; 404 when unknown). Stage statuses, outcomes and terminal words use
+`GLOSSARY.md`; the projection derivation is documented in
+`observability/README.md`. The TUI is a client of this contract.
+
+Settings (flags override env): `--host` /
+`PR_MONITOR_OBSERVABILITY_HOST` (loopback only; default `127.0.0.1`),
+`--port` / `PR_MONITOR_OBSERVABILITY_PORT` (default `8788`), `--state` /
+`PR_MONITOR_STATE_PATH` (Tick state, default `~/.cache/pr-monitor/state.json`),
+`--listener-state` / `PR_MONITOR_WEBHOOK_STATE_PATH` (default
+`~/.cache/pr-monitor/listener-state.json`) and `--pid` /
+`PR_MONITOR_WEBHOOK_PID_PATH` (default `~/.cache/pr-monitor/listener.pid`).
+The implementation is the private `observability/` package
+(`@skillbook/pr-monitor-observability`, zero dependencies).
+
 ## Decision flow (deterministic gates first, LLM last)
 
 ```
@@ -293,10 +324,12 @@ Weekly retries anchor at the escalation moment recorded in state
 - `repos/{r}/pulls/{n}/commits` → last commit ts (oldest-first; take
   `max(author.date)`).
 
-LLM: OpenRouter `chat/completions`, temperature 0, `response_format:
-json_object`, four-action prompt (`request_rebase` is deterministic — the
-LLM never picks it; English reasoning, see `callLlm` in the script). Key
-from `OPENROUTER_API_KEY` (env, `~/.pr-monitor.env`, or `~/.hermes/.env`).
+LLM: a chat-completions provider (OpenRouter by default), temperature 0,
+`response_format: json_object`, four-action prompt (`request_rebase` is
+deterministic — the LLM never picks it; English reasoning, see `callLlm` in
+the script). Endpoint and key from `PR_MONITOR_LLM_ENDPOINT` and
+`PR_MONITOR_LLM_API_KEY` (default: `OPENROUTER_API_KEY`; env,
+`~/.pr-monitor.env`, or `~/.hermes/.env`).
 
 Decision architecture and policy intent are documented in ADRs:
 - `resources/docs/adr/0003-llm-decision-maker-behind-deterministic-gates.md`
