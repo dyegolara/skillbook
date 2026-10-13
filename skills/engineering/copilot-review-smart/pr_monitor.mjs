@@ -15,6 +15,9 @@
  *   PR_MONITOR_STATE_PATH  state file (default ~/.cache/pr-monitor/state.json)
  *   PR_MONITOR_REPORT      "jsonl" / "1" => emit agent-facing JSON lines
  *   PR_MONITOR_MODEL       OpenRouter model for the decision LLM
+ *   PR_MONITOR_LLM_CMD     explicit decider command: decision request on stdin,
+ *                          JSON decision ({"action","reason"}) on stdout
+ *   PR_MONITOR_LLM_CMD_TIMEOUT_MS  decision command timeout (default 60000)
  *   OPENROUTER_API_KEY     (or in ~/.hermes/.env / ~/.pr-monitor.env)
  *   DRY_RUN=1              print would-be comments; never post, never persist
  *
@@ -31,7 +34,7 @@ import { promisify } from "node:util";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { decideWithLlm, newestRebaseRequestTsMs } from "./decision.mjs";
+import { decideWithLlm, newestRebaseRequestTsMs, NoDecisionSourceError } from "./decision.mjs";
 
 const execFileP = promisify(execFile);
 
@@ -40,6 +43,14 @@ const STATE_PATH = process.env.PR_MONITOR_STATE_PATH ||
 
 const COPILOT_SUBSTR = "copilot";
 const MODEL = process.env.PR_MONITOR_MODEL || "deepseek/deepseek-v4-flash-0731";
+const DECISION_COMMAND_DEFAULT_TIMEOUT_MS = 60_000;
+const DECISION_COMMAND_MAX_OUTPUT_BYTES = 1024 * 1024;
+const NO_DECISION_SOURCE_REASON =
+  "No LLM decision source is configured: define the PR_MONITOR_LLM_CMD " +
+  "environment variable as a command that reads the decision request on stdin " +
+  "and writes a JSON decision on stdout, or define PR_MONITOR_MODEL + " +
+  "OPENROUTER_API_KEY, in the invoking environment or in ~/.pr-monitor.env / " +
+  "~/.hermes/.env. Waiting without escalating.";
 const DRY_RUN = process.env.DRY_RUN === "1";
 
 // Don't re-ping Copilot on the same head sha more often than this. This is
@@ -704,6 +715,89 @@ async function callLlm(decisionCtx) {
   }
 }
 
+function decisionCommandTimeoutMs() {
+  const raw = Number(loadEnvKey("PR_MONITOR_LLM_CMD_TIMEOUT_MS"));
+  return Number.isFinite(raw) && raw > 0 ? raw : DECISION_COMMAND_DEFAULT_TIMEOUT_MS;
+}
+
+function parseDecisionJson(text, label) {
+  const raw = String(text || "").trim();
+  if (!raw) throw new LLMDecisionError(`${label} returned no output`);
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (match) {
+      try {
+        return JSON.parse(match[0]);
+      } catch {
+        // fall through to the unparseable error below
+      }
+    }
+    throw new LLMDecisionError(`unparseable ${label} JSON: ${raw.slice(0, 200)}`);
+  }
+}
+
+/** Layer 1a of the decision-source resolution chain (ADR-0007): an explicit
+ * command decides. It reads the decision request on stdin and writes a JSON
+ * decision on stdout. Non-zero exit, timeout and unparseable output are real
+ * decision failures (per-head budget + Needs-human escalation). */
+function callDecisionCommand(command, decisionCtx) {
+  const timeoutMs = decisionCommandTimeoutMs();
+  return new Promise((resolve, reject) => {
+    const child = execFile(
+      "sh",
+      ["-c", command],
+      { timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: DECISION_COMMAND_MAX_OUTPUT_BYTES },
+      (error, stdout, stderr) => {
+        if (error) {
+          if (error.killed) {
+            reject(new LLMDecisionError(`LLM command timed out after ${timeoutMs}ms`));
+          } else {
+            reject(new LLMDecisionError(
+              `LLM command exited ${error.code ?? `on signal ${error.signal}`}: ` +
+                `${String(stderr).trim().slice(0, 200) || error.message}`
+            ));
+          }
+          return;
+        }
+        try {
+          resolve(parseDecisionJson(stdout, "LLM command"));
+        } catch (e) {
+          reject(e);
+        }
+      }
+    );
+    // A command that exits before reading stdin must not crash the Tick with
+    // an unhandled EPIPE.
+    child.stdin.on("error", () => {});
+    child.stdin.end(JSON.stringify(decisionCtx));
+  });
+}
+
+/** The decision-source resolution chain (ADR-0007). Layer 1 is explicit and
+ * always wins; a decision command is the more specific pin over
+ * model+credential. Layer 2 (auto: current agent) slots here in #109, and
+ * layer 3 (none: a handled case) in #106 — every layer yields a decider, so
+ * the decide Stage consumes the chain without knowing which layer resolved. */
+function resolveDecisionSource() {
+  const command = String(loadEnvKey("PR_MONITOR_LLM_CMD") || "").trim();
+  if (command) {
+    return {
+      adapter: "decision_command",
+      decider: (decisionCtx) => callDecisionCommand(command, decisionCtx),
+    };
+  }
+  // Layer 2 (auto: current agent, current provider) resolves here in #109.
+  if (loadEnvKey("OPENROUTER_API_KEY")) {
+    return { adapter: "model_credential", decider: callLlm };
+  }
+  return {
+    adapter: "none",
+    decider: async () => { throw new NoDecisionSourceError(NO_DECISION_SOURCE_REASON); },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // throttle / state guards
 // ---------------------------------------------------------------------------
@@ -968,7 +1062,7 @@ export async function runMonitorOnce({
   state = {},
   collectPrStateFn = collectPrState,
   decideFn = decideWithLlm,
-  llmDecider = callLlm,
+  llmDecider = null,
   runGhFn = runGh,
   dryRun = DRY_RUN,
   emitJsonReport = false,
@@ -992,6 +1086,13 @@ export async function runMonitorOnce({
   const nextState = { ...state };
   // Per-repo head shas already reported "ready" (key "repo:sha") -> notify once.
   const seenReady = new Set(nextState.seen_ready_shas || []);
+
+  // One resolution per Tick, consumed by every PR's decide Stage. An
+  // injected llmDecider (embedders, tests) stands in for the built-in
+  // model+credential adapter and bypasses environment resolution.
+  const resolvedSource = llmDecider
+    ? { adapter: "model_credential", decider: llmDecider }
+    : resolveDecisionSource();
 
   const notifications = [];
   const dryRunLogs = [];
@@ -1189,7 +1290,8 @@ export async function runMonitorOnce({
         rebaseMaxPings: REBASE_MAX_PINGS,
         rebaseStaleRetryHours: REBASE_STALE_RETRY_HOURS,
         llmContext: decisionCtx,
-        llmDecider,
+        llmDecider: resolvedSource.decider,
+        decisionSource: resolvedSource.adapter,
       });
       Object.assign(st, decided.stateEntry);
       for (const note of decided.notifications || []) recordOwnerNote(note);
