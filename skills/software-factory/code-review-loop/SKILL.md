@@ -83,6 +83,23 @@ Classify the findings, then take exactly one route:
   `grill-with-spec`, which opens the grilling session on the task and pauses
   the chain on the maintainer. Classify conservatively: if the resolution
   would overturn a decision the user already made, it is decision-forcing.
+  A finding is decision-forcing also when the fix would change one of the
+  project's commitments — what the project *is* or *promises* — instead of
+  satisfying them:
+
+  - the spec, the glossary, the decision records;
+  - the dependencies — installing, upgrading, removing; the runtime and
+    toolchain;
+  - the data — schema, migrations, transformations, deletions;
+  - the public interfaces consumers rely on;
+  - what the project exposes — auth, secrets, permissions, endpoints;
+  - how the project builds, ships and runs;
+  - the external services and the costs it takes on;
+  - the licenses;
+  - anything irreversible — deletions of published or user-owned artifacts.
+
+  A fix that **satisfies** these commitments is normal — classify
+  conservatively as before.
 
 ### 5. Hand off
 

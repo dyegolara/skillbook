@@ -56,8 +56,12 @@ _Avoid_: review comment, findings note.
 
 **Decision-forcing finding**:
 A review finding whose resolution cannot be derived from the code, the
-task or the spec — the fix is not obvious or it overturns what the user
-already decided. Routes the loop to `grill-with-spec`.
+task or the spec — the fix is not obvious, or it overturns what the user
+already decided, or it would change the project's commitments (its spec,
+glossary or decision records; its dependencies; its data; its public
+interfaces; what it exposes; how it ships; the services and costs it takes
+on; its licenses; anything irreversible) instead of satisfying them. Routes
+the loop to `grill-with-spec`.
 _Avoid_: blocking finding, critical finding.
 
 **Loop pause**:
