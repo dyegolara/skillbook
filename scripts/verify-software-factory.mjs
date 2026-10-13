@@ -255,7 +255,7 @@ const LAUNCH_VALUE_FLAGS = new Set(["--repo-id", "--worktree-id", "--task-id"]);
  * the dev-flow stage — the fresh chain's bootstrap. The token scan keeps a bare
  * mention or an invocation of another stage from matching.
  */
-function isFreshFormLaunch(block) {
+function isFreshStartLaunch(block) {
   const match = /launch-stage\.mjs["']?/.exec(block);
   if (match === null) return false;
   const tokens = scanShellArgs(block.slice(match.index + match[0].length));
@@ -340,7 +340,7 @@ function checkLaunchSnippets(problems, label, text, skill) {
     // passes the triple the status snippet echoed. Mid-chain and re-entry
     // launches anchor on the live terminal instead, and the §Handoff rules
     // inline mention carries no stage — neither is required to pass the flags.
-    if (skill === "grill-with-spec" && isFreshFormLaunch(block)) {
+    if (skill === "grill-with-spec" && isFreshStartLaunch(block)) {
       for (const flag of LAUNCH_VALUE_FLAGS) {
         if (!block.includes(flag)) {
           problems.push(

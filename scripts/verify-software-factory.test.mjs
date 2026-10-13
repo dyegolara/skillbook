@@ -117,7 +117,7 @@ const SKILL_LAUNCHES = {
 
 // The Fresh start's decided launch shape: the triple the status snippet echoed
 // rides the three explicit id flags (the fifth decision, item 2).
-const FRESH_FORM_FLAGS = "--repo-id <repoId> --worktree-id <worktreeId> --task-id <taskId>";
+const FRESH_START_FLAGS = "--repo-id <repoId> --worktree-id <worktreeId> --task-id <taskId>";
 
 const readme = [
   "# Skillbook",
@@ -207,7 +207,7 @@ function defaultSkillBody(name, { includeGrillRoute = true } = {}) {
       : stages
           .map((stage) => {
             const flags =
-              name === "grill-with-spec" && stage === "dev-flow" ? ` ${FRESH_FORM_FLAGS}` : "";
+              name === "grill-with-spec" && stage === "dev-flow" ? ` ${FRESH_START_FLAGS}` : "";
             return [
               `Launch ${stage}:`,
               "",
@@ -768,7 +768,7 @@ test("accepts the decided Fresh start launch shape with the echoed id triple", (
     "Launch dev-flow:",
     "",
     "```bash",
-    `node "<skill-dir>/scripts/launch-stage.mjs" dev-flow <spec> 'Run the dev-flow skill.' ${FRESH_FORM_FLAGS}`,
+    `node "<skill-dir>/scripts/launch-stage.mjs" dev-flow <spec> 'Run the dev-flow skill.' ${FRESH_START_FLAGS}`,
     "```",
     "",
   ].join("\n");
