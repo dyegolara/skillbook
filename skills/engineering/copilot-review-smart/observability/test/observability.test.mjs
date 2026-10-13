@@ -507,6 +507,22 @@ test("the server binds loopback only", async () => {
 });
 
 // ---------------------------------------------------------------------------
+// the package boundary: a projection must not load the writer
+// ---------------------------------------------------------------------------
+
+test("the observability package never imports the watchdog's writer script", () => {
+  const srcDir = new URL("../src/", import.meta.url).pathname;
+  for (const file of fs.readdirSync(srcDir)) {
+    const source = fs.readFileSync(path.join(srcDir, file), "utf8");
+    assert.doesNotMatch(
+      source,
+      /from\s+["'][^"']*pr_monitor\.mjs["']/,
+      `${file} must not import the writer; shared liveness lives in ../../tick_liveness.mjs`
+    );
+  }
+});
+
+// ---------------------------------------------------------------------------
 // the documented one-command start
 // ---------------------------------------------------------------------------
 

@@ -5,7 +5,7 @@ import fs from "node:fs";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
-import { runMonitorOnce, tickInFlight } from "./pr_monitor.mjs";
+import { heartbeatTickInFlight, runMonitorOnce, tickInFlight } from "./pr_monitor.mjs";
 import { AGENT_ADAPTERS, cliOnPath, resolveAutoDecisionSource } from "./agents.mjs";
 
 const REPO = "dyegolara/skillbook";
@@ -1611,6 +1611,43 @@ test("an in-flight marker reads as running only while its owner can still be run
     tickInFlight({ tick_in_flight: live }, { nowMs: liveNow, isAliveFn: () => false }).alive,
     false
   );
+});
+
+test("the in-flight heartbeat writes only while the Tick still owns the state lock", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pr-monitor-heartbeat-"));
+  try {
+    const statePath = path.join(dir, "state.json");
+    const lockPath = `${statePath}.lock`;
+    const started = "2026-09-08T00:00:00.000Z";
+    const owner = { pid: process.pid, token: "tok" };
+    fs.writeFileSync(
+      statePath,
+      JSON.stringify({
+        tick_in_flight: { pid: process.pid, token: "tok", started_at: started, heartbeat_at: started },
+        "acme/widgets#7": { sentinel: "kept" },
+      })
+    );
+
+    // No lock: nobody holds the file, so a beat must not write.
+    assert.equal(heartbeatTickInFlight(owner, { lockPath, statePath }), false);
+    // A foreign lock: a concurrent writer owns the file, so a beat must not
+    // load-modify-save over it.
+    fs.writeFileSync(lockPath, JSON.stringify({ pid: process.pid, token: "other" }));
+    assert.equal(heartbeatTickInFlight(owner, { lockPath, statePath }), false);
+    const untouched = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.equal(untouched.tick_in_flight.heartbeat_at, started);
+    assert.equal(untouched["acme/widgets#7"].sentinel, "kept");
+
+    // Our own lock: the beat refreshes the marker and preserves the rest of
+    // the state it loaded.
+    fs.writeFileSync(lockPath, JSON.stringify(owner));
+    assert.equal(heartbeatTickInFlight(owner, { lockPath, statePath }), true);
+    const beaten = JSON.parse(fs.readFileSync(statePath, "utf8"));
+    assert.notEqual(beaten.tick_in_flight.heartbeat_at, started);
+    assert.equal(beaten["acme/widgets#7"].sentinel, "kept");
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 function writeSpawnedStubs(dir) {

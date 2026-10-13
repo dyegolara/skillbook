@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { isPidAlive } from "../../tick_liveness.mjs";
 
 /** Read-only loading of the watchdog's persisted state files. Nothing in this
  * module writes: the server is a projection of what the Tick and the Listener
@@ -39,16 +40,6 @@ export function readListenerState(listenerStatePath) {
     version: isPlainObject(parsed) && Number.isInteger(parsed.version) ? parsed.version : 1,
     expectations: isPlainObject(parsed?.expectations) ? parsed.expectations : {},
   };
-}
-
-export function isPidAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error?.code !== "ESRCH";
-  }
 }
 
 /**

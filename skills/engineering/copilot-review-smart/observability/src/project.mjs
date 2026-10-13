@@ -1,7 +1,7 @@
 /** Pure projections: state files in, JSON payloads out. Nothing here reads or
  * writes; `server.mjs` loads the files and hands them to these functions. */
 
-import { tickInFlight } from "../../pr_monitor.mjs";
+import { tickInFlight } from "../../tick_liveness.mjs";
 
 const FLOW_KEY_RE = /^([^/\s#]+\/[^/\s#]+)#(\d+)$/;
 

@@ -31,8 +31,10 @@ It prints the bound URL and listens on `http://127.0.0.1:8788` by default.
 | Listener pid | `--pid` | `PR_MONITOR_WEBHOOK_PID_PATH` | `~/.cache/pr-monitor/listener.pid` |
 
 Zero dependencies beyond Node (`node:http`); plain ESM. The watchdog core
-imports nothing from this package; this package imports only the Tick's
-exported `tickInFlight` liveness reader from `../pr_monitor.mjs`.
+imports nothing from this package; this package imports no watchdog module
+that carries process state. The Tick's liveness rule (`tickInFlight`) and
+`isPidAlive` live in the dependency-free `tick_liveness.mjs` at the skill
+root, which both the Tick and this package import.
 
 ## TUI
 
@@ -118,7 +120,7 @@ Listener is not running.
 - `executed` is every persisted Tick outcome, oldest first, tagged with its
   Flow.
 - `in_flight` is the run-level `tick_in_flight` marker filtered through the
-  Tick's exported `tickInFlight`: `alive` is true only while the recorded pid
+  shared `tickInFlight` liveness rule (`tick_liveness.mjs`): `alive` is true only while the recorded pid
   exists and the heartbeat is fresh; a crashed Tick reads `alive: false`, and
   no marker reads `null`. The marker is run-level, so it names no Flow.
 - `scheduled` is the armed Expectations with their deadlines, plus a persisted

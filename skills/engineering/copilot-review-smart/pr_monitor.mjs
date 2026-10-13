@@ -45,6 +45,11 @@ import os from "node:os";
 import path from "node:path";
 import { decideWithLlm, newestRebaseRequestTsMs, NoDecisionSourceError } from "./decision.mjs";
 import { resolveAutoDecisionSource } from "./agents.mjs";
+import { isPidAlive, tickInFlight } from "./tick_liveness.mjs";
+
+/** The Tick's public liveness reader; the rule lives in tick_liveness.mjs so
+ * the read-only projection can share it without importing this module. */
+export { tickInFlight };
 
 const execFileP = promisify(execFile);
 
@@ -102,7 +107,6 @@ const STATE_LOCK_HEARTBEAT_MS = 60_000;
 // (see tickInFlight).
 const TICK_HISTORY_MAX = 20;
 const TICK_IN_FLIGHT_HEARTBEAT_MS = 60_000;
-const TICK_IN_FLIGHT_STALE_MS = 10 * 60_000;
 
 const H = (h) => h * 3600_000;
 const JSON_REPORT_ENV_VALUES = new Set(["1", "true", "json", "jsonl"]);
@@ -237,17 +241,17 @@ function loadEnvKey(name) {
   return "";
 }
 
-function loadState() {
+function loadState(statePath = STATE_PATH) {
   try {
-    return JSON.parse(fs.readFileSync(STATE_PATH, "utf8"));
+    return JSON.parse(fs.readFileSync(statePath, "utf8"));
   } catch {
     return {};
   }
 }
 
-function saveState(state) {
-  fs.mkdirSync(path.dirname(STATE_PATH), { recursive: true });
-  fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
+function saveState(state, statePath = STATE_PATH) {
+  fs.mkdirSync(path.dirname(statePath), { recursive: true });
+  fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -278,16 +282,6 @@ function readLockRecord(lockPath) {
 
 function sameLockOwner(a, b) {
   return Boolean(a && b && a.pid === b.pid && a.token === b.token);
-}
-
-function isPidAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return e?.code !== "ESRCH";
-  }
 }
 
 function startLockHeartbeat(fd, intervalMs = STATE_LOCK_HEARTBEAT_MS) {
@@ -395,16 +389,31 @@ function inFlightMarker(token, nowMs = Date.now()) {
   return { pid: process.pid, token, started_at: ts, heartbeat_at: ts };
 }
 
-function startTickInFlightHeartbeat(owner, { intervalMs = TICK_IN_FLIGHT_HEARTBEAT_MS } = {}) {
+/** One heartbeat beat: refresh the in-flight marker only while this process
+ * still owns the state lock the file's every other mutation uses. The Tick
+ * holds that lock for its whole run, so a beat that finds a foreign or
+ * missing lock must not load-modify-save over a concurrent writer's state.
+ * Returns whether the beat wrote. */
+export function heartbeatTickInFlight(owner, { lockPath = STATE_LOCK_PATH, statePath = STATE_PATH } = {}) {
+  try {
+    if (!sameLockOwner(readLockRecord(lockPath).owner, owner)) return false;
+    const state = loadState(statePath);
+    if (state.tick_in_flight?.token !== owner.token) return false;
+    state.tick_in_flight.heartbeat_at = new Date().toISOString();
+    saveState(state, statePath);
+    return true;
+  } catch {
+    // best effort: the marker is advisory and must never break the Tick
+    return false;
+  }
+}
+
+function startTickInFlightHeartbeat(owner, {
+  intervalMs = TICK_IN_FLIGHT_HEARTBEAT_MS,
+  lockPath = STATE_LOCK_PATH,
+} = {}) {
   const timer = setInterval(() => {
-    try {
-      const state = loadState();
-      if (state.tick_in_flight?.token !== owner.token) return;
-      state.tick_in_flight.heartbeat_at = new Date().toISOString();
-      saveState(state);
-    } catch {
-      // best effort: the marker is advisory and must never break the Tick
-    }
+    heartbeatTickInFlight(owner, { lockPath });
   }, intervalMs);
   timer.unref?.();
   return timer;
@@ -421,31 +430,6 @@ function clearTickInFlight(owner) {
   } catch {
     // best effort
   }
-}
-
-/**
- * Read the persisted in-flight marker and decide whether its Tick can still
- * be running. Returns null when no Tick is marked, otherwise the readable
- * fields plus `alive`:
- *   alive: true  — the recorded pid is alive and its heartbeat is fresh
- *   alive: false — the owner is gone (crash/kill) or the heartbeat is stale
- *                  (pid reuse); a projection must not read it as running.
- */
-export function tickInFlight(state, {
-  nowMs = Date.now(),
-  isAliveFn = isPidAlive,
-  staleMs = TICK_IN_FLIGHT_STALE_MS,
-} = {}) {
-  const marker = state?.tick_in_flight;
-  if (!marker || typeof marker !== "object") return null;
-  const heartbeatMs = toMs(marker.heartbeat_at);
-  const heartbeatFresh = heartbeatMs !== null && nowMs - heartbeatMs <= staleMs;
-  return {
-    pid: marker.pid ?? null,
-    started_at: marker.started_at ?? null,
-    heartbeat_at: marker.heartbeat_at ?? null,
-    alive: isAliveFn(Number(marker.pid)) && heartbeatFresh,
-  };
 }
 
 async function postComment(repo, num, body, { dryRun = DRY_RUN, runGhFn = runGh, dryRunLogs = null } = {}) {
@@ -1568,7 +1552,7 @@ async function main() {
       // marker behind for tickInFlight() to rule dead.
       state.tick_in_flight = inFlightMarker(lock.owner.token);
       saveState(state);
-      heartbeat = startTickInFlightHeartbeat(lock.owner);
+      heartbeat = startTickInFlightHeartbeat(lock.owner, { lockPath: lock.lockPath });
     }
     const out = await runMonitorOnce({
       nowMs: Date.now(),
