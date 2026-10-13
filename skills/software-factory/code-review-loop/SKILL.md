@@ -23,6 +23,19 @@ session that the pack helper launches into a visible Kepler terminal from the
 shared worktree, started at the end of the implement-spec session or
 standalone with `/code-review-loop`.
 
+**Standalone entry**: `/code-review-loop` without a task or a spec asks the
+user which one — the spec issue, or the tracker issue at hand — before it
+pins the fixed point. The answer names the run's subject, and the ids resolve
+from the answer's context: the standalone session's own Kepler metadata
+(`GET /agent/sessions`, filtered by the worktree) is the source when the
+harness registers it, and a live worktree entry (`GET /terminal/list`,
+chain-labeled preferred) is the fallback. All three ids ride the helper's
+explicit `--repo-id/--worktree-id/--task-id` flags on every route's launch —
+the dev-flow or create-pr stage, and the pause's grill session; the helper's
+no-anchor-no-flags hard error stands as the standalone path — standalone
+invocations are outside the chain's contract — so a run that resolves no ids
+stops instead of guessing.
+
 ## Process
 
 ### 1. Pin the fixed point

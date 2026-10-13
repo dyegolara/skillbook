@@ -22,6 +22,18 @@ pi session that the pack helper launches into a visible Kepler terminal from
 the shared worktree, started by `grill-with-spec` or directly with `/dev-flow`
 on a spec issue.
 
+**Standalone entry**: `/dev-flow` without a task or a spec asks the user
+which one — the spec issue, or the tracker issue at hand — before it starts.
+The answer names the issue this run turns into tickets, and the ids resolve
+from the answer's context: the standalone session's own Kepler metadata
+(`GET /agent/sessions`, filtered by the worktree) is the source when the
+harness registers it, and a live worktree entry (`GET /terminal/list`,
+chain-labeled preferred) is the fallback. All three ids ride the helper's
+explicit `--repo-id/--worktree-id/--task-id` flags on the implement-spec
+launch; the helper's no-anchor-no-flags hard error stands as the standalone
+path — standalone invocations are outside the chain's contract — so a run
+that resolves no ids stops instead of guessing.
+
 ## Process
 
 1. Read the spec issue, its comments and the handoff doc. The doc points at

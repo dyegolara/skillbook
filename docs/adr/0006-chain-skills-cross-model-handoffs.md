@@ -64,7 +64,29 @@ context is not independent.
   without a task or spec asks the user for one; the helper's
   no-anchor-no-flags hard error stands as the standalone path. Ticket
   #100's re-entry clause and its in-snippet curl are corrected by the next
-  fix wave.
+  fix wave. Amended 2026-10-13, in-ticket design (ticket #117, fifth
+  decision `6135580212`'s fix-ticket scope item 3) filling open gap (ii):
+  the standalone path resolves ids from the user's answer to the helper's
+  explicit flags. The answer names the issue the run acts on — the spec
+  issue, or the tracker issue at hand — and its number rides the run's
+  `<spec>` positional, never parsed from a label. The
+  `repoId/worktreeId/taskId` triple is not the issue number, and a
+  standalone invocation has no chain terminal to anchor on and no status
+  snippet: the stage resolves its own Kepler context once — its session's
+  `GET /agent/sessions` entry filtered by the worktree, or, when the
+  harness registers no session there, a worktree `GET /terminal/list`
+  entry, chain-labeled preferred — and passes all three as
+  `--repo-id/--worktree-id/--task-id` on every helper launch on that path.
+  The chain's one resolution point stays the status snippet; the standalone
+  path is outside the chain's contract and resolves once, before the
+  launch, from the two sources the chain's fresh path and the helper's
+  anchor already read — no new mechanism and no anchor re-lookup. A
+  standalone run whose context yields no triple forms no flags, and the
+  helper's no-anchor-no-flags hard error stands: the run stops instead of
+  guessing. The 0-or-3 rule is untouched; a standalone resolution always
+  passes all three flags together. The ask-the-user sentence lands in the
+  three standalone-invocable SKILL.md files (`dev-flow`,
+  `code-review-loop`, `create-pr`).
 - A stage that fails to run or dies mid-run does not stall the chain
   silently. The injected command is a retry wrapper around the stage's
   pinned agent command — whatever the harness, `pi` is not load-bearing —
