@@ -25,14 +25,25 @@
   one install command in the book's skills:install script, two
   published-channel checks in the publishing verify, and referenced-skills
   rows in the book's tables.
-- Add verify:software-factory, the pack-contract check for chain frontmatter
-  and model pins, plugin registration, table rows, and dependency references,
-  wired into npm run verify. It also checks that the three packaged helpers
-  (`launch-stage.mjs`, `open-grill-session.mjs`, and `open-wake-session.mjs`,
-  the last with its own suite) exist and are referenced, that both pin tables
-  match their records, that every launch snippet carries the exact
-  `<stage> <spec> '<pointers>'` arity, and that every spawn snippet
-  carries an explicit --model — checked separately from the launch snippets.
+- Add verify:software-factory, the pack-contract check for the four chain
+  skills' frontmatter and ADR-0006 model pins, plugin registration, the pack
+  README and the book's table rows, and the Matt Pocock dependency
+  references, wired into npm run verify. It also checks that the three
+  packaged helpers (`launch-stage.mjs`, `open-grill-session.mjs`, and
+  `open-wake-session.mjs`, the last with its own suite) exist and are
+  referenced — all three are packaged byte-identically to their shared
+  sources, `open-grill-session.mjs` by code-review-loop's decision-forcing
+  route — that both pin tables match their records, that every launch
+  snippet carries the exact `<stage> <spec> '<pointers>'` arity and, on
+  grill-with-spec's Fresh start, the three explicit
+  `--repo-id/--worktree-id/--task-id` flags, that the launch construction
+  wraps the pinned command in the bounded retry wrapper (the wrapper's
+  give-up path carries the FAILED marker and references the wake helper,
+  and the pinned command inside it keeps the explicit
+  `--provider/--model/--thinking` flags), that every spawn snippet carries
+  an explicit --model — checked separately from the launch snippets — and
+  that the `## Handoff rules` blocks closing `dev-flow` and
+  `code-review-loop` are byte-identical. Offline.
 - Document the Kepler local API the helpers wrap in the pack's
   `docs/kepler-api.md`: verified terminal and agent endpoints, their
   request/response shapes, and the probe recipe that settles a new endpoint.
