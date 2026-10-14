@@ -353,14 +353,15 @@ deployed cron location), and never printed:
 | `PR_MONITOR_LLM_API_KEY` | credential for the chat-completions provider | process env, then either env file |
 | `OPENROUTER_API_KEY` | credential fallback when `PR_MONITOR_LLM_API_KEY` is unset | process env, then either env file |
 | `PR_MONITOR_LLM_ENDPOINT` | provider endpoint (default `https://openrouter.ai/api/v1/chat/completions`) | process env, then either env file |
-| `PR_MONITOR_MODEL` | provider model (default `deepseek/deepseek-v4-flash-0731`) | process env only — read once at startup |
+| `PR_MONITOR_MODEL` | provider model (default `deepseek/deepseek-v4-flash-0731`) | process env, then either env file |
 
 Traceability: every LLM decision carries `decision_source` in the Tick's JSON
 report — `decision_command`, `model_credential`,
 `auto:<agent>` or `auto:<agent>:<provider>/<model>` (the provider part only
-when the host exposes one), or `none` when no decision source is configured
-(a configuration gap, not a decision). Deterministic gate decisions carry no
-`decision_source` field at all. The same value persists into the per-PR Tick history
+when the host exposes one), `injected_decider` for a bare injected callable, or
+`none` when no decision source is configured (a configuration gap, not a
+decision). An injected `{ adapter, decider }` unit retains its declared adapter.
+Deterministic gate decisions carry no `decision_source` field at all. The same value persists into the per-PR Tick history
 (`tick_history` in the state file), so a decision can be traced after the
 fact; the observability API projects it (see "Observability API" above).
 

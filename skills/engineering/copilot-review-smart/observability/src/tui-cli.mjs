@@ -64,7 +64,8 @@ export function resolveTuiConfig({ env = process.env, argv = [] } = {}) {
   const cli = parseTuiArgs(argv);
   const host = env.PR_MONITOR_OBSERVABILITY_HOST || DEFAULT_HOST;
   const port = env.PR_MONITOR_OBSERVABILITY_PORT !== undefined ? env.PR_MONITOR_OBSERVABILITY_PORT : DEFAULT_PORT;
-  const url = String(cli.url ?? env.PR_MONITOR_OBSERVABILITY_URL ?? `http://${host}:${port}`).replace(/\/+$/, "");
+  const urlHost = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+  const url = String(cli.url ?? env.PR_MONITOR_OBSERVABILITY_URL ?? `http://${urlHost}:${port}`).replace(/\/+$/, "");
   if (!/^https?:\/\//.test(url)) throw new Error(`invalid observability URL: ${url}`);
   const intervalRaw = cli.intervalMs ?? env.PR_MONITOR_TUI_INTERVAL_MS ?? DEFAULT_INTERVAL_MS;
   const intervalMs = Number(intervalRaw);
@@ -92,7 +93,11 @@ export async function main(
   }
 
   const color = config.color ?? (Boolean(stdout.isTTY) && env.NO_COLOR === undefined);
-  const columns = Number.isInteger(stdout.columns) ? stdout.columns : 0;
+  const columns = Number.isInteger(stdout.columns)
+    ? stdout.columns
+    : Number.isInteger(Number(env.COLUMNS)) && Number(env.COLUMNS) > 0
+      ? Number(env.COLUMNS)
+      : 0;
 
   const renderOnce = async () => {
     try {

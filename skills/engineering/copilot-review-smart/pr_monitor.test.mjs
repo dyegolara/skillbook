@@ -553,9 +553,15 @@ test("repo scope paginates open PR listings", async () => {
 });
 
 test("single-PR scope emits an explicit terminal report for non-open PRs", async () => {
+  const nowMs = Date.parse("2026-09-08T00:00:00.000Z");
   const out = await runMonitorOnce({
-    state: {},
-    nowMs: Date.parse("2026-09-08T00:00:00.000Z"),
+    state: {
+      [`${REPO}#42`]: {
+        next_check_at: new Date(nowMs + 60_000).toISOString(),
+        tick_history: [{ ts: new Date(nowMs - 60_000).toISOString(), action: "wait", reason: "still open", terminal: null }],
+      },
+    },
+    nowMs,
     dryRun: true,
     targetPr: { repo: REPO, num: 42 },
     emitJsonReport: true,
@@ -581,6 +587,9 @@ test("single-PR scope emits an explicit terminal report for non-open PRs", async
   assert.equal(lines[0].done, true);
   assert.equal(lines[0].terminal, "done");
   assert.match(lines[0].reason, /not open \(merged\)/i);
+  assert.equal(out.state[`${REPO}#42`].next_check_at, null);
+  assert.equal(out.state[`${REPO}#42`].tick_history.at(-1).terminal, "done");
+  assert.match(out.state[`${REPO}#42`].tick_history.at(-1).reason, /not open \(merged\)/i);
   assert.equal(lines[1].done, true);
 });
 
@@ -1744,6 +1753,8 @@ test("a running Tick marks itself in flight on disk and clears the marker on a c
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pr-monitor-inflight-"));
   const { binDir, preload } = writeSpawnedStubs(dir);
   const statePath = path.join(dir, "state.json");
+  fs.writeFileSync(statePath, "{}");
+  fs.chmodSync(statePath, 0o600);
   const { child, done } = spawnTickProcess({ statePath, binDir, preload, delayMs: 500 });
 
   const marked = await waitForStateFile(statePath, (state) => state.tick_in_flight);
@@ -1756,6 +1767,7 @@ test("a running Tick marks itself in flight on disk and clears the marker on a c
   const result = await done;
   assert.equal(result.code, 0, result.stderr);
   const final = JSON.parse(fs.readFileSync(statePath, "utf8"));
+  assert.equal(fs.statSync(statePath).mode & 0o777, 0o600);
   assert.equal("tick_in_flight" in final, false);
   assert.equal(tickInFlight(final), null);
   const entry = final[`${REPO}#7`];
@@ -1804,6 +1816,27 @@ function makeTempDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
+function processIsRunning(pid) {
+  try {
+    process.kill(pid, 0);
+    if (process.platform !== "win32") {
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+      return stat.slice(stat.lastIndexOf(")") + 2)[0] !== "Z";
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function waitForProcessExit(pid) {
+  const deadline = Date.now() + 2000;
+  while (processIsRunning(pid) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal(processIsRunning(pid), false, `descendant ${pid} is still running`);
+}
+
 /** Write a decision-command stub and return the shell command that runs it. */
 function writeDecisionCommand(dir, body) {
   const scriptPath = path.join(dir, "decision-command.mjs");
@@ -1833,6 +1866,7 @@ const NO_DECISION_ENV = {
   PR_MONITOR_LLM_CMD_TIMEOUT_MS: undefined,
   PR_MONITOR_LLM_ENDPOINT: undefined,
   PR_MONITOR_LLM_API_KEY: undefined,
+  PR_MONITOR_MODEL: undefined,
   OPENROUTER_API_KEY: undefined,
   // The agent markers of whatever session runs this suite: the auto layer
   // (#109) must never see the test host's own agent unless a test sets one.
@@ -2018,6 +2052,69 @@ test("decision command timeout consumes the failure budget and escalates on the 
   assertCommandFailureEscalation(ticks, /LLM command timed out after 250ms/);
 });
 
+test("decision command timeout terminates descendant processes", { skip: process.platform === "win32" }, async () => {
+  const dir = makeTempDir("pr-monitor-command-tree-");
+  const pidPath = path.join(dir, "descendant.pid");
+  const childScript = path.join(dir, "descendant.mjs");
+  fs.writeFileSync(childScript, "setInterval(() => {}, 1000);");
+  const command = `${JSON.stringify(process.execPath)} ${JSON.stringify(childScript)} & echo $! > ${JSON.stringify(pidPath)}; wait`;
+  try {
+    await withEnv(
+      { ...NO_DECISION_ENV, HOME: makeTempDir("pr-monitor-command-home-"), PR_MONITOR_LLM_CMD: command, PR_MONITOR_LLM_CMD_TIMEOUT_MS: "250" },
+      () => runMonitorOnce({
+        repos: [REPO],
+        state: {},
+        nowMs: Date.parse("2026-09-08T00:00:00.000Z"),
+        dryRun: true,
+        runGhFn: repoScopeGh("tree123"),
+        collectPrStateFn: async () => makeCtx({ headSha: "tree123" }),
+      })
+    );
+    const pid = Number(fs.readFileSync(pidPath, "utf8").trim());
+    await waitForProcessExit(pid);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("decision command output-limit failure terminates descendant processes", { skip: process.platform === "win32" }, async () => {
+  const dir = makeTempDir("pr-monitor-command-output-tree-");
+  const pidPath = path.join(dir, "descendant.pid");
+  const wrapper = path.join(dir, "wrapper.mjs");
+  fs.writeFileSync(
+    wrapper,
+    [
+      'import { spawn } from "node:child_process";',
+      'import fs from "node:fs";',
+      'const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });',
+      'fs.writeFileSync(process.env.PR_MONITOR_TEST_CHILD_PID, String(child.pid));',
+      'process.stdout.write("x".repeat(2 * 1024 * 1024));',
+    ].join("\n")
+  );
+  try {
+    const result = await withEnv(
+      {
+        ...NO_DECISION_ENV,
+        HOME: makeTempDir("pr-monitor-command-output-home-"),
+        PR_MONITOR_LLM_CMD: `${JSON.stringify(process.execPath)} ${JSON.stringify(wrapper)}`,
+        PR_MONITOR_TEST_CHILD_PID: pidPath,
+      },
+      () => runMonitorOnce({
+        repos: [REPO],
+        state: {},
+        nowMs: Date.parse("2026-09-08T00:00:00.000Z"),
+        dryRun: true,
+        runGhFn: repoScopeGh("outputtree123"),
+        collectPrStateFn: async () => makeCtx({ headSha: "outputtree123" }),
+      })
+    );
+    assert.match(result.reports[0].reason, /exceeded the 1048576-byte output limit/);
+    await waitForProcessExit(Number(fs.readFileSync(pidPath, "utf8")));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("unparseable decision command output consumes the failure budget and escalates on the third attempt", async () => {
   const command = writeDecisionCommand(
     makeTempDir("pr-monitor-cmd-"),
@@ -2036,6 +2133,77 @@ test("no decision source resolves to an actionable wait without notification or 
     dryRun: true,
     runGhFn: repoScopeGh("nosource123"),
     collectPrStateFn: async () => makeCtx({ headSha: "nosource123" }),
+  });
+
+  test("no decision source does not promote an old pending review request", async () => {
+    const now = Date.parse("2026-09-08T00:00:00.000Z");
+    const home = makeTempDir("pr-monitor-none-retry-home-");
+    const requested = await runMonitorOnce({
+      repos: [REPO],
+      state: {},
+      nowMs: now,
+      dryRun: true,
+      runGhFn: repoScopeGh("pending123"),
+      collectPrStateFn: async () => makeCtx({ headSha: "pending123" }),
+      decideFn: async ({ stateEntry }) => ({
+        handled: true,
+        action: "request_review",
+        reason: "review requested",
+        reused: false,
+        stateEntry,
+        notifications: [],
+      }),
+    });
+    const state = requested.state;
+    const entry = state[`${REPO}#7`];
+    entry.last_ping_ts = new Date(now - 13 * 3600_000).toISOString();
+    delete entry._sig;
+    delete entry._action;
+    const posts = [];
+    const result = await withEnv(
+      { ...NO_DECISION_ENV, HOME: home },
+      () => runMonitorOnce({
+        repos: [REPO],
+        state,
+        nowMs: now,
+        dryRun: false,
+        runGhFn: async (args) => {
+          if (args[0] === `repos/${REPO}/pulls?state=open&per_page=100&page=1`) return [makePr("pending123")];
+          if (args.includes("POST")) posts.push(args);
+          return [];
+        },
+        collectPrStateFn: async () => makeCtx({ headSha: "pending123" }),
+      })
+    );
+    assert.equal(result.reports[0].action, "wait");
+    assert.equal(result.reports[0].decision_source, "none");
+    assert.match(result.reports[0].reason, /No LLM decision source is configured/);
+    assert.deepEqual(posts, []);
+  });
+
+  test("injected deciders preserve adapter metadata and bare functions use injected_decider", async () => {
+    const home = makeTempDir("pr-monitor-injected-home-");
+    const invoke = async (llmDecider) => withEnv(
+      { ...NO_DECISION_ENV, HOME: home },
+      () => runMonitorOnce({
+        repos: [REPO],
+        state: {},
+        nowMs: Date.parse("2026-09-08T00:00:00.000Z"),
+        dryRun: true,
+        runGhFn: repoScopeGh("injected123"),
+        collectPrStateFn: async () => makeCtx({ headSha: "injected123" }),
+        llmDecider,
+      })
+    );
+    const bare = await invoke(async () => ({ action: "wait", reason: "injected bare" }));
+    const unit = await invoke({
+      adapter: "auto:test-agent",
+      decider: async () => ({ action: "wait", reason: "injected unit" }),
+    });
+    assert.equal(bare.reports[0].decision_source, "injected_decider");
+    assert.equal(bare.reports[0].reason, "injected bare");
+    assert.equal(unit.reports[0].decision_source, "auto:test-agent");
+    assert.equal(unit.reports[0].reason, "injected unit");
   });
 
   const result = await withEnv(
@@ -2121,6 +2289,40 @@ test("model+credential remains the deployed decision source when no command is d
     assert.equal(JSON.parse(requestBody.messages[1].content).head_sha, "model123");
     assert.equal(out.reports[0].action, "wait");
     assert.equal(out.reports[0].reason, "model decided");
+    assert.equal(out.reports[0].decision_source, "model_credential");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("model provider reads its model pin from the env file", async () => {
+  const home = makeTempDir("pr-monitor-model-file-home-");
+  fs.writeFileSync(
+    path.join(home, ".pr-monitor.env"),
+    "PR_MONITOR_LLM_API_KEY=file-key\nPR_MONITOR_MODEL=provider/file-model\n"
+  );
+  const originalFetch = globalThis.fetch;
+  let requestBody;
+  globalThis.fetch = async (_url, init) => {
+    requestBody = JSON.parse(init.body);
+    return new Response(
+      JSON.stringify({ choices: [{ message: { content: JSON.stringify({ action: "wait", reason: "file model used" }) } }] }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    );
+  };
+  try {
+    const out = await withEnv(
+      { ...NO_DECISION_ENV, HOME: home },
+      () => runMonitorOnce({
+        repos: [REPO],
+        state: {},
+        nowMs: Date.parse("2026-09-08T00:00:00.000Z"),
+        dryRun: true,
+        runGhFn: repoScopeGh("filemodel123"),
+        collectPrStateFn: async () => makeCtx({ headSha: "filemodel123" }),
+      })
+    );
+    assert.equal(requestBody.model, "provider/file-model");
     assert.equal(out.reports[0].decision_source, "model_credential");
   } finally {
     globalThis.fetch = originalFetch;

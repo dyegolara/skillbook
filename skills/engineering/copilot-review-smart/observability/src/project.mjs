@@ -2,7 +2,8 @@
  * writes; `server.mjs` loads the files and hands them to these functions. */
 
 import { tickInFlight } from "../../tick_liveness.mjs";
-import { isGateWaitReason } from "../../decision.mjs";
+import { isGateWaitReason, isLlmRetryReason } from "../../decision.mjs";
+import { isPrStateFetchFailureReason } from "../../collection_failure.mjs";
 import { STAGES } from "./stages.mjs";
 import {
   isNoDecisionSource,
@@ -148,16 +149,13 @@ export function projectTimeline({ tickState, listenerState, nowMs, isAliveFn }) 
 // projection derives, from the latest Tick record for a Flow, which Stages
 // that Tick demonstrably completed. The README documents the full table.
 
-const FETCH_FAILED_RE = /could not fetch/i;
-const LLM_REASON_RE = /\bLLM\b/i;
-
 /** Stages the latest Tick demonstrably completed, excluding `schedule` (which
  * every persisted Tick writes via its `next_check_at` field, and which the
  * caller places relative to the armed deadline). */
 function reachedStages(record) {
   const action = record?.action || "";
   const reason = record?.reason || "";
-  if (FETCH_FAILED_RE.test(reason)) return new Set(["collect"]);
+  if (isPrStateFetchFailureReason(reason)) return new Set(["collect"]);
   const reached = new Set(["collect", "check"]);
   if (action === "request_rebase") {
     // The conflict gate decided; the cache and the LLM were skipped.
@@ -171,10 +169,7 @@ function reachedStages(record) {
     // Layer 3 carries decision_source "none" and its reason says "LLM" (no
     // decision source configured), which is a configuration gap, not a
     // decision: the caller marks `decide` current for that record instead.
-    if (
-      !isNoDecisionSource(record?.decision_source) &&
-      (record?.decision_source || LLM_REASON_RE.test(reason))
-    ) {
+    if (record?.decision_source && !isNoDecisionSource(record.decision_source)) {
       reached.add("decide");
     }
     if (record?.terminal === "needs-human") reached.add("act");
@@ -186,7 +181,7 @@ function reachedStages(record) {
 function stageOutcome(stage, { last, action, reason, decisionSource, allClear, deadlineIso }) {
   switch (stage) {
     case "collect":
-      return FETCH_FAILED_RE.test(reason) ? "PR state collection failed" : "PR state collected";
+      return isPrStateFetchFailureReason(reason) ? "PR state collection failed" : "PR state collected";
     case "check":
       if (action === "skip_wip") return "draft/WIP — skipped";
       if (action === "request_rebase") return "merge conflicts — conflict-resolution policy";
@@ -195,9 +190,10 @@ function stageOutcome(stage, { last, action, reason, decisionSource, allClear, d
     case "reuse":
       return "signature cache checked";
     case "decide":
+      if (action === "llm_failed") return "LLM decision failed";
+      if (isLlmRetryReason(reason)) return "LLM decision failed; retry scheduled";
       if (isNoDecisionSource(decisionSource)) return NO_DECISION_SOURCE_STAGE_OUTCOME;
       if (decisionSource) return `decision made by ${decisionSource}`;
-      if (action === "llm_failed") return "LLM decision failed";
       return "LLM decision made";
     case "act":
       if (action === "request_rebase") return "asked Copilot to resolve conflicts";
@@ -316,11 +312,13 @@ export function projectFlow({ key, tickState, listenerState, nowMs }) {
   };
 }
 
-/** `GET /flows`: one row per watched PR, sorted by key. Each row carries the
- * same Stage projection the detail route returns, so a client can render the
- * whole view from one response. */
+/** `GET /flows`: summary rows with the same Stage projection as the detail
+ * route, but without its completion, history or Expectation details. */
 export function projectFlows({ tickState, listenerState, nowMs }) {
-  return flowKeys(tickState, listenerState).map((key) =>
-    projectFlow({ key, tickState, listenerState, nowMs })
-  );
+  return flowKeys(tickState, listenerState).map((key) => {
+    const flow = projectFlow({ key, tickState, listenerState, nowMs });
+    if (!flow) return null;
+    const { key: flowKey, repo, pr, head_sha, stage, stages, action, reason, next_check_at, terminal } = flow;
+    return { key: flowKey, repo, pr, head_sha, stage, stages, action, reason, next_check_at, terminal };
+  }).filter(Boolean);
 }

@@ -77,6 +77,8 @@ async function runFixtureTick(name, {
     PR_MONITOR_FIXTURE_TICK: String(tick),
     PR_MONITOR_FIXTURE_LOG_DIR: logDir,
     PR_MONITOR_FIXTURE_LLM_CALLS: "0",
+    PR_MONITOR_LLM_ENDPOINT: "https://openrouter.ai/api/v1/chat/completions",
+    PR_MONITOR_LLM_API_KEY: "fixture-key",
     OPENROUTER_API_KEY: "fixture-key",
     PATH: `${BIN_DIR}${path.delimiter}${process.env.PATH || ""}`,
     HOME: runtimeDir,

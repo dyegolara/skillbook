@@ -37,7 +37,7 @@
  *   --json-report          emit one JSON line per PR plus one overall line
  */
 
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import fs from "node:fs";
@@ -47,6 +47,7 @@ import { decideWithLlm, newestRebaseRequestTsMs, NoDecisionSourceError } from ".
 import { resolveAutoDecisionSource } from "./agents.mjs";
 import { DECISION_SOURCES, NO_DECISION_SOURCE_REASON } from "./decision_source.mjs";
 import { isPidAlive, tickInFlight } from "./tick_liveness.mjs";
+import { prStateFetchFailureReason } from "./collection_failure.mjs";
 
 /** The Tick's public liveness reader; the rule lives in tick_liveness.mjs so
  * the read-only projection can share it without importing this module. */
@@ -58,8 +59,8 @@ const STATE_PATH = process.env.PR_MONITOR_STATE_PATH ||
   path.join(os.homedir(), ".cache", "pr-monitor", "state.json");
 
 const COPILOT_SUBSTR = "copilot";
-const MODEL = process.env.PR_MONITOR_MODEL || "deepseek/deepseek-v4-flash-0731";
 const DEFAULT_LLM_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
+const DEFAULT_MODEL = "deepseek/deepseek-v4-flash-0731";
 const DECISION_COMMAND_DEFAULT_TIMEOUT_MS = 60_000;
 const DECISION_COMMAND_MAX_OUTPUT_BYTES = 1024 * 1024;
 const DRY_RUN = process.env.DRY_RUN === "1";
@@ -244,8 +245,34 @@ function loadState(statePath = STATE_PATH) {
 }
 
 function saveState(state, statePath = STATE_PATH) {
-  fs.mkdirSync(path.dirname(statePath), { recursive: true });
-  fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+  const directory = path.dirname(statePath);
+  fs.mkdirSync(directory, { recursive: true });
+  let mode = null;
+  try {
+    mode = fs.statSync(statePath).mode & 0o777;
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  const tempPath = path.join(directory, `.${path.basename(statePath)}.${randomUUID()}.tmp`);
+  let fd;
+  try {
+    fd = fs.openSync(tempPath, "wx", mode ?? 0o666);
+    fs.writeFileSync(fd, JSON.stringify(state, null, 2));
+    if (mode !== null) fs.fchmodSync(fd, mode);
+    fs.closeSync(fd);
+    fd = undefined;
+    fs.renameSync(tempPath, statePath);
+  } finally {
+    try {
+      if (fd !== undefined) fs.closeSync(fd);
+    } finally {
+      try {
+        fs.unlinkSync(tempPath);
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+    }
+  }
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -550,7 +577,7 @@ async function collectPrState(pr, num, repo, { runGhFn = runGh } = {}) {
   // exists in this payload — always-true bug, fixed here by being honest.)
   const rcomments = await ghPaginatedWith(runGhFn, `repos/${repo}/pulls/${num}/comments`).catch((error) => {
     throw new PrStateFetchError(
-      `Could not fetch inline review comments for ${repo}#${num}: ${String(error).slice(0, 200)}`
+      prStateFetchFailureReason("inline", repo, num, error)
     );
   });
   const copilotRcomments = rcomments.filter(isCopilot);
@@ -564,7 +591,7 @@ async function collectPrState(pr, num, repo, { runGhFn = runGh } = {}) {
   // review" and Copilot replied). Only Copilot's replies carry its verdict.
   const icomments = await ghPaginatedWith(runGhFn, `repos/${repo}/issues/${num}/comments`).catch((error) => {
     throw new PrStateFetchError(
-      `Could not fetch issue comments for ${repo}#${num}: ${String(error).slice(0, 200)}`
+      prStateFetchFailureReason("issue", repo, num, error)
     );
   });
   const copilotIcomments = icomments.filter(isCopilot);
@@ -680,7 +707,7 @@ async function callLlm(decisionCtx) {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: MODEL,
+        model: loadEnvKey("PR_MONITOR_MODEL") || DEFAULT_MODEL,
         messages: [
           { role: "system", content: system },
           { role: "user", content: JSON.stringify(decisionCtx) },
@@ -730,6 +757,46 @@ function parseDecisionJson(text, label) {
   }
 }
 
+function killDecisionCommandTree(rootPid) {
+  if (!rootPid) return;
+  if (process.platform === "win32") {
+    execFile("taskkill", ["/pid", String(rootPid), "/t", "/f"], () => {});
+    return;
+  }
+  execFile("ps", ["-eo", "pid=,ppid="], (error, stdout) => {
+    const children = new Map();
+    if (!error) {
+      for (const line of stdout.split("\n")) {
+        const [pid, ppid] = line.trim().split(/\s+/).map(Number);
+        if (Number.isInteger(pid) && Number.isInteger(ppid)) {
+          const siblings = children.get(ppid) || [];
+          siblings.push(pid);
+          children.set(ppid, siblings);
+        }
+      }
+    }
+    const descendants = [];
+    const pending = [...(children.get(rootPid) || [])];
+    while (pending.length) {
+      const pid = pending.pop();
+      descendants.push(pid);
+      pending.push(...(children.get(pid) || []));
+    }
+    for (const pid of descendants.reverse()) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // already gone
+      }
+    }
+    try {
+      process.kill(rootPid, "SIGKILL");
+    } catch {
+      // already gone
+    }
+  });
+}
+
 /** Layer 1a of the decision-source resolution chain (ADR-0007): an explicit
  * command decides. It reads the decision request on stdin and writes a JSON
  * decision on stdout. Non-zero exit, timeout and unparseable output are real
@@ -737,29 +804,58 @@ function parseDecisionJson(text, label) {
 function callDecisionCommand(command, decisionCtx) {
   const timeoutMs = decisionCommandTimeoutMs();
   return new Promise((resolve, reject) => {
-    const child = execFile(
-      "sh",
-      ["-c", command],
-      { timeout: timeoutMs, killSignal: "SIGKILL", maxBuffer: DECISION_COMMAND_MAX_OUTPUT_BYTES },
-      (error, stdout, stderr) => {
-        if (error) {
-          if (error.killed) {
-            reject(new LLMDecisionError(`LLM command timed out after ${timeoutMs}ms`));
-          } else {
-            reject(new LLMDecisionError(
-              `LLM command exited ${error.code ?? `on signal ${error.signal}`}: ` +
-                `${String(stderr).trim().slice(0, 200) || error.message}`
-            ));
-          }
-          return;
-        }
+    const child = spawn("sh", ["-c", command], { stdio: ["pipe", "pipe", "pipe"] });
+    const stdout = [];
+    const stderr = [];
+    let outputBytes = 0;
+    let timedOut = false;
+    let outputLimited = false;
+    let terminationStarted = false;
+    const terminateTree = () => {
+      if (terminationStarted) return;
+      terminationStarted = true;
+      killDecisionCommandTree(child.pid);
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      terminateTree();
+    }, timeoutMs);
+    const collect = (chunks) => (chunk) => {
+      outputBytes += chunk.length;
+      if (outputBytes > DECISION_COMMAND_MAX_OUTPUT_BYTES) {
+        outputLimited = true;
+        terminateTree();
+      } else if (!outputLimited) {
+        chunks.push(chunk);
+      }
+    };
+    child.stdout.on("data", collect(stdout));
+    child.stderr.on("data", collect(stderr));
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      reject(new LLMDecisionError(`could not start LLM command: ${error.message}`));
+    });
+    child.once("close", (code, signal) => {
+      clearTimeout(timer);
+      if (timedOut) {
+        reject(new LLMDecisionError(`LLM command timed out after ${timeoutMs}ms`));
+      } else if (outputLimited) {
+        reject(new LLMDecisionError(
+          `LLM command exceeded the ${DECISION_COMMAND_MAX_OUTPUT_BYTES}-byte output limit`
+        ));
+      } else if (code !== 0) {
+        const errorText = Buffer.concat(stderr).toString("utf8").trim().slice(0, 200);
+        reject(new LLMDecisionError(
+          `LLM command exited ${code ?? `on signal ${signal}`}: ${errorText || `signal ${signal}`}`
+        ));
+      } else {
         try {
-          resolve(parseDecisionJson(stdout, "LLM command"));
-        } catch (e) {
-          reject(e);
+          resolve(parseDecisionJson(Buffer.concat(stdout).toString("utf8"), "LLM command"));
+        } catch (error) {
+          reject(error);
         }
       }
-    );
+    });
     // A command that exits before reading stdin must not crash the Tick with
     // an unhandled EPIPE.
     child.stdin.on("error", () => {});
@@ -1095,9 +1191,11 @@ export async function runMonitorOnce({
   // One resolution per Tick, consumed by every PR's decide Stage. An
   // injected llmDecider (embedders, tests) stands in for the built-in
   // model+credential adapter and bypasses environment resolution.
-  const resolvedSource = llmDecider
-    ? { adapter: DECISION_SOURCES.modelCredential, decider: llmDecider }
-    : resolveDecisionSource();
+  const resolvedSource = typeof llmDecider === "function"
+    ? { adapter: DECISION_SOURCES.injectedDecider, decider: llmDecider }
+    : llmDecider && typeof llmDecider.decider === "function"
+      ? { adapter: llmDecider.adapter || DECISION_SOURCES.injectedDecider, decider: llmDecider.decider }
+      : resolveDecisionSource();
 
   const notifications = [];
   const dryRunLogs = [];
@@ -1160,7 +1258,7 @@ export async function runMonitorOnce({
       if (pr && typeof pr === "object" && pr.state === "open") {
         prsByRepo[targetPr.repo] = [pr];
       } else {
-        reports.push(buildTerminalPrReport({
+        pushReport(buildTerminalPrReport({
           repo: targetPr.repo,
           pr,
           reason: `Requested PR is not open (${pr?.merged ? "merged" : pr?.state || "closed"}); monitoring is complete.`,
@@ -1309,6 +1407,7 @@ export async function runMonitorOnce({
           : null;
       const pendingRetryDue =
         action === "wait" &&
+        decided.decision_source !== DECISION_SOURCES.none &&
         pendingReviewFixAction &&
         st.review_fix_pending_response_sig === reviewFixResponseSig &&
         !agentWorking &&

@@ -304,13 +304,15 @@ test("GET /flows returns one row per watched PR in the glossary's Stage words", 
     );
 
     const widgets7 = body.find((flow) => flow.key === "acme/widgets#7");
+    assert.deepEqual(Object.keys(widgets7).sort(), [
+      "action", "head_sha", "key", "next_check_at", "pr", "reason", "repo", "stage", "stages", "terminal",
+    ]);
     assert.equal(widgets7.head_sha, "sha-7");
     assert.equal(widgets7.stage, "schedule");
     assert.equal(widgets7.action, "request_fix");
     assert.equal(widgets7.reason, "pending fix older than 12h with no new feedback; retrying.");
     assert.equal(widgets7.next_check_at, new Date(NOW + 7 * HOUR).toISOString());
     assert.equal(widgets7.terminal, null);
-    assert.equal(widgets7.done, false);
     assert.deepEqual(statusesOf(widgets7), {
       collect: "past",
       check: "past",
@@ -328,7 +330,6 @@ test("GET /flows returns one row per watched PR in the glossary's Stage words", 
     // the armed Expectation means it is not done.
     const widgets9 = body.find((flow) => flow.key === "acme/widgets#9");
     assert.equal(widgets9.terminal, "Stuck PR");
-    assert.equal(widgets9.done, false);
     assert.deepEqual(statusesOf(widgets9), {
       collect: "past",
       check: "past",
@@ -343,7 +344,6 @@ test("GET /flows returns one row per watched PR in the glossary's Stage words", 
     // All-clear closes the Flow: the whole sequence is past.
     const widgets11 = body.find((flow) => flow.key === "acme/widgets#11");
     assert.equal(widgets11.terminal, "All-clear / Notify-ready");
-    assert.equal(widgets11.done, true);
     assert.equal(widgets11.stage, null);
     assert.deepEqual(statusesOf(widgets11), ALL_PAST);
 
@@ -351,7 +351,6 @@ test("GET /flows returns one row per watched PR in the glossary's Stage words", 
     // still shows the schedule Stage.
     const gadgets3 = body.find((flow) => flow.key === "acme/gadgets#3");
     assert.equal(gadgets3.terminal, null);
-    assert.equal(gadgets3.done, false);
     assert.equal(gadgets3.next_check_at, new Date(NOW + 1 * HOUR).toISOString());
     assert.match(
       stageOf(gadgets3, "check").outcome,
@@ -387,8 +386,8 @@ test("a needs-human Flow keeps its glossary outcome and is not done", async () =
     const { body } = await fixture.get("/flows");
     const flow = body.find((row) => row.key === "acme/widgets#12");
     assert.equal(flow.terminal, "Needs-human");
-    assert.equal(flow.done, false);
     assert.equal(stageOf(flow, "act").status, "past");
+    assert.equal("done" in flow, false);
   } finally {
     await fixture.stop();
   }
@@ -413,6 +412,8 @@ test("a Flow with decision_source none reads as a configuration gap, not a decis
   const fixture = new Fixture({ state });
   await fixture.start();
   try {
+    const { body: rows } = await fixture.get("/flows");
+    const row = rows.find((flow) => flow.key === "acme/widgets#14");
     const { status, body } = await fixture.get("/flows/acme/widgets/14");
     assert.equal(status, 200);
     // The decide Stage is current — the Flow waits on a configuration gap —
@@ -422,6 +423,91 @@ test("a Flow with decision_source none reads as a configuration gap, not a decis
     assert.match(stageOf(body, "decide").outcome, /no decision source configured/);
     assert.match(stageOf(body, "decide").outcome, /PR_MONITOR_LLM_CMD|PR_MONITOR_LLM_API_KEY/);
     assert.doesNotMatch(JSON.stringify(body.stages), /decision made by none/);
+    assert.equal(stageOf(row, "decide").status, "current");
+    assert.match(stageOf(row, "decide").outcome, /no decision source configured/);
+  } finally {
+    await fixture.stop();
+  }
+});
+
+test("LLM prose without a decision source is not evidence of a decision on either Flow route", async () => {
+  const state = defaultTickState();
+  state["acme/widgets#15"] = {
+    last_head_sha: "sha-15",
+    next_check_at: new Date(NOW + HOUR).toISOString(),
+    tick_history: [record(NOW - HOUR, "wait", "LLM is still checking whether CI logs are available.")],
+  };
+  const fixture = new Fixture({ state });
+  await fixture.start();
+  try {
+    const { body: rows } = await fixture.get("/flows");
+    const row = rows.find((flow) => flow.key === "acme/widgets#15");
+    const { body: detail } = await fixture.get("/flows/acme/widgets/15");
+    for (const flow of [row, detail]) {
+      assert.equal(stageOf(flow, "reuse").status, "past");
+      assert.equal(stageOf(flow, "decide").status, "next");
+    }
+  } finally {
+    await fixture.stop();
+  }
+});
+
+test("failed and retrying LLM attempts are not projected as successful decisions", async () => {
+  const state = defaultTickState();
+  state["acme/widgets#16"] = {
+    last_head_sha: "sha-16",
+    next_check_at: new Date(NOW + HOUR).toISOString(),
+    tick_history: [
+      record(NOW - HOUR, "wait", "Could not decide with LLM (temporary outage); retrying (1/3).", null, {
+        decision_source: "decision_command",
+      }),
+    ],
+  };
+  state["acme/widgets#17"] = {
+    last_head_sha: "sha-17",
+    next_check_at: new Date(NOW + HOUR).toISOString(),
+    tick_history: [
+      record(NOW - HOUR, "llm_failed", "Could not decide with LLM after 3 attempts.", "needs-human", {
+        decision_source: "decision_command",
+      }),
+    ],
+  };
+  const fixture = new Fixture({ state });
+  await fixture.start();
+  try {
+    const { body: rows } = await fixture.get("/flows");
+    const retryRow = rows.find((flow) => flow.key === "acme/widgets#16");
+    const { body: failedDetail } = await fixture.get("/flows/acme/widgets/17");
+    assert.equal(stageOf(retryRow, "decide").status, "past");
+    assert.equal(stageOf(retryRow, "decide").outcome, "LLM decision failed; retry scheduled");
+    assert.equal(stageOf(failedDetail, "decide").status, "past");
+    assert.equal(stageOf(failedDetail, "decide").outcome, "LLM decision failed");
+  } finally {
+    await fixture.stop();
+  }
+});
+
+test("successful decision prose about an unavailable CI log is not a collection failure", async () => {
+  const state = defaultTickState();
+  state["acme/widgets#18"] = {
+    last_head_sha: "sha-18",
+    next_check_at: new Date(NOW + HOUR).toISOString(),
+    tick_history: [
+      record(NOW - HOUR, "wait", "CI logs could not fetch from the provider; waiting.", null, {
+        decision_source: "decision_command",
+      }),
+    ],
+  };
+  const fixture = new Fixture({ state });
+  await fixture.start();
+  try {
+    const { body: rows } = await fixture.get("/flows");
+    const row = rows.find((flow) => flow.key === "acme/widgets#18");
+    const { body: detail } = await fixture.get("/flows/acme/widgets/18");
+    for (const flow of [row, detail]) {
+      assert.equal(stageOf(flow, "collect").outcome, "PR state collected");
+      assert.equal(stageOf(flow, "decide").status, "past");
+    }
   } finally {
     await fixture.stop();
   }
@@ -432,7 +518,7 @@ test("a fetch-failed Tick stops the Stage sequence at collect", async () => {
   state["acme/widgets#13"] = {
     last_head_sha: "sha-13",
     next_check_at: null,
-    tick_history: [record(NOW - 1 * HOUR, "wait", "⚠️ Could not fetch PR acme/widgets#13: gh failed", null)],
+    tick_history: [record(NOW - 1 * HOUR, "wait", "Could not fetch inline review comments for acme/widgets#13: gh failed", null)],
   };
   const fixture = new Fixture({ state });
   await fixture.start();
@@ -462,6 +548,7 @@ test("GET /flows/:owner/:repo/:num returns the Flow in full and 404s an unknown 
     const { status, body } = await fixture.get("/flows/acme/widgets/7");
     assert.equal(status, 200);
     assert.equal(body.key, "acme/widgets#7");
+    assert.equal(body.done, false);
     assert.deepEqual(body.stages.map((stage) => stage.stage), ["collect", "check", "reuse", "decide", "act", "schedule"]);
     assert.equal(body.tick_history.length, 2);
     assert.deepEqual(body.tick_history[0], {

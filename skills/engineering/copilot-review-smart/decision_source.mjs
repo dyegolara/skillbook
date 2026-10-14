@@ -8,7 +8,8 @@
  * the fixtures cannot drift into two spellings of the same adapter.
  *
  * Layer 1 (explicit) resolves to `decision_command` or `model_credential`;
- * layer 2 (auto) names a discovered agent through `autoDecisionSource()`;
+ * embedded bare functions use `injected_decider`; layer 2 (auto) names a
+ * discovered agent through `autoDecisionSource()`;
  * layer 3 (none) is the handled configuration gap, not an adapter that ran.
  * Plain ESM, zero dependencies (ADR-0008).
  */
@@ -16,6 +17,7 @@
 export const DECISION_SOURCES = Object.freeze({
   decisionCommand: "decision_command",
   modelCredential: "model_credential",
+  injectedDecider: "injected_decider",
   none: "none",
 });
 

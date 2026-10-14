@@ -132,7 +132,9 @@ Listener is not running.
 
 ### `GET /flows`
 
-One row per watched PR, sorted by key:
+One summary row per watched PR, sorted by key. Each row contains `key`, `head_sha`,
+`stage`, `action`, `reason`, `next_check_at`, and `terminal`, plus `repo`, `pr`
+and the shared `stages` projection:
 
 ```json
 {
@@ -152,16 +154,16 @@ One row per watched PR, sorted by key:
   "action": "request_review",
   "reason": "…",
   "next_check_at": "…",
-  "terminal": null,
-  "done": false
+  "terminal": null
 }
 ```
 
 ### `GET /flows/:owner/:repo/:num`
 
-The same row plus `tick_history` (the persisted records, oldest first),
-`expectation` (the armed Expectation with `deadline_at`, `origin`,
-`backoff_index`, `overdue`; `null` when none) and the full `stages` array.
+The same summary row plus `done`, `tick_history` (the persisted records, oldest
+first) and `expectation` (the armed Expectation with `deadline_at`, `origin`,
+`backoff_index`, `overdue`; `null` when none). The detail route is the only Flow
+route that includes those detail fields.
 An unknown PR answers `404 {"error": "unknown flow"}`.
 
 ## Stage projection
@@ -182,10 +184,10 @@ A Stage is `past` when the latest Tick record proves it ran:
 | `action: request_rebase` | `act` (the conflict gate decided; cache and LLM skipped) |
 | `action: request_review`, `request_fix`, `notify_ready`, `llm_failed` | `reuse`, `decide`, `act` |
 | `action: wait`, gate reason (conflict window, rebase budget, unknown mergeability) | — (the gate held before the cache) |
-| `action: wait`, any other reason | `reuse`; plus `decide` when `decision_source` is present and is not `none`, or the reason names the LLM |
+| `action: wait`, any other reason | `reuse`; plus `decide` only when a non-`none` `decision_source` proves a decision ran |
 | `action: wait`, `decision_source: none` (no LLM configured) | `reuse`; `decide` stays `current` — a configuration gap waiting for setup, never a completed decision |
 | `action: wait`, `terminal: needs-human` | plus `act` (the escalation notification) |
-| reason says the PR state could not be fetched | `collect` only |
+| recognized PR-state collection failure reason | `collect` only |
 
 `collect` and `check` are past for every other persisted Tick: a record's
 action could only be produced after the deterministic gates. Stages that the
@@ -207,7 +209,8 @@ Stage outcomes are fixed strings: `collect` ("PR state collected" /
 "PR state collection failed"), `check` ("deterministic gates passed",
 "draft/WIP — skipped", the conflict-policy label, or "gate held: …"), `reuse`
 ("signature cache checked"), `decide` ("decision made by <adapter>",
-"LLM decision made", "LLM decision failed", or "no decision source configured
+"LLM decision made", "LLM decision failed" (or "LLM decision failed; retry
+scheduled"), or "no decision source configured
 — waiting for setup (PR_MONITOR_LLM_CMD or PR_MONITOR_LLM_API_KEY)"), `act` (the action taken, or
 "escalated to owner", or "no action taken"), and `schedule` as above.
 

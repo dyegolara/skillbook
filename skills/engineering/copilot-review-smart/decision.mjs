@@ -54,6 +54,7 @@ function newestRebaseRequestTsMs(issueTranscript, copilotSubstr = COPILOT_SUBSTR
 const CONFLICT_WINDOW_PREFIX = "Conflict-resolution request is newer than";
 const REBASE_BUDGET_PREFIX = "Rebase retry budget exhausted";
 const MERGE_UNKNOWN_REASON = "GitHub has not computed PR mergeability yet; wait for next tick.";
+const LLM_RETRY_PREFIX = "Could not decide with LLM (";
 
 /** Did a deterministic gate hold this wait before the cache? The persisted
  * Tick record has no Stage field (#107), so the projection asks the module
@@ -63,9 +64,12 @@ export function isGateWaitReason(reason) {
   return (
     text.startsWith(CONFLICT_WINDOW_PREFIX) ||
     text.startsWith(REBASE_BUDGET_PREFIX) ||
-    text === MERGE_UNKNOWN_REASON ||
-    /mergeability|has not computed/i.test(text)
+    text === MERGE_UNKNOWN_REASON
   );
+}
+
+export function isLlmRetryReason(reason) {
+  return String(reason || "").startsWith(LLM_RETRY_PREFIX);
 }
 
 export function decideDeterministic({
@@ -252,7 +256,7 @@ export async function decideWithLlm({
       delete st._sig;
       delete st._action;
       st._reason =
-        `Could not decide with LLM (${e.message || e}); retrying ` +
+        `${LLM_RETRY_PREFIX}${e.message || e}); retrying ` +
         `(${failures}/${LLM_MAX_FAILURES_PER_HEAD}).`;
       return {
         handled: true,
