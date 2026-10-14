@@ -822,6 +822,48 @@ test("rejects a Fresh start launch snippet missing the task-id flag", () => {
   );
 });
 
+test("does not count Fresh start id flags that appear only in comments", () => {
+  const body = [
+    '# node "<skill-dir>/scripts/launch-stage.mjs" dev-flow <spec> \'Run the dev-flow skill.\' --repo-id <repoId> --worktree-id <worktreeId> --task-id <taskId>',
+    "Launch dev-flow:",
+    "",
+    "```bash",
+    'node "<skill-dir>/scripts/launch-stage.mjs" dev-flow <spec> \'Run the dev-flow skill.\'',
+    "```",
+    "",
+  ].join("\n");
+  const problems = verify(makeRepo({ skillOverrides: { "grill-with-spec": { body } } }));
+  for (const flag of ["--repo-id", "--worktree-id", "--task-id"]) {
+    assert.ok(problems.some((problem) => problem.includes(`lacks the explicit ${flag} or its value`)));
+  }
+});
+
+test("rejects a Fresh start id flag with no following value", () => {
+  const body = [
+    "Launch dev-flow:",
+    "",
+    "```bash",
+    'node "<skill-dir>/scripts/launch-stage.mjs" dev-flow <spec> \'Run the dev-flow skill.\' --repo-id --worktree-id w --task-id t',
+    "```",
+    "",
+  ].join("\n");
+  const problems = verify(makeRepo({ skillOverrides: { "grill-with-spec": { body } } }));
+  assert.ok(problems.some((problem) => problem.includes("lacks the explicit --repo-id or its value")));
+});
+
+test("rejects an empty Fresh start id flag value", () => {
+  const body = [
+    "Launch dev-flow:",
+    "",
+    "```bash",
+    'node "<skill-dir>/scripts/launch-stage.mjs" dev-flow <spec> \'Run the dev-flow skill.\' --repo-id "" --worktree-id w --task-id t',
+    "```",
+    "",
+  ].join("\n");
+  const problems = verify(makeRepo({ skillOverrides: { "grill-with-spec": { body } } }));
+  assert.ok(problems.some((problem) => problem.includes("lacks the explicit --repo-id or its value")));
+});
+
 test("accepts a mid-chain launch in grill-with-spec without the id flags", () => {
   const body = [
     defaultSkillBody("grill-with-spec"),

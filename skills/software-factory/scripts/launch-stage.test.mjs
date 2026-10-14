@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chmodSync, cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -221,6 +221,26 @@ test("each launching skill runs its helpers from an isolated installed folder", 
   }
 });
 
+test("direct helper entrypoints execute when invoked through symlinked skill installs", () => {
+  const installed = mkdtempSync(join(tmpdir(), "software-factory-symlink-"));
+  try {
+    const launchLink = join(installed, "launch-stage.mjs");
+    const wakeLink = join(installed, "open-wake-session.mjs");
+    symlinkSync(fileURLToPath(new URL("./launch-stage.mjs", import.meta.url)), launchLink);
+    symlinkSync(fileURLToPath(new URL("./open-wake-session.mjs", import.meta.url)), wakeLink);
+
+    const launch = spawnSync(process.execPath, [launchLink], { encoding: "utf8" });
+    assert.equal(launch.status, 1);
+    assert.match(launch.stderr, /usage: launch-stage\.mjs/);
+
+    const wake = spawnSync(process.execPath, [wakeLink], { encoding: "utf8" });
+    assert.equal(wake.status, 1);
+    assert.match(wake.stderr, /open-wake-session: usage:/);
+  } finally {
+    rmSync(installed, { recursive: true, force: true });
+  }
+});
+
 test("the shared fresh/re-entry status request encodes all required fields safely", () => {
   const text = readFileSync(new URL("../grill-with-spec/SKILL.md", import.meta.url), "utf8");
   const command = /-d "\$\((jq -n[\s\S]*?)\)" \\/.exec(text)?.[1];
@@ -242,7 +262,7 @@ test("the status loop surfaces printed FAILED markers and ignores the wrapper's 
   const pattern = /\| grep -Eq "([^"]+)"/.exec(text)?.[1];
   assert.ok(pattern, "the loop must grep the stripped buffer for the FAILED marker");
   assert.ok(text.includes("and .label != $status"), "the loop must skip the status terminal's own buffer");
-  const marker = pattern.replace("__SPEC__", "55");
+  const marker = pattern.replace("$SPEC", "55");
   const matches = (sample) => spawnSync("grep", ["-Eq", marker], { input: sample }).status === 0;
   assert.equal(matches("\rFAILED: chain #55 dev-flow gave up after 5 attempts\r\n"), true);
   assert.equal(
@@ -250,6 +270,39 @@ test("the status loop surfaces printed FAILED markers and ignores the wrapper's 
     false
   );
   assert.equal(matches("FAILED: resume with: pi --print ...\n"), false);
+});
+
+test("the status loop passes worktree values as quoted shell assignments", () => {
+  const text = readFileSync(new URL("../grill-with-spec/SKILL.md", import.meta.url), "utf8");
+  assert.ok(text.includes('git -C "$WORKTREE"'), "the loop uses the WORKTREE variable");
+  assert.ok(text.includes('curl -s "$API/terminal/list"'), "the loop uses the API variable");
+  assert.ok(text.includes('FAILED: chain #$SPEC '), "the loop uses the SPEC variable");
+  assert.ok(!/__WORKTREE__|__API__|__SPEC__/.test(text), "the loop does not substitute values into code");
+  assert.match(
+    text,
+    /LOOP=\$\(printf 'WORKTREE=%q\\nAPI=%q\\nSPEC=%q\\n%s' "\$WORKTREE" "\$API" "\$SPEC" "\$LOOP"\)/
+  );
+
+  const marker = join(tmpdir(), `software-factory-injection-${process.pid}`);
+  rmSync(marker, { force: true });
+  const worktreePath = `/work/tree & "$(touch ${marker})"`;
+  const render = [
+    "LOOP=$(printf 'WORKTREE=%q\\nAPI=%q\\nSPEC=%q\\n%s' \"$WORKTREE\" \"$API\" \"$SPEC\" \"$LOOP_BODY\")",
+    'eval "$LOOP"',
+  ].join("\n");
+  const result = spawnSync("bash", ["-c", render], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      WORKTREE: worktreePath,
+      API: "http://api.test",
+      SPEC: "55",
+      LOOP_BODY: 'printf "%s" "$WORKTREE"; break',
+    },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, worktreePath);
+  assert.equal(existsSync(marker), false);
 });
 
 test("stageLabel delegates to chainLabel for the packaged helpers", () => {

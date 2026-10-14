@@ -224,7 +224,7 @@ function scanShellArgs(text) {
   let i = 0;
   while (i < text.length) {
     const ch = text[i];
-    if (ch === "\n" || ch === "`" || ch === ";" || ch === "&" || ch === "|") break;
+    if (ch === "\n" || ch === "`" || ch === ";" || ch === "&" || ch === "|" || ch === "#") break;
     if (/\s/.test(ch)) {
       i += 1;
       continue;
@@ -255,11 +255,45 @@ const LAUNCH_VALUE_FLAGS = new Set(["--repo-id", "--worktree-id", "--task-id"]);
  * the dev-flow stage — the fresh chain's bootstrap. The token scan keeps a bare
  * mention or an invocation of another stage from matching.
  */
+function stripShellComment(line) {
+  let quote = null;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+    if (quote !== null) {
+      if (quote === '"' && ch === "\\") {
+        i += 1;
+      } else if (ch === quote) {
+        quote = null;
+      }
+    } else if (ch === "'" || ch === '"') {
+      quote = ch;
+    } else if (ch === "#" && (i === 0 || /\s/.test(line[i - 1]))) {
+      return line.slice(0, i);
+    }
+  }
+  return line;
+}
+
+function freshStartLaunchTokens(block) {
+  for (const line of block.replace(/\\\n\s*/g, " ").split("\n")) {
+    const code = stripShellComment(line);
+    const match = /launch-stage\.mjs["']?/.exec(code);
+    if (match === null) continue;
+    const tokens = scanShellArgs(code.slice(match.index + match[0].length));
+    if (tokens[0] === "dev-flow") return tokens;
+  }
+  return [];
+}
+
 function isFreshStartLaunch(block) {
-  const match = /launch-stage\.mjs["']?/.exec(block);
-  if (match === null) return false;
-  const tokens = scanShellArgs(block.slice(match.index + match[0].length));
-  return tokens[0] === "dev-flow";
+  return freshStartLaunchTokens(block)[0] === "dev-flow";
+}
+
+function hasLaunchFlagValue(tokens, flag) {
+  const index = tokens.indexOf(flag);
+  if (index < 0 || index + 1 >= tokens.length) return false;
+  const value = tokens[index + 1];
+  return value !== "''" && value !== '""' && !value.startsWith("-");
 }
 
 /** Positionals only: the known id flags consume their value; other flags are ignored. */
@@ -341,10 +375,11 @@ function checkLaunchSnippets(problems, label, text, skill) {
     // launches anchor on the live terminal instead, and the §Handoff rules
     // inline mention carries no stage — neither is required to pass the flags.
     if (skill === "grill-with-spec" && isFreshStartLaunch(block)) {
+      const launchTokens = freshStartLaunchTokens(block);
       for (const flag of LAUNCH_VALUE_FLAGS) {
-        if (!block.includes(flag)) {
+        if (!hasLaunchFlagValue(launchTokens, flag)) {
           problems.push(
-            `${label}: Fresh start launch snippet lacks the explicit ${flag} — pass the status snippet's echoed chain-ids triple`
+            `${label}: Fresh start launch snippet lacks the explicit ${flag} or its value — pass the status snippet's echoed chain-ids triple`
           );
         }
       }

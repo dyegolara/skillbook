@@ -93,38 +93,36 @@ if [ -z "$EXISTING" ]; then
 while true; do
   clear
   date
-  echo "== chain #__SPEC__ (software-factory) =="
+  echo "== chain #$SPEC (software-factory) =="
   echo "-- branch:"
-  git -C "__WORKTREE__" log --oneline -6
+  git -C "$WORKTREE" log --oneline -6
   echo
   echo "-- fix tickets:"
-  cd "__WORKTREE__"
+  cd "$WORKTREE"
   gh issue list --state open --limit 100 --json number,state,title,parent \
-    --jq '.[] | select(.parent.number == __SPEC__) | "#\(.number) \(.state) \(.title[0:60])"'
+    --jq --argjson spec "$SPEC" '.[] | select(.parent.number == $spec) | "#\(.number) \(.state) \(.title[0:60])"'
   echo
   echo "-- chain terminals:"
-  curl -s "__API__/terminal/list" | grep -o '"label":"chain[^"]*"'
+  curl -s "$API/terminal/list" | grep -o '"label":"chain[^"]*"'
   echo
   echo "-- failed stages:"
   failed=0
   while IFS=$'\t' read -r tid tlabel; do
     [ -z "$tid" ] && continue
-    buffer=$(curl -s "__API__/terminal/buffer?terminalId=$tid" \
+    buffer=$(curl -s "$API/terminal/buffer?terminalId=$tid" \
       | jq -r 'gsub("\u001b\\[[0-9;?]*[A-Za-z]"; "")' 2>/dev/null)
-    if printf '%s\n' "$buffer" | grep -Eq "(^|[^'])FAILED: chain #__SPEC__ "; then
+    if printf '%s\n' "$buffer" | grep -Eq "(^|[^'])FAILED: chain #$SPEC "; then
       echo "  $tlabel"
       failed=1
     fi
-  done < <(curl -s "__API__/terminal/list" | jq -r --arg wt "__WORKTREE__" --arg status "chain #__SPEC__: status" \
+  done < <(curl -s "$API/terminal/list" | jq -r --arg wt "$WORKTREE" --arg status "chain #$SPEC: status" \
     '.[] | select(.worktreePath == $wt and (.label | startswith("chain #")) and .label != $status) | "\(.id)\t\(.label)"')
   [ "$failed" -eq 0 ] && echo "  (none)"
   sleep 30
 done
 LOOP_BODY
 )
-  LOOP=${LOOP//__SPEC__/$SPEC}
-  LOOP=${LOOP//__WORKTREE__/$WORKTREE}
-  LOOP=${LOOP//__API__/$API}
+  LOOP=$(printf 'WORKTREE=%q\nAPI=%q\nSPEC=%q\n%s' "$WORKTREE" "$API" "$SPEC" "$LOOP")
 
   curl -s -X POST "$API/terminal/input" -H 'content-type: application/json' \
     -d "$(jq -n --arg id "$TERMINAL_ID" --arg input "$LOOP" '{terminalId: $id, input: ($input + "\n")}')"

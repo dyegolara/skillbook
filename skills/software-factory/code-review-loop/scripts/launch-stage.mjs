@@ -42,10 +42,10 @@
  *     [--repo-id <id> --worktree-id <id> --task-id <id>]
  */
 import { spawn } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 export const KEPLER_DATA_DIR = join(homedir(), ".kepler-server", "data");
 
@@ -604,7 +604,10 @@ export async function runSessionHelper({
  * `import.meta.url` — this module's URL is never the invoked one.
  */
 export function runSessionCli({ toolName, moduleUrl, main }) {
-  if (process.argv[1] && moduleUrl === pathToFileURL(process.argv[1]).href) {
+  if (
+    process.argv[1] &&
+    realpathSync(fileURLToPath(moduleUrl)) === realpathSync(process.argv[1])
+  ) {
     main().catch((error) => {
       for (const line of failureLines(toolName, error)) console.error(line);
       process.exitCode = 1;
@@ -738,7 +741,10 @@ export async function main(argv = process.argv.slice(2), deps = {}) {
   return result;
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+if (
+  process.argv[1] &&
+  realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1])
+) {
   main().catch((error) => {
     console.error(`launch-stage: ${error.message}`);
     process.exitCode = 1;
