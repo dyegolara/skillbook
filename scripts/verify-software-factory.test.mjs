@@ -1,0 +1,1113 @@
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { after, test } from "node:test";
+import assert from "node:assert/strict";
+import { verifySoftwareFactoryPack } from "./verify-software-factory.mjs";
+
+const CHAIN_PINS = {
+  "grill-with-spec": { model: "opencode-go/glm-5.3", thinking: "max" },
+  "dev-flow": { model: "opencode-go/glm-5.3", thinking: "max" },
+  "code-review-loop": { model: "opencode-go/mimo-v2.6-pro", thinking: "high" },
+  "create-pr": { model: "opencode-go/muse-spark-1.3-contributor", thinking: "xhigh" },
+};
+
+const IMPLEMENT_SPEC_PIN = { model: "opencode-go/deepseek-v4.1-flash", thinking: "max" };
+
+function helperEntry(stage, pin) {
+  return `  "${stage}": { provider: "opencode-go", model: "${pin.model}", thinking: "${pin.thinking}" },`;
+}
+
+const RETRY_ATTEMPTS = 5;
+
+const helper = [
+  "export const STAGE_PINS = {",
+  helperEntry("dev-flow", CHAIN_PINS["dev-flow"]),
+  helperEntry("implement-spec", IMPLEMENT_SPEC_PIN),
+  helperEntry("code-review-loop", CHAIN_PINS["code-review-loop"]),
+  helperEntry("create-pr", CHAIN_PINS["create-pr"]),
+  "};",
+  "",
+  `export const RETRY_ATTEMPTS = ${RETRY_ATTEMPTS};`,
+  "",
+  "export function stagePin(stage) {",
+  "  return STAGE_PINS[stage];",
+  "}",
+  "",
+  "export function buildPiCommand(stage, pointers) {",
+  "  const pin = stagePin(stage);",
+  "  return `pi --print --provider ${pin.provider} --model ${pin.model} --thinking ${pin.thinking} '${pointers}'`;",
+  "}",
+  "",
+  "export function wakeHelperPath() {",
+  '  return new URL("./open-wake-session.mjs", import.meta.url);',
+  "}",
+  "",
+  "export function buildRetryWrapper(stage, spec, pointers) {",
+  "  const command = buildPiCommand(stage, pointers);",
+  "  const marker = `FAILED: chain #${spec} ${stage} gave up after ${RETRY_ATTEMPTS} attempts`;",
+  "  return (",
+  '    `while [ "$attempt" -le ${RETRY_ATTEMPTS} ]; do ` +',
+  "    `${command}; chain_status=$?; [ $chain_status -eq 0 ] && break; ` +",
+  "    `chain_attempt=$((chain_attempt+1)); done; ` +",
+  "    `[ $chain_status -ne 0 ] && echo ${marker}; ` +",
+  "    `node ${wakeHelperPath()} ${stage} ${spec} ${command}`",
+  "  );",
+  "}",
+  "",
+].join("\n");
+
+const GRILL_PIN = { model: "opencode-go/glm-5.3", effort: "max" };
+
+const grillHelper = [
+  `export const GRILL_PIN = { model: "${GRILL_PIN.model}", effort: "${GRILL_PIN.effort}" };`,
+  "",
+].join("\n");
+
+const wakeHelper = ["export function wakeLabel() {}", ""].join("\n");
+
+const GRILL_ROUTE = [
+  "Decision-forcing findings open the grilling session instead of waiting:",
+  "",
+  "```bash",
+  'node "<skill-dir>/scripts/open-grill-session.mjs" <spec> \'<re-entry prompt>\'',
+  "```",
+  "",
+].join("\n");
+
+const HANDOFF_RULES = [
+  "## Handoff rules",
+  "",
+  "The chain's rules apply at this stage and every later one:",
+  "",
+  "- Every stage shares one git worktree.",
+  "",
+].join("\n");
+
+const DRIFTED_HANDOFF_RULES = HANDOFF_RULES.replace(
+  "Every stage shares one git worktree.",
+  "Every stage shares one worktree."
+);
+
+const adr = [
+  "# 0006 — Chain skills hand off across pinned agent/model sessions",
+  "",
+  "- Each stage's `SKILL.md` pins its model, invoked at the model's highest",
+  "  available effort/thinking:",
+  "  - grill-with-spec — `opencode-go/glm-5.3` (effort max)",
+  "  - dev-flow — `opencode-go/glm-5.3` (`--thinking max`)",
+  "  - implement-spec — `opencode-go/deepseek-v4.1-flash` (`--thinking max`)",
+  "  - code-review-loop — `opencode-go/mimo-v2.6-pro` (`--thinking high`)",
+  "  - create-pr — `opencode-go/muse-spark-1.3-contributor` (`--thinking xhigh`)",
+  "",
+  "- A stage that gives up actuates the wake: a new sibling helper,",
+  "  `open-wake-session.mjs`, packaged beside `launch-stage.mjs`,",
+  '  actuated by the wrapper as `node "<skill-dir>/scripts/open-wake-session.mjs" <stage> <spec> \'<resume command>\'`.',
+  "",
+].join("\n");
+
+const SKILL_LAUNCHES = {
+  "grill-with-spec": ["dev-flow"],
+  "dev-flow": ["implement-spec"],
+  "code-review-loop": ["dev-flow", "create-pr"],
+  "create-pr": [],
+};
+
+// The Fresh start's decided launch shape: the triple the status snippet echoed
+// rides the three explicit id flags (the fifth decision, item 2).
+const FRESH_START_FLAGS = "--repo-id <repoId> --worktree-id <worktreeId> --task-id <taskId>";
+
+const readme = [
+  "# Skillbook",
+  "",
+  "## What's inside",
+  "",
+  "| Skill | Source | Category | What it does |",
+  "|---|---|---|---|",
+  "| `software-factory` pack | **in-repo** (`./skills/software-factory`) | software-factory | Four chain skills. |",
+  "| Matt Pocock pack | [mattpocock/skills](https://github.com/mattpocock/skills) (skills.sh) | software-factory | Spec-driven pack. |",
+  "",
+  "## Installation",
+  "",
+].join("\n");
+
+const agents = [
+  "# Dojo Mojo Skillbook",
+  "",
+  "### Own skills",
+  "",
+  "| Skill | Category | What it does |",
+  "|---|---|---|",
+  "| `software-factory` pack | software-factory | Four chain skills. |",
+  "",
+  "### Referenced skills (published channels)",
+  "",
+  "| Skill | Source | Category | What it does |",
+  "|---|---|---|---|",
+  "| Matt Pocock pack | `mattpocock/skills` (skills.sh) | software-factory | Spec-driven pack. |",
+  "",
+].join("\n");
+
+const publishing = [
+  "const refs = [",
+  '  ["skills.sh page", "https://skills.sh/mattpocock/skills"],',
+  '  ["GitHub repo", "https://github.com/mattpocock/skills"],',
+  "];",
+  "",
+].join("\n");
+
+const roots = [];
+
+function write(root, rel, content) {
+  const full = join(root, rel);
+  mkdirSync(dirname(full), { recursive: true });
+  writeFileSync(full, content);
+}
+
+function skillFrontmatter(name, overrides = {}) {
+  const pin = CHAIN_PINS[name];
+  const fields = {
+    name,
+    description: `Chain skill ${name}.`,
+    model: pin.model,
+    thinking: pin.thinking,
+    ...overrides,
+  };
+  return [
+    "---",
+    `name: ${fields.name}`,
+    `description: "${fields.description}"`,
+    "disable-model-invocation: true",
+    "license: MIT",
+    "metadata:",
+    `  model: ${fields.model}`,
+    `  thinking: ${fields.thinking}`,
+    "---",
+    "",
+    `# ${name}`,
+    "",
+  ].join("\n");
+}
+
+function skillContent(name, overrides = {}) {
+  const { body, omitHandoffRules, ...frontmatterOverrides } = overrides;
+  const content = body ?? defaultSkillBody(name);
+  const carriesHandoff = ["dev-flow", "code-review-loop"].includes(name) && !omitHandoffRules;
+  const handoff = carriesHandoff ? `\n${HANDOFF_RULES}` : "";
+  return `${skillFrontmatter(name, frontmatterOverrides)}\n${content}${handoff}`;
+}
+
+function defaultSkillBody(name, { includeGrillRoute = true } = {}) {
+  const stages = SKILL_LAUNCHES[name];
+  const launches =
+    stages.length === 0
+      ? "The terminal stage launches nothing.\n"
+      : stages
+          .map((stage) => {
+            const flags =
+              name === "grill-with-spec" && stage === "dev-flow" ? ` ${FRESH_START_FLAGS}` : "";
+            return [
+              `Launch ${stage}:`,
+              "",
+              "```bash",
+              `node "<skill-dir>/scripts/launch-stage.mjs" ${stage} <spec> 'Run the ${stage} skill.'${flags}`,
+              "```",
+              "",
+            ].join("\n");
+          })
+          .join("\n");
+  if (name !== "code-review-loop" || !includeGrillRoute) return launches;
+  return `${launches}\n${GRILL_ROUTE}`;
+}
+
+function makeRepo({
+  skillOverrides = {},
+  omitSkill = null,
+  pluginSkills,
+  skipPackReadme = false,
+  readmeText = readme,
+  agentsText = agents,
+  publishingText = publishing,
+  skillsInstall = "npx skills@latest add mattpocock/skills",
+  omitHelper = false,
+  helperText = helper,
+  omitGrillHelper = false,
+  grillHelperText = grillHelper,
+  omitWakeHelper = false,
+  wakeHelperText = wakeHelper,
+  omitGrillRoute = false,
+  omitAdr = false,
+  adrText = adr,
+  omitHandoffRules = null,
+} = {}) {
+  const root = mkdtempSync(join(tmpdir(), "software-factory-verify-"));
+  roots.push(root);
+  for (const name of Object.keys(CHAIN_PINS)) {
+    if (name === omitSkill) continue;
+    const overrides =
+      name === "code-review-loop" && omitGrillRoute
+        ? { ...skillOverrides[name], body: "The route prints a pause and waits.\n" }
+        : skillOverrides[name];
+    write(
+      root,
+      `skills/software-factory/${name}/SKILL.md`,
+      skillContent(name, {
+        ...overrides,
+        omitHandoffRules: omitHandoffRules === name || overrides?.omitHandoffRules === true,
+      })
+    );
+    if (name !== "create-pr" && !omitHelper) {
+      write(root, `skills/software-factory/${name}/scripts/launch-stage.mjs`, helperText);
+    }
+    if (name === "code-review-loop" && !omitGrillHelper) {
+      write(root, `skills/software-factory/${name}/scripts/open-grill-session.mjs`, grillHelperText);
+    }
+    if (name !== "create-pr" && !omitWakeHelper) {
+      write(root, `skills/software-factory/${name}/scripts/open-wake-session.mjs`, wakeHelperText);
+    }
+  }
+  if (!omitHelper) write(root, "skills/software-factory/scripts/launch-stage.mjs", helperText);
+  if (!omitGrillHelper) {
+    write(root, "skills/software-factory/scripts/open-grill-session.mjs", grillHelperText);
+  }
+  if (!omitWakeHelper) write(root, "skills/software-factory/scripts/open-wake-session.mjs", wakeHelperText);
+  if (!omitAdr) write(root, "docs/adr/0006-chain-skills-cross-model-handoffs.md", adrText);
+  if (!skipPackReadme) write(root, "skills/software-factory/README.md", "# software-factory pack\n");
+  write(
+    root,
+    ".claude-plugin/plugin.json",
+    JSON.stringify({
+      skills:
+        pluginSkills ??
+        Object.keys(CHAIN_PINS).map((name) => `./skills/software-factory/${name}`),
+    })
+  );
+  write(root, "README.md", readmeText);
+  write(root, "AGENTS.md", agentsText);
+  write(root, "scripts/verify-publishing.mjs", publishingText);
+  write(root, "package.json", JSON.stringify({ scripts: { "skills:install": skillsInstall } }));
+  return join(root, "skills", "software-factory");
+}
+
+function verify(packDir) {
+  return verifySoftwareFactoryPack(packDir);
+}
+
+function withoutRow(text, prefix) {
+  return text
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith(prefix))
+    .join("\n");
+}
+
+after(() => {
+  for (const root of roots) rmSync(root, { recursive: true, force: true });
+});
+
+test("a conforming fixture pack has no problems", () => {
+  assert.deepEqual(verify(makeRepo()), []);
+});
+
+// The identity check compares the two block-carrying skills to each other,
+// not to a fixed text — so the pinning pair carries a custom block.
+const CUSTOM_HANDOFF_RULES = HANDOFF_RULES.replace(
+  "Every stage shares one git worktree.",
+  "Every stage shares one git worktree, no exceptions."
+);
+const DRIFTED_CUSTOM_HANDOFF_RULES = CUSTOM_HANDOFF_RULES.replace("no exceptions", "no exception");
+
+function bodyWithHandoff(name, rules) {
+  return `${defaultSkillBody(name)}\n${rules}`;
+}
+
+test("accepts an identical non-canonical Handoff rules pair", () => {
+  const pack = makeRepo({
+    skillOverrides: {
+      "dev-flow": { body: bodyWithHandoff("dev-flow", CUSTOM_HANDOFF_RULES), omitHandoffRules: true },
+      "code-review-loop": {
+        body: bodyWithHandoff("code-review-loop", CUSTOM_HANDOFF_RULES),
+        omitHandoffRules: true,
+      },
+    },
+  });
+  for (const name of ["dev-flow", "code-review-loop"]) {
+    assert.ok(
+      readFileSync(join(pack, name, "SKILL.md"), "utf8").endsWith(CUSTOM_HANDOFF_RULES),
+      `${name} closes with the custom block`
+    );
+  }
+  assert.deepEqual(verify(pack), []);
+});
+
+test("rejects a one-byte drift between the custom Handoff rules blocks", () => {
+  const problems = verify(
+    makeRepo({
+      skillOverrides: {
+        "dev-flow": { body: bodyWithHandoff("dev-flow", CUSTOM_HANDOFF_RULES), omitHandoffRules: true },
+        "code-review-loop": {
+          body: bodyWithHandoff("code-review-loop", DRIFTED_CUSTOM_HANDOFF_RULES),
+          omitHandoffRules: true,
+        },
+      },
+    })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        'skills/software-factory/dev-flow/SKILL.md: "## Handoff rules" block differs from skills/software-factory/code-review-loop/SKILL.md'
+      )
+    )
+  );
+});
+
+test("rejects a Handoff rules block that drifts from its shared copy", () => {
+  const problems = verify(
+    makeRepo({
+      omitHandoffRules: "code-review-loop",
+      skillOverrides: {
+        "code-review-loop": {
+          body: `${defaultSkillBody("code-review-loop")}\n${DRIFTED_HANDOFF_RULES}`,
+        },
+      },
+    })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        'skills/software-factory/dev-flow/SKILL.md: "## Handoff rules" block differs from skills/software-factory/code-review-loop/SKILL.md'
+      )
+    )
+  );
+});
+
+test("rejects a block-carrying skill missing its closing Handoff rules block", () => {
+  const problems = verify(makeRepo({ omitHandoffRules: "code-review-loop" }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        'skills/software-factory/code-review-loop/SKILL.md: missing the closing "## Handoff rules" block'
+      )
+    )
+  );
+});
+
+test("rejects a registered skill missing its local launch helper", () => {
+  const pack = makeRepo();
+  rmSync(join(pack, "dev-flow/scripts/launch-stage.mjs"));
+  assert.ok(verify(pack).some((problem) => problem.includes("dev-flow/scripts/launch-stage.mjs: missing packaged helper")));
+});
+
+test("rejects a packaged helper that drifts from its shared source", () => {
+  const pack = makeRepo();
+  writeFileSync(join(pack, "code-review-loop/scripts/launch-stage.mjs"), "export const STAGE_PINS = {};\n");
+  assert.ok(verify(pack).some((problem) => problem.includes("code-review-loop/scripts/launch-stage.mjs: differs")));
+});
+
+test("rejects an invocation of a helper outside the installed skill folder", () => {
+  const pack = makeRepo({
+    skillOverrides: {
+      "dev-flow": { body: "```bash\nnode skills/software-factory/scripts/launch-stage.mjs implement-spec <spec> 'pointers'\n```\n" },
+    },
+  });
+  assert.ok(verify(pack).some((problem) => problem.includes("helper invocation escapes")));
+});
+
+test("rejects a missing chain skill", () => {
+  const problems = verify(makeRepo({ omitSkill: "dev-flow" }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes("skills/software-factory/dev-flow/SKILL.md: missing")
+    )
+  );
+});
+
+test("rejects a name that does not match its folder", () => {
+  const problems = verify(
+    makeRepo({ skillOverrides: { "dev-flow": { name: "tickets-flow" } } })
+  );
+  assert.ok(problems.some((problem) => problem.includes("does not match folder")));
+});
+
+test("rejects a missing description", () => {
+  const problems = verify(
+    makeRepo({ skillOverrides: { "create-pr": { description: "" } } })
+  );
+  assert.ok(problems.some((problem) => problem.includes("missing description")));
+});
+
+test("rejects a description longer than 1024 characters", () => {
+  const problems = verify(
+    makeRepo({ skillOverrides: { "grill-with-spec": { description: "x".repeat(1025) } } })
+  );
+  assert.ok(problems.some((problem) => problem.includes("longer than 1024 characters")));
+});
+
+test("rejects a model pin that does not match the pinned chain contract", () => {
+  const problems = verify(
+    makeRepo({ skillOverrides: { "grill-with-spec": { model: "opencode-go/gpt-9" } } })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes('model pin "opencode-go/gpt-9" does not match the pinned chain contract "opencode-go/glm-5.3"')
+    )
+  );
+});
+
+test("rejects a thinking pin that does not match the pinned chain contract", () => {
+  const problems = verify(
+    makeRepo({ skillOverrides: { "create-pr": { thinking: "high" } } })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes('thinking pin "high" does not match the pinned chain contract "xhigh"')
+    )
+  );
+});
+
+test("rejects a chain skill missing from the plugin manifest", () => {
+  const problems = verify(
+    makeRepo({ pluginSkills: ["./skills/software-factory/grill-with-spec"] })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes("skills/software-factory/dev-flow/SKILL.md: not registered in the plugin manifest")
+    )
+  );
+});
+
+test("rejects a missing pack README", () => {
+  const problems = verify(makeRepo({ skipPackReadme: true }));
+  assert.ok(problems.some((problem) => problem.includes("skills/software-factory/README.md: missing")));
+});
+
+test("rejects a missing software-factory row in README What's inside", () => {
+  const problems = verify(
+    makeRepo({ readmeText: withoutRow(readme, "| `software-factory` pack ") })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes('README.md: missing the software-factory pack row in "What\'s inside"')
+    )
+  );
+});
+
+test("rejects a missing software-factory row in AGENTS Own skills", () => {
+  const problems = verify(
+    makeRepo({ agentsText: withoutRow(agents, "| `software-factory` pack ") })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes('AGENTS.md: missing the software-factory pack row in "Own skills"')
+    )
+  );
+});
+
+test("rejects a missing Matt Pocock row in README What's inside", () => {
+  const problems = verify(makeRepo({ readmeText: withoutRow(readme, "| Matt Pocock pack ") }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes('README.md: missing the Matt Pocock pack row in "What\'s inside"')
+    )
+  );
+});
+
+test("rejects a missing Matt Pocock row in AGENTS referenced skills", () => {
+  const problems = verify(makeRepo({ agentsText: withoutRow(agents, "| Matt Pocock pack ") }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes('AGENTS.md: missing the Matt Pocock pack row in "Referenced skills (published channels)"')
+    )
+  );
+});
+
+test("rejects a missing skills.sh channel check", () => {
+  const problems = verify(
+    makeRepo({ publishingText: publishing.replace("https://skills.sh/mattpocock/skills", "") })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes("scripts/verify-publishing.mjs: missing published-channel check https://skills.sh/mattpocock/skills")
+    )
+  );
+});
+
+test("rejects a missing GitHub channel check", () => {
+  const problems = verify(
+    makeRepo({ publishingText: publishing.replace("https://github.com/mattpocock/skills", "") })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes("scripts/verify-publishing.mjs: missing published-channel check https://github.com/mattpocock/skills")
+    )
+  );
+});
+
+test("rejects a skills:install that drops the Matt Pocock pack", () => {
+  const problems = verify(
+    makeRepo({ skillsInstall: "npx skills@latest add dyegolara/skillbook" })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes("package.json: skills:install does not install mattpocock/skills")
+    )
+  );
+});
+
+test("rejects a missing launch helper", () => {
+  const problems = verify(makeRepo({ omitHelper: true }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes("skills/software-factory/scripts/launch-stage.mjs: missing")
+    )
+  );
+});
+
+test("rejects a missing grill-session helper", () => {
+  const problems = verify(makeRepo({ omitGrillHelper: true }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes("skills/software-factory/scripts/open-grill-session.mjs: missing")
+    )
+  );
+});
+
+test("rejects a missing shared wake helper", () => {
+  const problems = verify(makeRepo({ omitWakeHelper: true }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes("skills/software-factory/scripts/open-wake-session.mjs: missing")
+    )
+  );
+});
+
+test("rejects a launching skill missing its packaged wake helper", () => {
+  const pack = makeRepo();
+  rmSync(join(pack, "dev-flow/scripts/open-wake-session.mjs"));
+  assert.ok(
+    verify(pack).some((problem) =>
+      problem.includes("dev-flow/scripts/open-wake-session.mjs: missing packaged helper")
+    )
+  );
+});
+
+test("rejects a packaged wake helper that drifts from its shared source", () => {
+  const pack = makeRepo();
+  writeFileSync(join(pack, "code-review-loop/scripts/open-wake-session.mjs"), "export function wakeLabel() { /* drifted */ }\n");
+  assert.ok(
+    verify(pack).some((problem) =>
+      problem.includes("code-review-loop/scripts/open-wake-session.mjs: differs")
+    )
+  );
+});
+
+test("rejects a code-review-loop whose decision-forcing route does not reference the grill-session helper", () => {
+  const problems = verify(makeRepo({ omitGrillRoute: true }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        "skills/software-factory/code-review-loop/SKILL.md: decision-forcing route does not reference skills/software-factory/scripts/open-grill-session.mjs"
+      )
+    )
+  );
+});
+
+test("rejects a decision-forcing route that mentions the grill-session helper only in prose", () => {
+  const problems = verify(
+    makeRepo({
+      skillOverrides: {
+        "code-review-loop": {
+          body: "Decision-forcing findings route to skills/software-factory/scripts/open-grill-session.mjs.\n",
+        },
+      },
+    })
+  );
+  assert.deepEqual(problems, [
+    "skills/software-factory/code-review-loop/SKILL.md: decision-forcing route does not reference skills/software-factory/scripts/open-grill-session.mjs",
+  ]);
+});
+
+test("rejects a grill pin that diverges from the grill-with-spec frontmatter", () => {
+  const problems = verify(
+    makeRepo({ grillHelperText: grillHelper.replace("opencode-go/glm-5.3", "opencode-go/gpt-9") })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        'skills/software-factory/scripts/open-grill-session.mjs: grill pin "model opencode-go/gpt-9, effort max" does not match skills/software-factory/grill-with-spec/SKILL.md frontmatter "model opencode-go/glm-5.3, thinking max"'
+      )
+    )
+  );
+});
+
+test("rejects a grill helper whose GRILL_PIN table cannot be read", () => {
+  const problems = verify(makeRepo({ grillHelperText: "export const GRILL_PIN = {};\n" }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        "skills/software-factory/scripts/open-grill-session.mjs: cannot read the GRILL_PIN table"
+      )
+    )
+  );
+});
+
+test("rejects a launch snippet that does not reference the helper", () => {
+  const problems = verify(
+    makeRepo({
+      skillOverrides: {
+        "dev-flow": {
+          body: [
+            "Launch the next stage:",
+            "",
+            "```bash",
+            "pi --print --provider opencode-go --model opencode-go/glm-5.3 --thinking max 'Run implement-spec.'",
+            "```",
+            "",
+          ].join("\n"),
+        },
+      },
+    })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        "skills/software-factory/dev-flow/SKILL.md: launch snippet does not reference skills/software-factory/scripts/launch-stage.mjs"
+      )
+    )
+  );
+});
+
+test("rejects a launch snippet that omits the explicit spec positional", () => {
+  const problems = verify(
+    makeRepo({
+      skillOverrides: {
+        "dev-flow": {
+          body: [
+            "Launch the next stage:",
+            "",
+            "```bash",
+            "node skills/software-factory/scripts/launch-stage.mjs implement-spec 'Run the implement-spec skill.'",
+            "```",
+            "",
+          ].join("\n"),
+        },
+      },
+    })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        "skills/software-factory/dev-flow/SKILL.md: launch snippet invokes skills/software-factory/scripts/launch-stage.mjs with 2 positional(s)"
+      )
+    )
+  );
+});
+
+test("rejects an inline launch rule that omits the explicit spec positional", () => {
+  const problems = verify(
+    makeRepo({
+      skillOverrides: {
+        "dev-flow": {
+          body: "Launch through `node skills/software-factory/scripts/launch-stage.mjs <stage> '<pointers>'`.\n",
+        },
+      },
+    })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        "skills/software-factory/dev-flow/SKILL.md: launch snippet invokes skills/software-factory/scripts/launch-stage.mjs with 2 positional(s)"
+      )
+    )
+  );
+});
+
+test("accepts the three-position launch form", () => {
+  const problems = verify(
+    makeRepo({
+      skillOverrides: {
+        "dev-flow": {
+          body: [
+            "Launch the next stage:",
+            "",
+            "```bash",
+            'node "<skill-dir>/scripts/launch-stage.mjs" implement-spec <spec> \'Run the implement-spec skill.\'',
+            "```",
+            "",
+          ].join("\n"),
+        },
+      },
+    })
+  );
+  assert.deepEqual(problems, []);
+});
+
+test("accepts the three-position form followed by id flags", () => {
+  const problems = verify(
+    makeRepo({
+      skillOverrides: {
+        "dev-flow": {
+          body: [
+            "Launch the next stage:",
+            "",
+            "```bash",
+            'node "<skill-dir>/scripts/launch-stage.mjs" dev-flow <spec> \'Run the dev-flow skill.\' --repo-id r --worktree-id w --task-id t',
+            "```",
+            "",
+          ].join("\n"),
+        },
+      },
+    })
+  );
+  assert.deepEqual(problems, []);
+});
+
+test("accepts the decided Fresh start launch shape with the echoed id triple", () => {
+  const decided = [
+    "Launch dev-flow:",
+    "",
+    "```bash",
+    `node "<skill-dir>/scripts/launch-stage.mjs" dev-flow <spec> 'Run the dev-flow skill.' ${FRESH_START_FLAGS}`,
+    "```",
+    "",
+  ].join("\n");
+  assert.deepEqual(verify(makeRepo({ skillOverrides: { "grill-with-spec": { body: decided } } })), []);
+});
+
+test("rejects a Fresh start launch snippet missing the repo-id flag", () => {
+  const problems = verify(
+    makeRepo({
+      skillOverrides: {
+        "grill-with-spec": {
+          body: defaultSkillBody("grill-with-spec").replace("--repo-id <repoId> ", ""),
+        },
+      },
+    })
+  );
+  assert.ok(
+    problems.some((problem) => problem.includes("Fresh start launch snippet lacks the explicit --repo-id"))
+  );
+});
+
+test("rejects a Fresh start launch snippet missing the worktree-id flag", () => {
+  const problems = verify(
+    makeRepo({
+      skillOverrides: {
+        "grill-with-spec": {
+          body: defaultSkillBody("grill-with-spec").replace("--worktree-id <worktreeId> ", ""),
+        },
+      },
+    })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes("Fresh start launch snippet lacks the explicit --worktree-id")
+    )
+  );
+});
+
+test("rejects a Fresh start launch snippet missing the task-id flag", () => {
+  const problems = verify(
+    makeRepo({
+      skillOverrides: {
+        "grill-with-spec": {
+          body: defaultSkillBody("grill-with-spec").replace(" --task-id <taskId>", ""),
+        },
+      },
+    })
+  );
+  assert.ok(
+    problems.some((problem) => problem.includes("Fresh start launch snippet lacks the explicit --task-id"))
+  );
+});
+
+test("does not count Fresh start id flags that appear only in comments", () => {
+  const body = [
+    '# node "<skill-dir>/scripts/launch-stage.mjs" dev-flow <spec> \'Run the dev-flow skill.\' --repo-id <repoId> --worktree-id <worktreeId> --task-id <taskId>',
+    "Launch dev-flow:",
+    "",
+    "```bash",
+    'node "<skill-dir>/scripts/launch-stage.mjs" dev-flow <spec> \'Run the dev-flow skill.\'',
+    "```",
+    "",
+  ].join("\n");
+  const problems = verify(makeRepo({ skillOverrides: { "grill-with-spec": { body } } }));
+  for (const flag of ["--repo-id", "--worktree-id", "--task-id"]) {
+    assert.ok(problems.some((problem) => problem.includes(`lacks the explicit ${flag} or its value`)));
+  }
+});
+
+test("rejects a Fresh start id flag with no following value", () => {
+  const body = [
+    "Launch dev-flow:",
+    "",
+    "```bash",
+    'node "<skill-dir>/scripts/launch-stage.mjs" dev-flow <spec> \'Run the dev-flow skill.\' --repo-id --worktree-id w --task-id t',
+    "```",
+    "",
+  ].join("\n");
+  const problems = verify(makeRepo({ skillOverrides: { "grill-with-spec": { body } } }));
+  assert.ok(problems.some((problem) => problem.includes("lacks the explicit --repo-id or its value")));
+});
+
+test("rejects an empty Fresh start id flag value", () => {
+  const body = [
+    "Launch dev-flow:",
+    "",
+    "```bash",
+    'node "<skill-dir>/scripts/launch-stage.mjs" dev-flow <spec> \'Run the dev-flow skill.\' --repo-id "" --worktree-id w --task-id t',
+    "```",
+    "",
+  ].join("\n");
+  const problems = verify(makeRepo({ skillOverrides: { "grill-with-spec": { body } } }));
+  assert.ok(problems.some((problem) => problem.includes("lacks the explicit --repo-id or its value")));
+});
+
+test("accepts a mid-chain launch in grill-with-spec without the id flags", () => {
+  const body = [
+    defaultSkillBody("grill-with-spec"),
+    "Re-entry resumes without the bootstrap flags:",
+    "",
+    "```bash",
+    `node "<skill-dir>/scripts/launch-stage.mjs" implement-spec <spec> 'Run the implement-spec skill.'`,
+    "```",
+    "",
+  ].join("\n");
+  assert.deepEqual(verify(makeRepo({ skillOverrides: { "grill-with-spec": { body } } })), []);
+});
+
+test("accepts a dev-flow launch in a mid-chain skill without the id flags", () => {
+  const body = [
+    "Launch dev-flow:",
+    "",
+    "```bash",
+    `node "<skill-dir>/scripts/launch-stage.mjs" dev-flow <spec> 'Run the dev-flow skill.'`,
+    "```",
+    "",
+    GRILL_ROUTE,
+  ].join("\n");
+  assert.deepEqual(verify(makeRepo({ skillOverrides: { "code-review-loop": { body } } })), []);
+});
+
+test("rejects a stale launch line even when a following line has more words", () => {
+  const problems = verify(
+    makeRepo({
+      skillOverrides: {
+        "dev-flow": {
+          body: [
+            "Launch the next stage:",
+            "",
+            "```bash",
+            "node skills/software-factory/scripts/launch-stage.mjs implement-spec 'Run the implement-spec skill.'",
+            "# launch it now",
+            "```",
+            "",
+          ].join("\n"),
+        },
+      },
+    })
+  );
+  assert.ok(
+    problems.some((problem) => problem.includes("with 2 positional(s)"))
+  );
+});
+
+test("rejects a launch snippet with more positionals than the contract", () => {
+  const problems = verify(
+    makeRepo({
+      skillOverrides: {
+        "dev-flow": {
+          body: [
+            "Launch the next stage:",
+            "",
+            "```bash",
+            "node skills/software-factory/scripts/launch-stage.mjs implement-spec <spec> 'Run the implement-spec skill.' stray",
+            "```",
+            "",
+          ].join("\n"),
+        },
+      },
+    })
+  );
+  assert.ok(
+    problems.some((problem) => problem.includes("with 4 positional(s)"))
+  );
+});
+
+test("ignores a prose mention of the helper", () => {
+  const problems = verify(
+    makeRepo({
+      skillOverrides: {
+        "dev-flow": {
+          body: "The launch-stage.mjs helper takes the stage, the spec and the pointers.\n",
+        },
+      },
+    })
+  );
+  assert.deepEqual(problems, []);
+});
+
+test("rejects a helper pins table that diverges from the SKILL.md frontmatter", () => {
+  const problems = verify(
+    makeRepo({ helperText: helper.replace("opencode-go/glm-5.3", "opencode-go/gpt-9") })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        'skills/software-factory/scripts/launch-stage.mjs: dev-flow pin "model opencode-go/gpt-9, thinking max" does not match skills/software-factory/dev-flow/SKILL.md frontmatter "model opencode-go/glm-5.3, thinking max"'
+      )
+    )
+  );
+});
+
+test("rejects a helper pins table that diverges from ADR-0006", () => {
+  const problems = verify(
+    makeRepo({
+      helperText: helper.replace("opencode-go/deepseek-v4.1-flash", "opencode-go/deepseek-v4.1"),
+    })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        'skills/software-factory/scripts/launch-stage.mjs: implement-spec pin "model opencode-go/deepseek-v4.1, thinking max" does not match docs/adr/0006-chain-skills-cross-model-handoffs.md "model opencode-go/deepseek-v4.1-flash, thinking max"'
+      )
+    )
+  );
+});
+
+test("reads the implement-spec pin from ADR-0006, not a hardcoded copy", () => {
+  const problems = verify(
+    makeRepo({ adrText: adr.replace("opencode-go/deepseek-v4.1-flash", "opencode-go/deepseek-v4.1") })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        'skills/software-factory/scripts/launch-stage.mjs: implement-spec pin "model opencode-go/deepseek-v4.1-flash, thinking max" does not match docs/adr/0006-chain-skills-cross-model-handoffs.md "model opencode-go/deepseek-v4.1, thinking max"'
+      )
+    )
+  );
+});
+
+test("rejects a spawn snippet without an explicit --model", () => {
+  const problems = verify(
+    makeRepo({
+      skillOverrides: {
+        "dev-flow": {
+          body: [
+            "Launch the next stage:",
+            "",
+            "```bash",
+            "pi --print --provider opencode-go --thinking max 'Run implement-spec.'",
+            "```",
+            "",
+          ].join("\n"),
+        },
+      },
+    })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes("skills/software-factory/dev-flow/SKILL.md: spawn snippet lacks an explicit --model")
+    )
+  );
+});
+
+test("accepts a pinned sub-agent spawn that is not a stage launch", () => {
+  const problems = verify(
+    makeRepo({
+      skillOverrides: {
+        "dev-flow": {
+          body: [
+            "Run the test author as a sub-agent:",
+            "",
+            "```bash",
+            "pi --print --provider opencode-go --model opencode-go/glm-5.3 --thinking max 'Run the tdd skill.'",
+            "```",
+            "",
+          ].join("\n"),
+        },
+      },
+    })
+  );
+  assert.deepEqual(problems, []);
+});
+
+test("rejects a helper whose STAGE_PINS table cannot be read", () => {
+  const problems = verify(makeRepo({ helperText: "export const STAGE_PINS = {};\n" }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes("skills/software-factory/scripts/launch-stage.mjs: cannot read the STAGE_PINS table")
+    )
+  );
+});
+
+test("rejects a missing ADR-0006 pin source", () => {
+  const problems = verify(makeRepo({ omitAdr: true }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes("docs/adr/0006-chain-skills-cross-model-handoffs.md: missing")
+    )
+  );
+});
+
+test("rejects a launch helper whose injected command is not the retry wrapper", () => {
+  const problems = verify(
+    makeRepo({ helperText: helper.slice(0, helper.indexOf("export function buildRetryWrapper")) })
+  );
+  assert.deepEqual(problems, [
+    "skills/software-factory/scripts/launch-stage.mjs: missing the buildRetryWrapper retry wrapper around the pinned command",
+  ]);
+});
+
+test("rejects a retry wrapper whose give-up path drops the wake reference", () => {
+  const problems = verify(
+    makeRepo({
+      helperText: helper.replace(
+        "    `node ${wakeHelperPath()} ${stage} ${spec} ${command}`",
+        "    `echo done`"
+      ),
+    })
+  );
+  assert.deepEqual(problems, [
+    "skills/software-factory/scripts/launch-stage.mjs: give-up path does not reference the wake helper open-wake-session.mjs",
+  ]);
+});
+
+test("rejects a pinned-command builder that drops an explicit pin flag", () => {
+  const problems = verify(
+    makeRepo({ helperText: helper.replace("--model ${pin.model} ", "") })
+  );
+  assert.deepEqual(problems, [
+    "skills/software-factory/scripts/launch-stage.mjs: pinned command drops the explicit --model",
+  ]);
+});
+
+test("reads the wake helper name from ADR-0006, not a hardcoded copy", () => {
+  const problems = verify(
+    makeRepo({ adrText: adr.replaceAll("open-wake-session.mjs", "open-sleep-session.mjs") })
+  );
+  assert.deepEqual(problems, [
+    "skills/software-factory/scripts/launch-stage.mjs: give-up path resolves a different wake helper than open-sleep-session.mjs",
+  ]);
+});
+
+test("rejects a resolver pointed at another helper while the ADR name survives in a comment", () => {
+  const problems = verify(
+    makeRepo({
+      helperText: helper
+        .replace('new URL("./open-wake-session.mjs", import.meta.url)', 'new URL("./open-snooze-session.mjs", import.meta.url)')
+        .replace("export const STAGE_PINS = {", "// The wake helper is open-wake-session.mjs.\nexport const STAGE_PINS = {"),
+    })
+  );
+  assert.deepEqual(problems, [
+    "skills/software-factory/scripts/launch-stage.mjs: give-up path resolves a different wake helper than open-wake-session.mjs",
+  ]);
+});
+
+test("the CLI reports the real pack as OK", () => {
+  const script = fileURLToPath(new URL("./verify-software-factory.mjs", import.meta.url));
+  const result = spawnSync(process.execPath, [script], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.ok(result.stdout.includes("[OK  ] software-factory pack contract holds"));
+});

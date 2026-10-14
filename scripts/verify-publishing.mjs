@@ -2,7 +2,7 @@
 /**
  * verify-publishing.mjs — checks that every external skill referenced by this
  * skillbook actually resolves on its PUBLISHED channel (npm / skills.sh /
- * ClawHub). References only, nothing is downloaded into the repo.
+ * ClawHub / GitHub). References only, nothing is downloaded into the repo.
  */
 const CHECK = async (url) => {
   const res = await fetch(url, { redirect: "follow" });
@@ -17,6 +17,9 @@ const refs = [
   ["npm registry", "https://registry.npmjs.org/nostr-auth"],
   ["skills.sh page", "https://skills.sh/dyegolara/nostr-auth-agents"],
   ["ClawHub page", "https://clawhub.ai/skills/skills/nostr-auth"],
+  // mattpocock/skills pack: referenced from skills.sh, source repo on GitHub
+  ["skills.sh page", "https://skills.sh/mattpocock/skills"],
+  ["GitHub repo", "https://github.com/mattpocock/skills"],
 ];
 
 let failed = false;

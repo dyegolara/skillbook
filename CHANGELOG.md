@@ -1,5 +1,61 @@
 # Changelog
 
+## 1.2.0
+
+- Add the software-factory pack: grill-with-spec, dev-flow, code-review-loop,
+  and create-pr, four chain skills that wrap the referenced Matt Pocock pack
+  into one path from a rough idea to a ready PR. Each stage is a new session on
+  a pinned agent and model; the chain mechanism is recorded in ADR-0006.
+- Add the chain's launch mechanism under the four-piece contract:
+  `launch-stage.mjs` starts each pi stage in a visible
+  `chain #<spec>: <stage>` Kepler terminal (explicit spec argument,
+  chain-labeled anchor preference, explicit id flags for fresh runs,
+  connection-level-only `nohup` fallback), and `open-grill-session.mjs`
+  actuates the decision-forcing pause by opening and pinning a fresh
+  grilling session on the task. The injected command runs under a retry
+  wrapper around the pinned agent command — 5 attempts with exponential
+  backoff (~10-minute window) — and the helper's post-injection check polls
+  the terminal buffer for the wrapper's sentinel, closing and relaunching a
+  wedged terminal once; on exhaustion the wrapper leaves a FAILED marker
+  (stage, spec, the exact resume command) and actuates a sibling wake helper,
+  `open-wake-session.mjs`, an unread notice session on the task carrying
+  that resume command. grill-with-spec keeps a live `chain #<spec>: status`
+  terminal (a plain bash loop refreshed every 30 seconds).
+- Add the Matt Pocock pack as referenced skills (published from skills.sh):
+  one install command in the book's skills:install script, two
+  published-channel checks in the publishing verify, and referenced-skills
+  rows in the book's tables.
+- Add verify:software-factory, the pack-contract check for the four chain
+  skills' frontmatter and ADR-0006 model pins, plugin registration, the pack
+  README and the book's table rows, and the Matt Pocock dependency
+  references, wired into npm run verify. It also checks that the three
+  packaged helpers (`launch-stage.mjs`, `open-grill-session.mjs`, and
+  `open-wake-session.mjs`) exist and are
+  referenced — all three are packaged byte-identically to their shared
+  sources, `open-grill-session.mjs` by code-review-loop's decision-forcing
+  route — that both pin tables match their records, that every launch
+  snippet carries the exact `<stage> <spec> '<pointers>'` arity and, on
+  grill-with-spec's Fresh start, the three explicit
+  `--repo-id/--worktree-id/--task-id` flags, that the launch construction
+  wraps the pinned command in the bounded retry wrapper (the wrapper's
+  give-up path carries the FAILED marker and references the wake helper,
+  and the pinned command inside it keeps the explicit
+  `--provider/--model/--thinking` flags), that every spawn snippet carries
+  an explicit --model — checked separately from the launch snippets — and
+  that the `## Handoff rules` blocks closing `dev-flow` and
+  `code-review-loop` are byte-identical. Offline.
+- Document the Kepler local API the helpers wrap in the pack's
+  `docs/kepler-api.md`: verified terminal and agent endpoints, their
+  request/response shapes, and the probe recipe that settles a new endpoint.
+- Teach the grill-with-spec Re-entry to list a decision's open gaps in
+  its scope comment, so the implementer fills them in-ticket and records them
+  in the ADR instead of making its own design call.
+- Extend the decision-forcing rule: a fix that would change one of the
+  project's commitments — what the project *is* or *promises* — instead of
+  satisfying them routes to `grill-with-spec`; a fix that satisfies them
+  stays normal.
+- Migrate the glossary to GLOSSARY.md, replacing CONTEXT.md.
+
 ## 1.1.0
 
 - Add copilot-review-smart v2.3.0's webhook-first Listener, Expectation
