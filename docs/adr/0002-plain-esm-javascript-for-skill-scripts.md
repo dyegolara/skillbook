@@ -26,4 +26,8 @@ toolchain for compiling.
   by `node --check` and `DRY_RUN=1` smoke tests instead.
 - A script that grows beyond ~500 lines of real logic should be extracted
   into its own npm package (where TypeScript applies) rather than growing
-  in place.
+  in place. Scope settled 2026-10-10, maintainer decision on spec #55's
+  review (finding B3): the threshold governs the skill-folder scripts this
+  ADR is about — the agent-portability criterion above; repo-root verify
+  tooling (`scripts/verify-*.mjs`) is repo tooling, not a script next to a
+  `SKILL.md`, and stays outside it.
