@@ -39,8 +39,10 @@ skill only.
 _Avoid_: pipeline, workflow.
 
 **Model pin**:
-The model a chain stage is invoked with, at that model's highest available
-effort.
+The model a chain stage is invoked with, plus the stage's effort; both are
+per-stage variables with defaults in `env-defaults.mjs`, overridable per run
+(`DEV_ENV_MODEL_<STAGE>`, `DEV_ENV_EFFORT_<STAGE>`). The effort is no longer
+fixed at the model's highest available effort.
 _Avoid_: model config, model setting.
 
 **Handoff doc**:
