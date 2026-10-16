@@ -51,9 +51,17 @@ defaults in [`scripts/env-defaults.mjs`](scripts/env-defaults.mjs), so a bare
 environment runs the chain exactly as before. The repo root's
 [`.env.example`](../../.env.example) lists every variable with its default.
 
+The per-docker pattern is an opt-in pair: set `DEV_ENV_PROVIDER` and
+`DEV_ENV_API_KEY` together. With neither set — even when the ambient
+environment carries provider keys — the chain keeps the agent's ambient auth:
+no key is injected and no error fires. A set `DEV_ENV_PROVIDER` or
+`DEV_ENV_API_KEY` with no resolvable key is a hard error naming the provider
+and both variables. The shipped `.env.example` keeps the pair commented, so
+sourcing it as-is is safe.
+
 | Scope | Variables | Default |
 |---|---|---|
-| Per-docker account — the per-docker pattern: each docker sets its own provider and key | `DEV_ENV_PROVIDER`, `DEV_ENV_API_KEY` | `opencode-go`, empty |
+| Per-docker account — the opt-in pair, set together; with neither set the chain keeps the agent's ambient auth | `DEV_ENV_PROVIDER`, `DEV_ENV_API_KEY` | `opencode-go`, empty |
 | Stage pins — retune one stage at a time | `DEV_ENV_MODEL_<STAGE>`, `DEV_ENV_EFFORT_<STAGE>`, `DEV_ENV_AGENT_<STAGE>` | the chain map above |
 | Provider-specific key variables — manual override only, their own provider first | `OPENROUTER_API_KEY`, `OPENCODE_GO_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, `ANTHROPIC_API_KEY` | unset |
 

@@ -92,19 +92,21 @@ test("the full flow creates, renames, and sends the wake prompt verbatim", async
   ]);
 });
 
-test("an unknown stage is a hard error before any fetch", async () => {
-  let fetched = false;
-  await assert.rejects(
-    main(["grill-with-spec", "55", RESUME_COMMAND], {
-      apiBase: "http://api.test",
-      fetchImpl: async () => {
-        fetched = true;
-      },
-      write: () => {},
-    }),
-    /unknown stage/i
-  );
-  assert.equal(fetched, false);
+test("an unknown stage — including the grill stage — is a hard error before any fetch", async () => {
+  for (const stage of ["grill-with-spec", "grill"]) {
+    let fetched = false;
+    await assert.rejects(
+      main([stage, "55", RESUME_COMMAND], {
+        apiBase: "http://api.test",
+        fetchImpl: async () => {
+          fetched = true;
+        },
+        write: () => {},
+      }),
+      /unknown stage/i
+    );
+    assert.equal(fetched, false);
+  }
 });
 
 test("an invalid spec argument is a hard error before any fetch", async () => {

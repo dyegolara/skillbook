@@ -148,6 +148,8 @@ export const AGENT_COMMANDS = {
   // https://cursor.com/docs/cli/headless.
   "cursor-cli": {
     binary: "agent",
+    // `cursor` is the local `GET /agent/adapters` registry's adapter id
+    // (2026-10-16), not a CLI-doc fact.
     adapterId: "cursor",
     docs: ["https://cursor.com/docs/cli/reference/parameters", "https://cursor.com/docs/cli/headless"],
     args: ({ model, pointers }) => ["-p", "--model", model, pointers],

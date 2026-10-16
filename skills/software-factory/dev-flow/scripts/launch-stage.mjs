@@ -60,13 +60,27 @@ import {
 export const KEPLER_DATA_DIR = join(homedir(), ".kepler-server", "data");
 
 /**
+ * The stages the launch helper launches — and the only stages the wake
+ * helper's guard accepts. `GRILL` is deliberately not here: it is the grill
+ * helper's stage (`open-grill-session.mjs` `grillPin`), which resolves it
+ * through `env-defaults.mjs` without entering a launch or wake path.
+ */
+const LAUNCH_STAGE_KEYS = ["DEV_FLOW", "IMPLEMENT_SPEC", "CODE_REVIEW_LOOP", "CREATE_PR"];
+
+/**
  * The env-defaults stage key for a launch-stage stage name: `code-review-loop`
- * resolves `CODE_REVIEW_LOOP`, the key `DEFAULTS.stages` carries. The stage
- * guard lives here so every caller — including the wake helper, which resolves
- * no pins — validates against the same table before any fetch or launch.
+ * resolves `CODE_REVIEW_LOOP`. The guard lives here so every caller —
+ * including the wake helper, which resolves no pins — validates against the
+ * launch stage set before any fetch or launch; the accepted keys resolve
+ * through the same `DEFAULTS.stages` table `grillPin` uses for `GRILL`.
  */
 export function stageKey(stage) {
   const key = String(stage).replaceAll("-", "_").toUpperCase();
+  if (!LAUNCH_STAGE_KEYS.includes(key)) {
+    throw new Error(
+      `unknown stage "${stage}" — expected one of ${LAUNCH_STAGE_KEYS.map((launchKey) => launchKey.toLowerCase().replaceAll("_", "-")).join(", ")}`
+    );
+  }
   stageDefaults(key);
   return key;
 }

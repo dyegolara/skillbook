@@ -43,6 +43,7 @@ import {
   wakeHelperPath,
 } from "./launch-stage.mjs";
 import { AGENTS, AGENT_COMMANDS, DEFAULTS } from "./env-defaults.mjs";
+import { grillPin } from "./open-grill-session.mjs";
 
 // The env-defaults stage key for each launch stage. Every pin value in these
 // tests comes from the defaults module — the tests carry no pin literals.
@@ -82,6 +83,27 @@ test("stageKey maps every launch stage to its env-defaults key and rejects the r
   for (const [stage, key] of Object.entries(STAGE_KEY_BY_NAME)) assert.equal(stageKey(stage), key);
   assert.throws(() => stageKey("grill-with-spec"), /unknown stage/i);
   assert.throws(() => stageKey("made-up"), /unknown stage/i);
+});
+
+test("the launch guard rejects the grill stage while the grill helper's grillPin still resolves it", () => {
+  // The regression: #162's guard validated against all of DEFAULTS.stages, so
+  // `grill` built a launch command instead of erroring. The launch helper's
+  // stage set is the four launch stages; GRILL belongs to grillPin.
+  assert.throws(
+    () => stageKey("grill"),
+    /unknown stage "grill" — expected one of dev-flow, implement-spec, code-review-loop, create-pr/
+  );
+  assert.throws(() => stageKey("GRILL"), /unknown stage/i);
+  assert.throws(() => stagePin("grill", NO_ENV), /unknown stage/i);
+  assert.throws(() => buildPiCommand("grill", "pointers", NO_ENV), /unknown stage/i);
+
+  // The split guard: the grill helper resolves GRILL through the same
+  // env-defaults tables, including the stage's model, effort and adapterId.
+  assert.deepEqual(grillPin(NO_ENV), {
+    model: DEFAULTS.stages.GRILL.model,
+    effort: DEFAULTS.stages.GRILL.effort,
+    adapterId: AGENT_COMMANDS[DEFAULTS.stages.GRILL.agent].adapterId,
+  });
 });
 
 test("stagePin resolves each stage to the defaults module's pins with no DEV_ENV_* set", () => {
@@ -1110,6 +1132,26 @@ test("an unknown stage fails hard before any launch path is taken", async () => 
       write: () => {},
     }),
     /unknown stage/i
+  );
+  assert.equal(fetched, false);
+  assert.equal(spawnCalls.length, 0);
+});
+
+test("the grill stage is not a launch stage and fails hard before any launch path is taken", async () => {
+  let fetched = false;
+  const { spawnImpl, calls: spawnCalls } = spawnRecorder();
+  await assert.rejects(
+    main(["grill", "55", "pointers"], {
+      env: NO_ENV,
+      apiBase: "http://127.0.0.1:1",
+      fetchImpl: async () => {
+        fetched = true;
+        throw new Error("fetch failed");
+      },
+      spawnImpl,
+      write: () => {},
+    }),
+    /unknown stage "grill" — expected one of dev-flow, implement-spec, code-review-loop, create-pr/
   );
   assert.equal(fetched, false);
   assert.equal(spawnCalls.length, 0);
