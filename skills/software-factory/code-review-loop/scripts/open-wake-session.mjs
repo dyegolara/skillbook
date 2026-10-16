@@ -38,8 +38,8 @@ import {
   parseIdFlags,
   runSessionCli,
   runSessionHelper,
+  stageKey,
   stageLabel,
-  stagePin,
 } from "./launch-stage.mjs";
 
 /** The session label: the chain spec plus the failed stage, not another stage's name. */
@@ -61,13 +61,14 @@ export function buildWakePrompt({ stage, spec, resumeCommand }) {
 /**
  * The wake's route shell: its label and prompt (the no-pin notice semantics —
  * a plain labeled session, no pre-send step), handed to the shared
- * `runSessionHelper`. `stagePin` is the stage guard, not a pin step: the wake
- * is a message on the task, not an agent stage.
+ * `runSessionHelper`. `stageKey` is the stage guard, not a pin step: the wake
+ * resolves no pins — it is a message on the task, not an agent stage — and
+ * creates its session through the shared default (the opencode adapter).
  *
  * @param {{ stage: string, spec: number|string, resumeCommand: string, flags?: Object, deps?: Object }} options
  */
 export async function openWakeSession({ stage, spec, resumeCommand, flags, deps = {} }) {
-  stagePin(stage); // a bad stage is a hard error before any fetch
+  stageKey(stage); // a bad stage is a hard error before any fetch
   return runSessionHelper({
     label: wakeLabel(spec, stage), // a bad spec too
     prompt: buildWakePrompt({ stage, spec, resumeCommand }),

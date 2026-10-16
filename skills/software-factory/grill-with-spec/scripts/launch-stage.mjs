@@ -46,33 +46,119 @@ import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  PROVIDER_KEY_VARS,
+  buildAgentCommand,
+  resolveAgent,
+  resolveEffort,
+  resolveKey,
+  resolveModel,
+  resolveProvider,
+  stageDefaults,
+} from "./env-defaults.mjs";
 
 export const KEPLER_DATA_DIR = join(homedir(), ".kepler-server", "data");
 
-// Pins per ADR-0006: the three own pi stages are mirrored from their SKILL.md
-// frontmatter; implement-spec is referenced and its pin is recorded in ADR-0006.
-export const STAGE_PINS = {
-  "dev-flow": { provider: "opencode-go", model: "opencode-go/glm-5.3", thinking: "max" },
-  "implement-spec": { provider: "opencode-go", model: "opencode-go/deepseek-v4.1-flash", thinking: "max" },
-  "code-review-loop": { provider: "opencode-go", model: "opencode-go/mimo-v2.6-pro", thinking: "high" },
-  "create-pr": { provider: "opencode-go", model: "opencode-go/muse-spark-1.3-contributor", thinking: "xhigh" },
-};
+/**
+ * The env-defaults stage key for a launch-stage stage name: `code-review-loop`
+ * resolves `CODE_REVIEW_LOOP`, the key `DEFAULTS.stages` carries. The stage
+ * guard lives here so every caller — including the wake helper, which resolves
+ * no pins — validates against the same table before any fetch or launch.
+ */
+export function stageKey(stage) {
+  const key = String(stage).replaceAll("-", "_").toUpperCase();
+  stageDefaults(key);
+  return key;
+}
 
-export function stagePin(stage) {
-  const pin = STAGE_PINS[stage];
-  if (!pin) {
-    throw new Error(`unknown stage "${stage}" — expected one of ${Object.keys(STAGE_PINS).join(", ")}`);
-  }
-  return pin;
+/**
+ * The stage's resolved pins: `DEV_ENV_PROVIDER` (global) plus the stage's
+ * `DEV_ENV_MODEL_<STAGE>`, `DEV_ENV_EFFORT_<STAGE>` and `DEV_ENV_AGENT_<STAGE>`,
+ * each falling back to `env-defaults.mjs`'s `DEFAULTS`. With no `DEV_ENV_*`
+ * set every value is today's pin. An unknown stage is a hard error before any
+ * environment is read.
+ */
+export function stagePin(stage, env = process.env) {
+  const key = stageKey(stage);
+  return {
+    provider: resolveProvider(env),
+    model: resolveModel(key, env),
+    thinking: resolveEffort(key, env),
+    agent: resolveAgent(key, env),
+  };
 }
 
 export function shellQuote(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
 
-export function buildPiCommand(stage, pointers) {
-  const pin = stagePin(stage);
-  return `pi --print --provider ${pin.provider} --model ${pin.model} --thinking ${pin.thinking} ${shellQuote(pointers)}`;
+// The shell-safe token set: command names and flag values (model ids, effort
+// levels, `key=value` configs) stay unquoted in the injected command; anything
+// else — pointers above all — is single-quoted. The default pins all pass, so
+// their command is byte-identical to the old fixed-pin string.
+const SHELL_SAFE_TOKEN = /^[\w@%+=:,./-]+$/;
+
+function shellToken(value) {
+  const text = String(value);
+  return SHELL_SAFE_TOKEN.test(text) ? text : shellQuote(text);
+}
+
+/** Join an agent argv into the shell command, always quoting the pointers. */
+function argvCommand(argv) {
+  return [...argv.slice(0, -1).map(shellToken), shellQuote(argv.at(-1))].join(" ");
+}
+
+/** Whether `DEV_ENV_<name>` is set and non-empty after trim. */
+function isSet(env, name) {
+  const raw = env?.[name];
+  return raw !== undefined && raw !== null && String(raw).trim() !== "";
+}
+
+/**
+ * The condition under which `resolveKey`'s missing-key hard error fires: the
+ * environment opted into env-configured accounts by setting `DEV_ENV_PROVIDER`
+ * or `DEV_ENV_API_KEY` (non-empty after trim). Provider-specific variables are
+ * consulted only after that opt-in, so a bare environment — even one carrying
+ * ambient provider keys — keeps today's ambient-auth path: no key injected and
+ * no hard error. When the opt-in is present the provider's key must resolve or
+ * the launch fails with `resolveKey`'s readable error.
+ */
+export function envConfiguresAccounts(env = process.env) {
+  return isSet(env, "DEV_ENV_PROVIDER") || isSet(env, "DEV_ENV_API_KEY");
+}
+
+/**
+ * The stage's provider key, paired with the resolved provider: `null` when the
+ * environment did not opt into env-configured accounts, otherwise the key
+ * `resolveKey` resolves or its hard error.
+ */
+export function resolveStageKey(provider, env = process.env) {
+  if (!envConfiguresAccounts(env)) return null;
+  return resolveKey(provider, env);
+}
+
+/**
+ * The stage's pinned command, built through the resolved agent's
+ * `AGENT_COMMANDS` row (`buildAgentCommand`) and shell-quoted for injection.
+ * With no `DEV_ENV_*` set the resolved pins are today's defaults, so the
+ * string is byte-identical to the old fixed-pin command. When the environment
+ * opted into env-configured accounts the resolved key travels as the
+ * provider's own variable, paired with the resolved provider, in front of the
+ * command — it travels only when it resolves; the git-tracked files never see
+ * it.
+ */
+export function buildPiCommand(stage, pointers, env = process.env) {
+  const pin = stagePin(stage, env);
+  const command = argvCommand(
+    buildAgentCommand(pin.agent, {
+      provider: pin.provider,
+      model: pin.model,
+      effort: pin.thinking,
+      pointers,
+    })
+  );
+  const key = resolveStageKey(pin.provider, env);
+  return key === null ? command : `${PROVIDER_KEY_VARS[pin.provider]}=${shellQuote(key)} ${command}`;
 }
 
 /**
@@ -241,9 +327,11 @@ export function buildResumeCommand({ stage, spec, pointers, worktreePath }) {
  * exit status are never swallowed. The pinned command inside stays unchanged;
  * the resume command is the launch-helper invocation, so a resume re-enters
  * the retry wrapper and the helper's post-injection check.
+ * every pin resolves from here plus `DEV_ENV_*`, so this command is the
+ * stage's resolved pins, whatever its agent.
  */
-export function buildRetryWrapper(stage, spec, pointers, worktreePath) {
-  const command = buildPiCommand(stage, pointers); // the stage's pinned command, unchanged inside
+export function buildRetryWrapper(stage, spec, pointers, worktreePath, env = process.env) {
+  const command = buildPiCommand(stage, pointers, env); // the stage's pinned command, unchanged inside
   const sentinel = stageSentinel(spec, stage); // the first action, before attempt 1
   const resumeCommand = buildResumeCommand({ stage, spec, pointers, worktreePath });
   const marker = [
@@ -263,8 +351,8 @@ export function buildRetryWrapper(stage, spec, pointers, worktreePath) {
   );
 }
 
-export function buildTerminalInput(stage, spec, pointers, worktreePath) {
-  return `${buildRetryWrapper(stage, spec, pointers, worktreePath)}\n`;
+export function buildTerminalInput(stage, spec, pointers, worktreePath, env = process.env) {
+  return `${buildRetryWrapper(stage, spec, pointers, worktreePath, env)}\n`;
 }
 
 /** The packaged helpers' name for the label shape; delegates to `chainLabel`. */
@@ -499,7 +587,7 @@ export function failureLines(toolName, error) {
  * creation carries the session's id (`error.sessionId`) and is a hard error,
  * so a caller must never fall back once a session exists.
  *
- * @param {{ label: string, prompt: string, beforeSend?: (sessionId: string) => Promise<void>, ids: TaskIds, worktreePath: string, apiBase: string, fetchImpl?: typeof fetch }} options
+ * @param {{ label: string, prompt: string, beforeSend?: (sessionId: string) => Promise<void>, ids: TaskIds, worktreePath: string, apiBase: string, fetchImpl?: typeof fetch, adapterId?: string }} options
  * @returns {Promise<{ sessionId: string, label: string }>}
  */
 export async function createLabeledSession({
@@ -510,11 +598,12 @@ export async function createLabeledSession({
   worktreePath,
   apiBase,
   fetchImpl = fetch,
+  adapterId = "opencode",
 }) {
   const created = await requestJson(fetchImpl, `${apiBase}/agent/sessions`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ adapterId: "opencode", worktreePath, ...ids }),
+    body: JSON.stringify({ adapterId, worktreePath, ...ids }),
   });
   const sessionId = created?.sessionId;
   if (!sessionId) throw new Error("Kepler agent session start returned no sessionId");
@@ -621,7 +710,7 @@ export function runSessionCli({ toolName, moduleUrl, main }) {
  * `POST /terminal/start` may have created a terminal, the caller must never
  * fall back to `nohup` (that would double-launch the stage).
  *
- * @param {{ stage: string, spec: number|string, label: string, pointers: string, ids: TaskIds, worktreePath: string, apiBase: string, fetchImpl?: typeof fetch, sleepImpl?: (ms: number) => Promise<void> }} options
+ * @param {{ stage: string, spec: number|string, label: string, pointers: string, ids: TaskIds, worktreePath: string, apiBase: string, fetchImpl?: typeof fetch, sleepImpl?: (ms: number) => Promise<void>, env?: Object }} options
  */
 export async function launchInTerminal({
   stage,
@@ -633,6 +722,7 @@ export async function launchInTerminal({
   apiBase,
   fetchImpl = fetch,
   sleepImpl = sleep,
+  env = process.env,
 }) {
   const startTerminal = async () => {
     const started = await requestJson(fetchImpl, `${apiBase}/terminal/start`, {
@@ -647,7 +737,7 @@ export async function launchInTerminal({
 
   let terminalId = await startTerminal();
   const sentinel = stageSentinel(spec, stage);
-  const input = buildTerminalInput(stage, spec, pointers, worktreePath);
+  const input = buildTerminalInput(stage, spec, pointers, worktreePath, env);
   const postInput = () =>
     requestJson(fetchImpl, `${apiBase}/terminal/input`, {
       method: "POST",
@@ -686,8 +776,8 @@ export async function launchInTerminal({
  * The fallback path: the detached `nohup pi` launch, stdout/stderr in
  * /tmp/skillbook-<stage>-pi.log.
  */
-export function launchDetached({ stage, pointers, spawnImpl = spawn }) {
-  const command = buildPiCommand(stage, pointers);
+export function launchDetached({ stage, pointers, spawnImpl = spawn, env = process.env }) {
+  const command = buildPiCommand(stage, pointers, env);
   const log = `/tmp/skillbook-${stage}-pi.log`;
   const child = spawnImpl("sh", ["-c", `nohup ${command} > ${log} 2>&1 &`], {
     detached: true,
@@ -698,11 +788,11 @@ export function launchDetached({ stage, pointers, spawnImpl = spawn }) {
 }
 
 export async function launchStage({ stage, spec, pointers, flags, deps = {} }) {
-  const { fetchImpl = fetch, spawnImpl = spawn, worktreePath = process.cwd() } = deps;
-  stagePin(stage); // unknown stage is a hard error, before any launch path
+  const { fetchImpl = fetch, spawnImpl = spawn, worktreePath = process.cwd(), env = process.env } = deps;
+  stageKey(stage); // unknown stage is a hard error, before any launch path
   const label = stageLabel(spec, stage); // spec comes from the argument, never a label
 
-  const fallback = (error) => ({ ...launchDetached({ stage, pointers, spawnImpl }), reason: error.message });
+  const fallback = (error) => ({ ...launchDetached({ stage, pointers, spawnImpl, env }), reason: error.message });
 
   const reached = await reachApi({ apiBase: deps.apiBase, dataDir: deps.dataDir, fetchImpl, worktreePath, flags });
   if (!reached.ok) return fallback(reached.error);
@@ -719,6 +809,7 @@ export async function launchStage({ stage, spec, pointers, flags, deps = {} }) {
     apiBase,
     fetchImpl,
     sleepImpl: deps.sleepImpl,
+    env,
   });
   return { path: "api", ...launched };
 }

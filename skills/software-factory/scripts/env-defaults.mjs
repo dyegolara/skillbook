@@ -2,9 +2,10 @@
 /**
  * env-defaults.mjs — the software-factory chain's single source of pins.
  *
- * Plain ESM per ADR-0002, zero dependencies beyond Node. Nothing imports this
- * module yet (ticket #161): `STAGE_PINS` and `GRILL_PIN` stay as they are until
- * the wiring ticket lands.
+ * Plain ESM per ADR-0002, zero dependencies beyond Node. The launch helper
+ * (`launch-stage.mjs`) and the grill helper (`open-grill-session.mjs`) import
+ * it: every pin resolves from here plus `DEV_ENV_*`, and the literal
+ * `STAGE_PINS`/`GRILL_PIN` tables are gone (ticket #162).
  *
  * Every pin the chain resolves lives here: the defaults (today's pins, per
  * ticket #161 and ADR-0006), the allowed values, the provider→key-variable
