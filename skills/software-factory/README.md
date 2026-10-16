@@ -1,13 +1,16 @@
 # software-factory pack
 
 Four own chain skills that wrap the referenced Matt Pocock skill pack into one
-path from a rough idea to a ready PR. Every stage is a new session on its pinned
-agent and model; the chain pauses on the maintainer only for decision-forcing
+path from a rough idea to a ready PR. Every stage is a new session on its
+pinned agent and model — the pins are defaults, overridable per run (see
+Configuration); the chain pauses on the maintainer only for decision-forcing
 findings.
 
-Start with `grill-with-spec` and follow the map. The chain mechanism and the
-model pins are recorded in
-[`docs/adr/0006`](../../docs/adr/0006-chain-skills-cross-model-handoffs.md).
+Start with `grill-with-spec` and follow the map. The chain mechanism is
+recorded in
+[`docs/adr/0006`](../../docs/adr/0006-chain-skills-cross-model-handoffs.md);
+the pins and their defaults live in
+[`scripts/env-defaults.mjs`](scripts/env-defaults.mjs).
 
 ## Chain map
 
@@ -19,13 +22,19 @@ grill-with-spec ──► dev-flow ──► implement-spec ──► code-revie
                                                            └──► create-pr ──► ready PR
 ```
 
-| Stage | Skill | Harness | Model pin | Effort |
+| Stage | Skill | Harness | Model pin (default) | Effort (default) |
 |---|---|---|---|---|
 | Grill and spec | `grill-with-spec` | Kepler (interactive) | `opencode-go/glm-5.3` | max |
 | Tickets | `dev-flow` | pi (Kepler terminal) | `opencode-go/glm-5.3` | `--thinking max` |
 | Implement | `implement-spec` (referenced) | pi (Kepler terminal) | `opencode-go/deepseek-v4.1-flash` | `--thinking max` |
 | Review | `code-review-loop` | pi (Kepler terminal) | `opencode-go/mimo-v2.6-pro` | `--thinking high` |
 | PR | `create-pr` | pi (Kepler terminal) | `opencode-go/muse-spark-1.3-contributor` | `--thinking xhigh` |
+
+Each `Model pin`/`Effort` above is the stage's default from
+[`scripts/env-defaults.mjs`](scripts/env-defaults.mjs) — the pins are no
+longer fixed in code. `DEV_ENV_MODEL_<STAGE>` and `DEV_ENV_EFFORT_<STAGE>`
+retune one stage per run; `DEV_ENV_AGENT_<STAGE>` switches its agent.
+The harness column documents the default agent's runtime.
 
 Routes out of `code-review-loop`:
 
@@ -34,6 +43,31 @@ Routes out of `code-review-loop`:
 | Normal — the fix is obvious and derivable from the code, task or spec | `dev-flow` (fix tickets) |
 | Clean — nothing on either review axis | `create-pr` |
 | Decision-forcing — the fix is not obvious, or the decision is not in the code, task or spec, or it would change the project's commitments instead of satisfying them | `grill-with-spec` (re-entry), which pauses the chain on the maintainer |
+
+## Configuration
+
+Every pin resolves from the environment; unset variables fall back to the
+defaults in [`scripts/env-defaults.mjs`](scripts/env-defaults.mjs), so a bare
+environment runs the chain exactly as before. The repo root's
+[`.env.example`](../../.env.example) lists every variable with its default.
+
+The per-docker pattern is an opt-in pair: set `DEV_ENV_PROVIDER` and
+`DEV_ENV_API_KEY` together. With neither set — even when the ambient
+environment carries provider keys — the chain keeps the agent's ambient auth:
+no key is injected and no error fires. A set `DEV_ENV_PROVIDER` or
+`DEV_ENV_API_KEY` with no resolvable key is a hard error naming the provider
+and both variables. The shipped `.env.example` keeps the pair commented, so
+sourcing it as-is is safe.
+
+| Scope | Variables | Default |
+|---|---|---|
+| Per-docker account — the opt-in pair, set together; with neither set the chain keeps the agent's ambient auth | `DEV_ENV_PROVIDER`, `DEV_ENV_API_KEY` | `opencode-go`, empty |
+| Stage pins — retune one stage at a time | `DEV_ENV_MODEL_<STAGE>`, `DEV_ENV_EFFORT_<STAGE>`, `DEV_ENV_AGENT_<STAGE>` | the chain map above |
+| Provider-specific key variables — manual override only, their own provider first | `OPENROUTER_API_KEY`, `OPENCODE_GO_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, `ANTHROPIC_API_KEY` | unset |
+
+An off-list provider, effort or agent value is a hard error naming the
+variable and listing the allowed values. A provider-specific key variable
+wins over `DEV_ENV_API_KEY` only for its own provider.
 
 ## How context travels between stages
 

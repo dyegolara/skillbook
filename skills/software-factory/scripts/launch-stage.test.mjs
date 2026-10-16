@@ -11,7 +11,6 @@ import {
   RETRY_ATTEMPTS,
   RETRY_SLEEPS_SECONDS,
   SENTINEL_PREFIX,
-  STAGE_PINS,
   VERIFY_MAX_RELAUNCHES,
   VERIFY_POLL_INTERVAL_MS,
   VERIFY_TIMEOUT_MS,
@@ -22,6 +21,7 @@ import {
   chainCore,
   chainLabel,
   createLabeledSession,
+  envConfiguresAccounts,
   failureLines,
   isConnectionError,
   launchHelperPath,
@@ -31,67 +31,240 @@ import {
   reachApi,
   readKeplerApiBase,
   resolveIds,
+  resolveStageKey,
   runSessionHelper,
   sentinelSeen,
   shellQuote,
+  stageKey,
   stageLabel,
   stagePin,
   stageSentinel,
   stripAnsi,
   wakeHelperPath,
 } from "./launch-stage.mjs";
+import { AGENTS, AGENT_COMMANDS, DEFAULTS } from "./env-defaults.mjs";
+import { grillPin } from "./open-grill-session.mjs";
 
-// Independent source of truth: ADR-0006's pi-stage pins.
-const ADR_0006_PINS = {
-  "dev-flow": { provider: "opencode-go", model: "opencode-go/glm-5.3", thinking: "max" },
-  "implement-spec": { provider: "opencode-go", model: "opencode-go/deepseek-v4.1-flash", thinking: "max" },
-  "code-review-loop": { provider: "opencode-go", model: "opencode-go/mimo-v2.6-pro", thinking: "high" },
-  "create-pr": { provider: "opencode-go", model: "opencode-go/muse-spark-1.3-contributor", thinking: "xhigh" },
+// The env-defaults stage key for each launch stage. Every pin value in these
+// tests comes from the defaults module — the tests carry no pin literals.
+const STAGE_KEY_BY_NAME = {
+  "dev-flow": "DEV_FLOW",
+  "implement-spec": "IMPLEMENT_SPEC",
+  "code-review-loop": "CODE_REVIEW_LOOP",
+  "create-pr": "CREATE_PR",
 };
+const LAUNCH_STAGES = Object.keys(STAGE_KEY_BY_NAME);
+
+/** The stage's default pins in `stagePin`'s shape, read from the defaults module. */
+function defaultPin(stage) {
+  const pin = DEFAULTS.stages[STAGE_KEY_BY_NAME[stage]];
+  return { provider: DEFAULTS.provider, model: pin.model, thinking: pin.effort, agent: pin.agent };
+}
+
+/** Today's exact `pi` command shape, expressed from the defaults module's values. */
+function piCommand(stage, pointers) {
+  const pin = defaultPin(stage);
+  return `pi --print --provider ${pin.provider} --model ${pin.model} --thinking ${pin.thinking} ${shellQuote(pointers)}`;
+}
 
 // The worktree the wrapper tests resume from; the resume command cds into it.
 const WORKTREE_PATH = "/work/tree";
+
+/** Tests resolve pins hermetically: an explicit `{}` env, never the ambient one. */
+const NO_ENV = {};
 
 function resumeCommand(stage, spec, pointers) {
   return buildResumeCommand({ stage, spec, pointers, worktreePath: WORKTREE_PATH });
 }
 
-test("pins table carries the four ADR-0006 pi-stage pins", () => {
-  assert.deepEqual(STAGE_PINS, ADR_0006_PINS);
+// --- the pins: env-defaults plus DEV_ENV_* ---
+
+test("stageKey maps every launch stage to its env-defaults key and rejects the rest", () => {
+  for (const [stage, key] of Object.entries(STAGE_KEY_BY_NAME)) assert.equal(stageKey(stage), key);
+  assert.throws(() => stageKey("grill-with-spec"), /unknown stage/i);
+  assert.throws(() => stageKey("made-up"), /unknown stage/i);
 });
 
-test("stagePin returns the pin for a chain stage", () => {
-  assert.deepEqual(stagePin("code-review-loop"), ADR_0006_PINS["code-review-loop"]);
+test("the launch guard rejects the grill stage while the grill helper's grillPin still resolves it", () => {
+  // The regression: #162's guard validated against all of DEFAULTS.stages, so
+  // `grill` built a launch command instead of erroring. The launch helper's
+  // stage set is the four launch stages; GRILL belongs to grillPin.
+  assert.throws(
+    () => stageKey("grill"),
+    /unknown stage "grill" — expected one of dev-flow, implement-spec, code-review-loop, create-pr/
+  );
+  assert.throws(() => stageKey("GRILL"), /unknown stage/i);
+  assert.throws(() => stagePin("grill", NO_ENV), /unknown stage/i);
+  assert.throws(() => buildPiCommand("grill", "pointers", NO_ENV), /unknown stage/i);
+
+  // The split guard: the grill helper resolves GRILL through the same
+  // env-defaults tables, including the stage's model, effort and adapterId.
+  assert.deepEqual(grillPin(NO_ENV), {
+    model: DEFAULTS.stages.GRILL.model,
+    effort: DEFAULTS.stages.GRILL.effort,
+    adapterId: AGENT_COMMANDS[DEFAULTS.stages.GRILL.agent].adapterId,
+  });
 });
 
-test("an unknown stage is a hard error", () => {
-  assert.throws(() => stagePin("grill-with-spec"), /unknown stage/i);
-  assert.throws(() => stagePin("made-up"), /unknown stage/i);
+test("stagePin resolves each stage to the defaults module's pins with no DEV_ENV_* set", () => {
+  for (const stage of LAUNCH_STAGES) assert.deepEqual(stagePin(stage, NO_ENV), defaultPin(stage));
 });
+
+test("a set DEV_ENV_ wins for provider, model, effort and agent", () => {
+  assert.deepEqual(
+    stagePin("dev-flow", {
+      DEV_ENV_PROVIDER: "anthropic",
+      DEV_ENV_MODEL_DEV_FLOW: "anthropic/claude-opus-5",
+      DEV_ENV_EFFORT_DEV_FLOW: "high",
+      DEV_ENV_AGENT_DEV_FLOW: "claude-code",
+    }),
+    { provider: "anthropic", model: "anthropic/claude-opus-5", thinking: "high", agent: "claude-code" }
+  );
+});
+
+test("whitespace-only DEV_ENV_ values read as unset and the defaults apply", () => {
+  assert.deepEqual(
+    stagePin("dev-flow", {
+      DEV_ENV_PROVIDER: "  ",
+      DEV_ENV_MODEL_DEV_FLOW: "\t",
+      DEV_ENV_EFFORT_DEV_FLOW: " ",
+      DEV_ENV_AGENT_DEV_FLOW: "\n",
+    }),
+    defaultPin("dev-flow")
+  );
+});
+
+test("an off-list provider, effort or agent is a hard error naming the variable", () => {
+  assert.throws(() => buildPiCommand("dev-flow", "pointers", { DEV_ENV_PROVIDER: "wat" }), /DEV_ENV_PROVIDER/);
+  assert.throws(
+    () => buildPiCommand("dev-flow", "pointers", { DEV_ENV_EFFORT_DEV_FLOW: "turbo" }),
+    /DEV_ENV_EFFORT_DEV_FLOW/
+  );
+  assert.throws(
+    () => buildPiCommand("dev-flow", "pointers", { DEV_ENV_AGENT_DEV_FLOW: "gemini" }),
+    /DEV_ENV_AGENT_DEV_FLOW/
+  );
+});
+
+test("an unknown stage is a hard error before any environment is read", () => {
+  assert.throws(() => stagePin("grill-with-spec", { DEV_ENV_PROVIDER: "wat" }), /unknown stage/i);
+  assert.throws(() => buildPiCommand("made-up", "pointers", NO_ENV), /unknown stage/i);
+});
+
+// --- the command: built through the resolved agent's AGENT_COMMANDS row ---
 
 test("buildPiCommand pins provider, model, thinking and quotes the pointers", () => {
   assert.equal(
-    buildPiCommand(
-      "code-review-loop",
-      "Run the code-review-loop skill for spec #55: read skills/software-factory/code-review-loop/SKILL.md."
-    ),
-    "pi --print --provider opencode-go --model opencode-go/mimo-v2.6-pro --thinking high " +
-      "'Run the code-review-loop skill for spec #55: read skills/software-factory/code-review-loop/SKILL.md.'"
+    buildPiCommand("code-review-loop", "the maintainer's pointers", NO_ENV),
+    piCommand("code-review-loop", "the maintainer's pointers")
   );
 });
 
 test("pointers with an embedded single quote are shell-quoted safely", () => {
   assert.equal(shellQuote("it's #55"), "'it'\\''s #55'");
   assert.equal(
-    buildPiCommand("create-pr", "the maintainer's pointers"),
-    "pi --print --provider opencode-go --model opencode-go/muse-spark-1.3-contributor --thinking xhigh 'the maintainer'\\''s pointers'"
+    buildPiCommand("create-pr", "the maintainer's pointers", NO_ENV),
+    piCommand("create-pr", "the maintainer's pointers")
   );
+});
+
+test("a DEV_ENV_-set environment builds the command from the resolved pins through that agent's row", () => {
+  const env = {
+    DEV_ENV_PROVIDER: "anthropic",
+    DEV_ENV_MODEL_DEV_FLOW: "anthropic/claude-opus-5",
+    DEV_ENV_EFFORT_DEV_FLOW: "xhigh",
+    DEV_ENV_AGENT_DEV_FLOW: "claude-code",
+    ANTHROPIC_API_KEY: "sk-ant",
+  };
+  assert.equal(
+    buildPiCommand("dev-flow", "pointers", env),
+    "ANTHROPIC_API_KEY='sk-ant' claude -p --model anthropic/claude-opus-5 --effort xhigh 'pointers'"
+  );
+});
+
+test("every AGENT_COMMANDS row builds the stage command from its binary and args", () => {
+  for (const agent of AGENTS) {
+    const pin = defaultPin("dev-flow");
+    const argv = [
+      AGENT_COMMANDS[agent].binary,
+      ...AGENT_COMMANDS[agent].args({
+        provider: pin.provider,
+        model: pin.model,
+        effort: pin.thinking,
+        pointers: "pointers",
+      }),
+    ];
+    assert.equal(
+      buildPiCommand("dev-flow", "pointers", { DEV_ENV_AGENT_DEV_FLOW: agent }),
+      `${argv.slice(0, -1).join(" ")} 'pointers'`,
+      agent
+    );
+  }
+});
+
+test("the pointers travel as one shell-quoted argument for every agent row", () => {
+  const pointers = "read the report at /tmp/review report's path.md";
+  for (const agent of AGENTS) {
+    assert.ok(
+      buildPiCommand("dev-flow", pointers, { DEV_ENV_AGENT_DEV_FLOW: agent }).endsWith(shellQuote(pointers)),
+      agent
+    );
+  }
+});
+
+// --- the key: resolved paired with the provider, injected only when opted in ---
+
+test("no DEV_ENV_* set injects no key and raises no error — ambient provider keys included", () => {
+  assert.equal(envConfiguresAccounts({ OPENCODE_GO_API_KEY: "ambient", OPENAI_API_KEY: "ambient" }), false);
+  for (const stage of LAUNCH_STAGES) {
+    assert.equal(buildPiCommand(stage, "pointers", { OPENCODE_GO_API_KEY: "ambient" }), piCommand(stage, "pointers"));
+  }
+});
+
+test("the provider-specific key wins and travels as the provider's own variable", () => {
+  const env = { DEV_ENV_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "  sk-ant  ", DEV_ENV_API_KEY: "generic" };
+  assert.ok(buildPiCommand("dev-flow", "pointers", env).startsWith("ANTHROPIC_API_KEY='sk-ant' "));
+});
+
+test("DEV_ENV_API_KEY is the fallback and is injected as the resolved provider's variable", () => {
+  const env = { DEV_ENV_PROVIDER: "anthropic", DEV_ENV_API_KEY: "generic" };
+  assert.ok(buildPiCommand("dev-flow", "pointers", env).startsWith("ANTHROPIC_API_KEY='generic' "));
+});
+
+test("setting only DEV_ENV_API_KEY opts in and uses the default provider's variable", () => {
+  assert.ok(
+    buildPiCommand("dev-flow", "pointers", { DEV_ENV_API_KEY: "generic" }).startsWith("OPENCODE_GO_API_KEY='generic' ")
+  );
+});
+
+test("the opt-in without a resolvable key is the missing-key hard error", () => {
+  assert.throws(() => buildPiCommand("dev-flow", "pointers", { DEV_ENV_PROVIDER: "anthropic" }), /ANTHROPIC_API_KEY/);
+  assert.throws(() => buildPiCommand("dev-flow", "pointers", { DEV_ENV_PROVIDER: "anthropic" }), /DEV_ENV_API_KEY/);
+});
+
+test("an empty or whitespace-only DEV_ENV_API_KEY does not opt in", () => {
+  for (const raw of ["", "   "]) {
+    assert.equal(envConfiguresAccounts({ DEV_ENV_API_KEY: raw }), false);
+    assert.equal(buildPiCommand("dev-flow", "pointers", { DEV_ENV_API_KEY: raw }), piCommand("dev-flow", "pointers"));
+  }
+});
+
+test("a key with a single quote is shell-quoted safely", () => {
+  const key = "it's";
+  const command = buildPiCommand("dev-flow", "pointers", { DEV_ENV_PROVIDER: "anthropic", ANTHROPIC_API_KEY: key });
+  assert.ok(command.startsWith(`ANTHROPIC_API_KEY=${shellQuote(key)} `));
+});
+
+test("resolveStageKey returns null without the opt-in and the paired key with it", () => {
+  assert.equal(resolveStageKey("anthropic", NO_ENV), null);
+  assert.equal(resolveStageKey("anthropic", { DEV_ENV_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "k" }), "k");
+  assert.throws(() => resolveStageKey("anthropic", { DEV_ENV_PROVIDER: "anthropic" }), /ANTHROPIC_API_KEY/);
 });
 
 test("buildTerminalInput terminates the injected retry wrapper with a newline", () => {
   assert.equal(
-    buildTerminalInput("dev-flow", "55", "pointers", WORKTREE_PATH),
-    `${buildRetryWrapper("dev-flow", "55", "pointers", WORKTREE_PATH)}\n`
+    buildTerminalInput("dev-flow", "55", "pointers", WORKTREE_PATH, NO_ENV),
+    `${buildRetryWrapper("dev-flow", "55", "pointers", WORKTREE_PATH, NO_ENV)}\n`
   );
 });
 
@@ -103,7 +276,7 @@ test("chainCore builds the chain #<spec> <stage> core the sentinel and the FAILE
   assert.throws(() => chainCore("abc", "dev-flow"), { message: 'spec must be a number — got "abc"' });
   assert.ok(stageSentinel("55", "dev-flow").includes(chainCore("55", "dev-flow")));
   assert.ok(
-    buildRetryWrapper("dev-flow", "55", "pointers", WORKTREE_PATH).includes(
+    buildRetryWrapper("dev-flow", "55", "pointers", WORKTREE_PATH, NO_ENV).includes(
       `FAILED: ${chainCore("55", "dev-flow")} gave up after ${RETRY_ATTEMPTS} attempts`
     )
   );
@@ -122,13 +295,13 @@ test("stageSentinel is the documented CHAIN-STAGE-START line and guards the spec
 });
 
 test("the wrapper prints the sentinel as its first action, before attempt 1", () => {
-  const wrapper = buildRetryWrapper("dev-flow", "55", "pointers", WORKTREE_PATH);
+  const wrapper = buildRetryWrapper("dev-flow", "55", "pointers", WORKTREE_PATH, NO_ENV);
   assert.ok(wrapper.startsWith(`printf '%s\\n' ${shellQuote(stageSentinel("55", "dev-flow"))}; chain_attempt=1;`));
 });
 
 test("sentinelSeen counts only a standalone sentinel line, never the echoed injection", () => {
   const sentinel = stageSentinel("55", "dev-flow");
-  const echoed = `user@host:~/worktree$ ${buildTerminalInput("dev-flow", "55", "pointers", WORKTREE_PATH)}`;
+  const echoed = `user@host:~/worktree$ ${buildTerminalInput("dev-flow", "55", "pointers", WORKTREE_PATH, NO_ENV)}`;
   assert.equal(sentinelSeen(echoed, sentinel), false);
   assert.equal(sentinelSeen(`user@host:~/worktree$ \r\n${sentinel}\r\n`, sentinel), true);
   assert.equal(stripAnsi(`\u001b[32m${sentinel}\u001b[0m\r\n`), `${sentinel}\r\n`);
@@ -143,7 +316,7 @@ test("the verification constants are the recorded choices: 250 ms poll, 5000 ms 
 // --- the retry wrapper ---
 
 test("the retry wrapper attempts the command 5 times with doubling sleeps over a 10-minute window", () => {
-  const wrapper = buildRetryWrapper("dev-flow", "55", "pointers", WORKTREE_PATH);
+  const wrapper = buildRetryWrapper("dev-flow", "55", "pointers", WORKTREE_PATH, NO_ENV);
   assert.equal(RETRY_ATTEMPTS, 5);
   assert.deepEqual(RETRY_SLEEPS_SECONDS, [40, 80, 160, 320]);
   assert.equal(RETRY_SLEEPS_SECONDS.reduce((total, seconds) => total + seconds, 0), 600);
@@ -154,8 +327,8 @@ test("the retry wrapper attempts the command 5 times with doubling sleeps over a
 });
 
 test("the pinned command sits inside the wrapper unchanged", () => {
-  const wrapper = buildRetryWrapper("dev-flow", "55", "pointers", WORKTREE_PATH);
-  assert.ok(wrapper.includes(`do ${buildPiCommand("dev-flow", "pointers")}; chain_status=$?;`));
+  const wrapper = buildRetryWrapper("dev-flow", "55", "pointers", WORKTREE_PATH, NO_ENV);
+  assert.ok(wrapper.includes(`do ${buildPiCommand("dev-flow", "pointers", NO_ENV)}; chain_status=$?;`));
 });
 
 test("the resume command re-enters the protected launch route from the worktree", () => {
@@ -167,7 +340,7 @@ test("the resume command re-enters the protected launch route from the worktree"
 });
 
 test("the give-up marker names the spec, the stage and the launch-helper resume command on one line each", () => {
-  const wrapper = buildRetryWrapper("code-review-loop", "55", "pointers", WORKTREE_PATH);
+  const wrapper = buildRetryWrapper("code-review-loop", "55", "pointers", WORKTREE_PATH, NO_ENV);
   const resume = buildResumeCommand({
     stage: "code-review-loop",
     spec: "55",
@@ -179,7 +352,7 @@ test("the give-up marker names the spec, the stage and the launch-helper resume 
   assert.ok(
     !wrapper.includes(
       shellQuote(
-        "FAILED: resume with: pi --print --provider opencode-go --model opencode-go/mimo-v2.6-pro --thinking high 'pointers'"
+        `FAILED: resume with: ${piCommand("code-review-loop", "pointers")}`
       )
     ),
     "the resume line is the launch invocation, not the bare pinned command"
@@ -187,13 +360,13 @@ test("the give-up marker names the spec, the stage and the launch-helper resume 
 });
 
 test("the wrapper actuates the wake through the sibling helper's absolute path and the resume command", () => {
-  const wrapper = buildRetryWrapper("dev-flow", "55", "pointers", WORKTREE_PATH);
+  const wrapper = buildRetryWrapper("dev-flow", "55", "pointers", WORKTREE_PATH, NO_ENV);
   const wakePath = wakeHelperPath();
   assert.equal(wakePath, fileURLToPath(new URL("./open-wake-session.mjs", import.meta.url)));
   assert.ok(
     wrapper.includes(`node ${shellQuote(wakePath)} dev-flow 55 ${shellQuote(resumeCommand("dev-flow", "55", "pointers"))};`)
   );
-  assert.ok(!wrapper.includes(`node ${shellQuote(wakePath)} dev-flow 55 ${shellQuote(buildPiCommand("dev-flow", "pointers"))};`));
+  assert.ok(!wrapper.includes(`node ${shellQuote(wakePath)} dev-flow 55 ${shellQuote(buildPiCommand("dev-flow", "pointers", NO_ENV))};`));
 });
 
 test("each launching skill runs its helpers from an isolated installed folder", async () => {
@@ -206,7 +379,7 @@ test("each launching skill runs its helpers from an isolated installed folder", 
       const { fetchImpl, calls } = mockKeplerApi({ terminals: [] });
       await installedMain(
         ["dev-flow", "55", "pointers", "--repo-id", "r", "--worktree-id", "w", "--task-id", "t"],
-        { apiBase: "http://api.test", fetchImpl, worktreePath: "/work/tree", write: () => {} }
+        { env: NO_ENV, apiBase: "http://api.test", fetchImpl, worktreePath: "/work/tree", write: () => {} }
       );
       assert.equal(calls[0].body.worktreePath, "/work/tree");
       const wake = await import(pathToFileURL(join(folder, "scripts/open-wake-session.mjs")));
@@ -585,7 +758,7 @@ test("runSessionHelper creates through the route's step and emits the route's su
     label: "chain #55: grill-with-spec",
     prompt: "Re-enter the grill for spec #55.",
     flags: { repoId: "r", worktreeId: "w", taskId: "t" },
-    deps: { apiBase: "http://api.test", worktreePath: "/work/tree", write: (line) => lines.push(line) },
+    deps: { env: NO_ENV, apiBase: "http://api.test", worktreePath: "/work/tree", write: (line) => lines.push(line) },
     successLine: (created) => `open-grill-session: opened ${created.label} as Kepler session ${created.sessionId}`,
     fallbackLines: () => assert.fail("the fallback must not be emitted on the API path"),
     create: async (context) => {
@@ -615,6 +788,7 @@ test("runSessionHelper falls back on a connection-level failure before any sessi
     prompt: "WAKE NOTICE",
     fallbackExtra: { resumeCommand: "cd '/work/tree' && node launch-stage.mjs dev-flow 55 'pointers'" },
     deps: {
+      env: NO_ENV,
       apiBase: "http://127.0.0.1:1",
       fetchImpl: async () => {
         throw new Error("fetch failed: ECONNREFUSED");
@@ -648,7 +822,7 @@ test("runSessionHelper falls back when the route's create step fails before any 
     label: "chain #55: wake — dev-flow",
     prompt: "WAKE NOTICE",
     flags: { repoId: "r", worktreeId: "w", taskId: "t" },
-    deps: { apiBase: "http://api.test", worktreePath: "/work/tree", write: (line) => lines.push(line) },
+    deps: { env: NO_ENV, apiBase: "http://api.test", worktreePath: "/work/tree", write: (line) => lines.push(line) },
     successLine: () => assert.fail("the success line must not be emitted on the fallback path"),
     fallbackLines: (fellBack) => [`open-wake-session: ${fellBack.reason} — wake session not opened`],
     create: async () => {
@@ -671,7 +845,7 @@ test("runSessionHelper hard-errors on a non-connection create failure — never 
       label: "chain #55: grill-with-spec",
       prompt: "Re-enter the grill for spec #55.",
       flags: { repoId: "r", worktreeId: "w", taskId: "t" },
-      deps: { apiBase: "http://api.test", worktreePath: "/work/tree", write: (line) => lines.push(line) },
+      deps: { env: NO_ENV, apiBase: "http://api.test", worktreePath: "/work/tree", write: (line) => lines.push(line) },
       successLine: () => assert.fail("the success line must not be emitted"),
       fallbackLines: () => assert.fail("a reachable API failure never falls back"),
       create: async () => {
@@ -692,7 +866,7 @@ test("runSessionHelper never falls back once a session exists — the error carr
       label: "chain #55: grill-with-spec",
       prompt: "Re-enter the grill for spec #55.",
       flags: { repoId: "r", worktreeId: "w", taskId: "t" },
-      deps: { apiBase: "http://api.test", worktreePath: "/work/tree", write: (line) => lines.push(line) },
+      deps: { env: NO_ENV, apiBase: "http://api.test", worktreePath: "/work/tree", write: (line) => lines.push(line) },
       successLine: () => assert.fail("the success line must not be emitted"),
       fallbackLines: () => assert.fail("a failure after creation never falls back"),
       create: async () => {
@@ -738,6 +912,7 @@ test("the spec argument builds the label — never the anchor terminal's label",
   const lines = [];
 
   const result = await main(["code-review-loop", "77", "the maintainer's pointers"], {
+    env: NO_ENV,
     apiBase: "http://api.test",
     fetchImpl,
     worktreePath,
@@ -763,8 +938,46 @@ test("the spec argument builds the label — never the anchor terminal's label",
   assert.equal(input.url, "http://api.test/terminal/input");
   assert.deepEqual(input.body, {
     terminalId: "term-new",
-    input: buildTerminalInput("code-review-loop", "77", "the maintainer's pointers", worktreePath),
+    input: buildTerminalInput("code-review-loop", "77", "the maintainer's pointers", worktreePath, NO_ENV),
   });
+});
+
+test("the resolved key travels in the launched input paired with the provider — and never in the resume command", async () => {
+  const worktreePath = "/work/tree";
+  const terminals = [{ worktreePath, label: "Terminal 1", repoId: "r", worktreeId: "w", taskId: "t" }];
+  const { fetchImpl, calls } = mockKeplerApi({ terminals });
+  const env = {
+    DEV_ENV_PROVIDER: "anthropic",
+    DEV_ENV_MODEL_DEV_FLOW: "anthropic/opus",
+    DEV_ENV_EFFORT_DEV_FLOW: "high",
+    DEV_ENV_AGENT_DEV_FLOW: "claude-code",
+    ANTHROPIC_API_KEY: "sk-ant",
+  };
+
+  const result = await main(["dev-flow", "55", "pointers"], {
+    env,
+    apiBase: "http://api.test",
+    fetchImpl,
+    worktreePath,
+    write: () => {},
+  });
+
+  assert.equal(result.path, "api");
+  const input = calls.find((call) => call.url.endsWith("/terminal/input")).body.input;
+  assert.ok(
+    input.includes("ANTHROPIC_API_KEY='sk-ant' claude -p --model anthropic/opus --effort high 'pointers'"),
+    "the resolved key rides the resolved provider's command"
+  );
+  const resume = buildResumeCommand({ stage: "dev-flow", spec: "55", pointers: "pointers", worktreePath });
+  assert.ok(
+    input.includes(shellQuote(`FAILED: resume with: ${resume}`)),
+    "the resume command re-enters the launch helper"
+  );
+  assert.equal(
+    input.split("ANTHROPIC_API_KEY='sk-ant'").length - 1,
+    1,
+    "the key appears once, on the launched command only"
+  );
 });
 
 test("the API path prefers the chain-labeled terminal on the worktree", async () => {
@@ -790,6 +1003,7 @@ test("the API path prefers the chain-labeled terminal on the worktree", async ()
   const lines = [];
 
   const result = await main(["create-pr", "55", "pointers"], {
+    env: NO_ENV,
     apiBase: "http://api.test",
     fetchImpl,
     worktreePath,
@@ -816,6 +1030,7 @@ test("a reachable API with a non-chain terminal on the worktree uses it as the a
   const lines = [];
 
   const result = await main(["create-pr", "55", "pointers"], {
+    env: NO_ENV,
     apiBase: "http://api.test",
     fetchImpl,
     worktreePath: "/work/tree",
@@ -838,6 +1053,7 @@ test("a reachable API with no anchor and no flags is a hard error — no fallbac
 
   await assert.rejects(
     main(["create-pr", "55", "pointers"], {
+      env: NO_ENV,
       apiBase: "http://api.test",
       fetchImpl,
       worktreePath: "/work/tree",
@@ -863,7 +1079,7 @@ test("explicit id flags bootstrap a fresh run with no anchor and no list call", 
 
   const result = await main(
     ["dev-flow", "55", "pointers", "--repo-id", "r", "--worktree-id", "w", "--task-id", "t"],
-    { apiBase: "http://api.test", fetchImpl, worktreePath: '/work/a "quoted"\\tree', write: (line) => lines.push(line) }
+    { env: NO_ENV, apiBase: "http://api.test", fetchImpl, worktreePath: '/work/a "quoted"\\tree', write: (line) => lines.push(line) }
   );
 
   assert.equal(result.path, "api");
@@ -886,6 +1102,7 @@ test("a partial id set is a hard usage error before any fetch or spawn", async (
 
   await assert.rejects(
     main(["dev-flow", "55", "pointers", "--repo-id", "r"], {
+      env: NO_ENV,
       apiBase: "http://api.test",
       fetchImpl: async () => {
         fetched = true;
@@ -905,6 +1122,7 @@ test("an unknown stage fails hard before any launch path is taken", async () => 
   const { spawnImpl, calls: spawnCalls } = spawnRecorder();
   await assert.rejects(
     main(["grill-with-spec", "55", "pointers"], {
+      env: NO_ENV,
       apiBase: "http://127.0.0.1:1",
       fetchImpl: async () => {
         fetched = true;
@@ -919,11 +1137,32 @@ test("an unknown stage fails hard before any launch path is taken", async () => 
   assert.equal(spawnCalls.length, 0);
 });
 
+test("the grill stage is not a launch stage and fails hard before any launch path is taken", async () => {
+  let fetched = false;
+  const { spawnImpl, calls: spawnCalls } = spawnRecorder();
+  await assert.rejects(
+    main(["grill", "55", "pointers"], {
+      env: NO_ENV,
+      apiBase: "http://127.0.0.1:1",
+      fetchImpl: async () => {
+        fetched = true;
+        throw new Error("fetch failed");
+      },
+      spawnImpl,
+      write: () => {},
+    }),
+    /unknown stage "grill" — expected one of dev-flow, implement-spec, code-review-loop, create-pr/
+  );
+  assert.equal(fetched, false);
+  assert.equal(spawnCalls.length, 0);
+});
+
 test("an invalid spec argument fails hard before any launch path is taken", async () => {
   let fetched = false;
   const { spawnImpl, calls: spawnCalls } = spawnRecorder();
   await assert.rejects(
     main(["dev-flow", "spec-55", "pointers"], {
+      env: NO_ENV,
       apiBase: "http://api.test",
       fetchImpl: async () => {
         fetched = true;
@@ -950,6 +1189,7 @@ test("a connection-level fetch rejection falls back to nohup and preserves error
   const lines = [];
 
   const result = await main(["dev-flow", "55", "pointers"], {
+    env: NO_ENV,
     apiBase: "http://127.0.0.1:1",
     fetchImpl: async () => {
       throw new Error("fetch failed: ECONNREFUSED");
@@ -966,7 +1206,7 @@ test("a connection-level fetch rejection falls back to nohup and preserves error
   const [command, args, options] = spawnCalls[0];
   assert.equal(command, "sh");
   assert.equal(args[0], "-c");
-  assert.equal(args[1], `nohup ${buildPiCommand("dev-flow", "pointers")} > /tmp/skillbook-dev-flow-pi.log 2>&1 &`);
+  assert.equal(args[1], `nohup ${buildPiCommand("dev-flow", "pointers", NO_ENV)} > /tmp/skillbook-dev-flow-pi.log 2>&1 &`);
   assert.equal(options.detached, true);
 });
 
@@ -996,6 +1236,7 @@ test("an HTTP error from a reachable API is a hard error with zero spawns", asyn
 
   await assert.rejects(
     main(["dev-flow", "55", "pointers"], {
+      env: NO_ENV,
       apiBase: "http://api.test",
       fetchImpl,
       spawnImpl,
@@ -1015,6 +1256,7 @@ test("an HTTP error from terminal/start is a hard error with zero spawns", async
 
   await assert.rejects(
     main(["dev-flow", "55", "pointers"], {
+      env: NO_ENV,
       apiBase: "http://api.test",
       fetchImpl,
       spawnImpl,
@@ -1033,6 +1275,7 @@ test("a malformed terminal list response is a hard error with zero spawns", asyn
 
   await assert.rejects(
     main(["dev-flow", "55", "pointers"], {
+      env: NO_ENV,
       apiBase: "http://api.test",
       fetchImpl,
       spawnImpl,
@@ -1052,6 +1295,7 @@ test("a failure after terminal/start succeeded is a hard error with zero spawns 
 
   await assert.rejects(
     main(["dev-flow", "55", "pointers"], {
+      env: NO_ENV,
       apiBase: "http://api.test",
       fetchImpl,
       worktreePath,
@@ -1078,6 +1322,7 @@ test("a connection-level failure on terminal/input after start is still a hard e
 
   await assert.rejects(
     main(["dev-flow", "55", "pointers"], {
+      env: NO_ENV,
       apiBase: "http://api.test",
       fetchImpl,
       worktreePath,
@@ -1096,6 +1341,7 @@ const VERIFY_TERMINAL = { worktreePath: "/work/tree", label: "Terminal 1", repoI
 /** The `main` deps for the helper's post-injection check tests: instant polls, no real waiting. */
 function verifyDeps({ fetchImpl, spawnImpl } = {}) {
   return {
+    env: NO_ENV,
     apiBase: "http://api.test",
     fetchImpl,
     worktreePath: "/work/tree",
@@ -1317,7 +1563,7 @@ function stubEnvironment({ failTimes = 0, wakeStatus = 0 } = {}) {
 }
 
 function runWrapper(stage, spec, pointers, env) {
-  return spawnSync("bash", ["-c", buildRetryWrapper(stage, spec, pointers, WORKTREE_PATH)], { encoding: "utf8", env });
+  return spawnSync("bash", ["-c", buildRetryWrapper(stage, spec, pointers, WORKTREE_PATH, NO_ENV)], { encoding: "utf8", env });
 }
 
 test("after 5 failed attempts the wrapper prints the marker and actuates the wake", () => {

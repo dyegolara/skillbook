@@ -160,6 +160,12 @@ context is not independent.
   - implement-spec — `opencode-go/deepseek-v4.1-flash` (`--thinking max`)
   - code-review-loop — `opencode-go/mimo-v2.6-pro` (`--thinking high` — the model's cap: `max` clamps to it)
   - create-pr — `opencode-go/muse-spark-1.3-contributor` (`--thinking xhigh`, provider cap)
+  Amended 2026-10-16, spec #160: this list is the default table now recorded
+  in `skills/software-factory/scripts/env-defaults.mjs` (each `SKILL.md`
+  frontmatter documents the same default, and the verifier compares them);
+  `DEV_ENV_MODEL_<STAGE>`, `DEV_ENV_EFFORT_<STAGE>` and
+  `DEV_ENV_AGENT_<STAGE>` override model, effort and agent per stage, so the
+  effort is no longer fixed at the model's cap.
 - Every spawned `pi` command — the stage launch and each sub-agent —
   carries an explicit `--provider`, `--model` and `--thinking`; never rely
   on pi's ambient default (the kimi-k3 incident: three un-pinned spawns
@@ -244,7 +250,16 @@ context is not independent.
   code-review-loop/SKILL.md §4 and GLOSSARY.md).
 - Pins are hardcoded in v1 — a deliberate opencode+kepler-specific exception
   to the book's model-agnostic stance; remote/dynamic pin configuration is
-  deferred to #54.
+  deferred to #54. Amended 2026-10-16, spec #160 (which closes #54): the pins
+  stop being fixed. Every pin resolves from the `DEV_ENV_*` environment
+  variables with defaults equal to the v1 pins in the single in-code file
+  `skills/software-factory/scripts/env-defaults.mjs`; the v1 fixed-pins
+  wording is superseded. An unset environment behaves exactly as v1. The
+  per-docker pattern sets `DEV_ENV_PROVIDER` plus `DEV_ENV_API_KEY` with the
+  docker's own account; the provider-specific key variables are a manual
+  override only. The helpers and the verifier resolve against the one file,
+  never against literals, and the operator docs are the repo root's
+  `.env.example` plus the pack README.
 - `GLOSSARY.md` replaces `CONTEXT.md`, adopting the referenced pack's glossary
   convention; ADRs keep living in `docs/adr/`.
 

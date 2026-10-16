@@ -4,11 +4,13 @@ import { readFileSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildWakePrompt, main, wakeLabel } from "./open-wake-session.mjs";
+import { DEFAULTS } from "./env-defaults.mjs";
 import { failureLines } from "./launch-stage.mjs";
 
-// A realistic pinned resume command: the code-review-loop pin from ADR-0006.
-const RESUME_COMMAND =
-  "pi --print --provider opencode-go --model opencode-go/mimo-v2.6-pro --thinking high 'Re-run the code-review-loop stage for spec #55: read the review report at /r/review.md.'";
+// A realistic pinned resume command, expressed from the defaults module (the
+// code-review-loop stage's resolved pin) — no pin literals.
+const CODE_REVIEW_PIN = DEFAULTS.stages.CODE_REVIEW_LOOP;
+const RESUME_COMMAND = `pi --print --provider ${DEFAULTS.provider} --model ${CODE_REVIEW_PIN.model} --thinking ${CODE_REVIEW_PIN.effort} 'Re-run the code-review-loop stage for spec #55: read the review report at /r/review.md.'`;
 
 test("the wake label names the spec and the failed stage", () => {
   assert.equal(wakeLabel("55", "code-review-loop"), "chain #55: wake — code-review-loop");
@@ -39,7 +41,8 @@ test("the wake-session helper delegates to the shared runSessionHelper and pins 
   assert.match(source, /\bcreateLabeledSession\b/); // the route's create step
   assert.match(source, /\bbuildWakePrompt\b/);
   assert.match(source, /\bbuildWakeFallbackLines\b/);
-  assert.match(source, /\bstagePin\b/); // the stage guard, not a pin step
+  assert.match(source, /\bstageKey\b/); // the stage guard, not a pin step
+  assert.doesNotMatch(source, /\benv-defaults\b/); // the wake resolves no pins at all
   assert.doesNotMatch(source, /\bsession-config-option\b/); // the wake pins nothing, by decision
   assert.doesNotMatch(source, /\breachApi\b/); // the shared shell owns the reach step now
   assert.doesNotMatch(source, /\bisConnectionError\b/); // and the never-fallback guard
@@ -89,19 +92,21 @@ test("the full flow creates, renames, and sends the wake prompt verbatim", async
   ]);
 });
 
-test("an unknown stage is a hard error before any fetch", async () => {
-  let fetched = false;
-  await assert.rejects(
-    main(["grill-with-spec", "55", RESUME_COMMAND], {
-      apiBase: "http://api.test",
-      fetchImpl: async () => {
-        fetched = true;
-      },
-      write: () => {},
-    }),
-    /unknown stage/i
-  );
-  assert.equal(fetched, false);
+test("an unknown stage — including the grill stage — is a hard error before any fetch", async () => {
+  for (const stage of ["grill-with-spec", "grill"]) {
+    let fetched = false;
+    await assert.rejects(
+      main([stage, "55", RESUME_COMMAND], {
+        apiBase: "http://api.test",
+        fetchImpl: async () => {
+          fetched = true;
+        },
+        write: () => {},
+      }),
+      /unknown stage/i
+    );
+    assert.equal(fetched, false);
+  }
 });
 
 test("an invalid spec argument is a hard error before any fetch", async () => {

@@ -3,28 +3,58 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { GRILL_PIN, buildPauseLines, main } from "./open-grill-session.mjs";
+import { AGENT_COMMANDS, DEFAULTS } from "./env-defaults.mjs";
+import { buildPauseLines, grillPin, main } from "./open-grill-session.mjs";
 import { failureLines } from "./launch-stage.mjs";
 
-// Independent source of truth: grill-with-spec/SKILL.md frontmatter and ADR-0006's grill pin.
-const RECORDED_GRILL_PIN = { model: "opencode-go/glm-5.3", effort: "max" };
+// The grill's default pin, read from the defaults module — no pin literals.
+const GRILL_DEFAULTS = DEFAULTS.stages.GRILL;
+const RECORDED_GRILL_PIN = {
+  model: GRILL_DEFAULTS.model,
+  effort: GRILL_DEFAULTS.effort,
+  adapterId: AGENT_COMMANDS[GRILL_DEFAULTS.agent].adapterId,
+};
+// Tests resolve pins hermetically: an explicit `{}` env, never the ambient one.
+const NO_ENV = {};
 const RE_ENTRY_PROMPT =
   "Re-enter the grill for spec #55: read skills/software-factory/grill-with-spec/SKILL.md and the review report at /r/review.md.";
 
-test("the grill pin matches the recorded grill-with-spec pin", () => {
-  assert.deepEqual(GRILL_PIN, RECORDED_GRILL_PIN);
+test("grillPin resolves the recorded default with no DEV_ENV_* set", () => {
+  assert.deepEqual(grillPin(NO_ENV), RECORDED_GRILL_PIN);
 });
 
-test("the grill-session helper delegates to the shared runSessionHelper and keeps its own pin step", () => {
+test("grillPin reads the grill stage's DEV_ENV_ overrides, whitespace falling back", () => {
+  assert.deepEqual(
+    grillPin({
+      DEV_ENV_MODEL_GRILL: "anthropic/claude-opus-5",
+      DEV_ENV_EFFORT_GRILL: "high",
+      DEV_ENV_AGENT_GRILL: "codex",
+    }),
+    { model: "anthropic/claude-opus-5", effort: "high", adapterId: AGENT_COMMANDS.codex.adapterId }
+  );
+  assert.deepEqual(
+    grillPin({ DEV_ENV_MODEL_GRILL: "  ", DEV_ENV_EFFORT_GRILL: "\t", DEV_ENV_AGENT_GRILL: " " }),
+    RECORDED_GRILL_PIN
+  );
+});
+
+test("grillPin rejects an off-list effort or agent with the variable's name", () => {
+  assert.throws(() => grillPin({ DEV_ENV_EFFORT_GRILL: "turbo" }), /DEV_ENV_EFFORT_GRILL/);
+  assert.throws(() => grillPin({ DEV_ENV_AGENT_GRILL: "gemini" }), /DEV_ENV_AGENT_GRILL/);
+});
+
+test("the grill-session helper delegates to the shared runSessionHelper and resolves its pins from env-defaults", () => {
   const source = readFileSync(new URL("./open-grill-session.mjs", import.meta.url), "utf8");
   assert.match(source, /from\s+"\.\/launch-stage\.mjs"/);
+  assert.match(source, /from\s+"\.\/env-defaults\.mjs"/);
   assert.match(source, /\bparseIdFlags\b/);
   assert.match(source, /\brunSessionHelper\b/); // the one shared route shell
   assert.match(source, /\brunSessionCli\b/); // the one shared CLI boot
   assert.match(source, /\bcreateLabeledSession\b/); // the route's create step
-  assert.match(source, /\bGRILL_PIN\b/);
+  assert.match(source, /\bgrillPin\b/); // the resolved pin, not a literal table
   assert.match(source, /\bbeforeSend\b/); // the grill's route-specific pin step
   assert.match(source, /\bbuildPauseLines\b/);
+  assert.doesNotMatch(source, /\bGRILL_PIN\b/);
   assert.doesNotMatch(source, /\breachApi\b/); // the shared shell owns the reach step now
   assert.doesNotMatch(source, /\bisConnectionError\b/); // and the never-fallback guard
   assert.doesNotMatch(source, /\bresolveIds\b/);
@@ -37,7 +67,7 @@ test("the full flow creates, renames, pins model and effort, and sends the promp
 
   const result = await main(
     ["55", RE_ENTRY_PROMPT, "--repo-id", "r", "--worktree-id", "w", "--task-id", "t"],
-    { apiBase: "http://api.test", fetchImpl, worktreePath: "/work/tree", write: (line) => lines.push(line) }
+    { env: NO_ENV, apiBase: "http://api.test", fetchImpl, worktreePath: "/work/tree", write: (line) => lines.push(line) }
   );
 
   assert.equal(result.path, "api");
@@ -50,7 +80,7 @@ test("the full flow creates, renames, pins model and effort, and sends the promp
       url: "http://api.test/agent/sessions",
       method: "POST",
       body: {
-        adapterId: "opencode",
+        adapterId: RECORDED_GRILL_PIN.adapterId,
         worktreePath: "/work/tree",
         repoId: "r",
         worktreeId: "w",
@@ -80,6 +110,32 @@ test("the full flow creates, renames, pins model and effort, and sends the promp
   ]);
 });
 
+test("a DEV_ENV_-set environment creates the session with the resolved adapterId and config options", async () => {
+  const env = {
+    DEV_ENV_MODEL_GRILL: "anthropic/claude-opus-5",
+    DEV_ENV_EFFORT_GRILL: "high",
+    DEV_ENV_AGENT_GRILL: "codex",
+  };
+  const { fetchImpl, calls } = mockAgentApi({ sessionId: "sess-env" });
+
+  await main(["55", RE_ENTRY_PROMPT, "--repo-id", "r", "--worktree-id", "w", "--task-id", "t"], {
+    env,
+    apiBase: "http://api.test",
+    fetchImpl,
+    write: () => {},
+  });
+
+  const create = calls.find((call) => call.url.endsWith("/agent/sessions"));
+  assert.equal(create.body.adapterId, AGENT_COMMANDS.codex.adapterId);
+  const configs = calls
+    .filter((call) => call.url.endsWith("/agent/session-config-option"))
+    .map((call) => call.body);
+  assert.deepEqual(configs, [
+    { sessionId: "sess-env", configId: "model", value: "anthropic/claude-opus-5" },
+    { sessionId: "sess-env", configId: "effort", value: "high" },
+  ]);
+});
+
 test("with no id flags the create body reuses the chain-labeled anchor terminal's ids", async () => {
   const worktreePath = "/work/tree";
   const terminals = [
@@ -95,6 +151,7 @@ test("with no id flags the create body reuses the chain-labeled anchor terminal'
   const { fetchImpl, calls } = mockAgentApi({ terminals, sessionId: "sess-anchor" });
 
   const result = await main(["55", RE_ENTRY_PROMPT], {
+    env: NO_ENV,
     apiBase: "http://api.test",
     fetchImpl,
     worktreePath,
@@ -106,7 +163,7 @@ test("with no id flags the create body reuses the chain-labeled anchor terminal'
   assert.equal(calls[0].method, "GET");
   const create = calls.find((call) => call.url.endsWith("/agent/sessions"));
   assert.deepEqual(create.body, {
-    adapterId: "opencode",
+    adapterId: RECORDED_GRILL_PIN.adapterId,
     worktreePath,
     repoId: "repo-chain",
     worktreeId: "worktree-chain",
@@ -124,6 +181,7 @@ test("explicit id flags bootstrap a fresh run with no terminal/list call", async
   });
 
   await main(["55", RE_ENTRY_PROMPT, "--repo-id", "r", "--worktree-id", "w", "--task-id", "t"], {
+    env: NO_ENV,
     apiBase: "http://api.test",
     fetchImpl,
     write: () => {},
@@ -145,6 +203,7 @@ test("a partial id set is a hard usage error before any fetch", async () => {
   let fetched = false;
   await assert.rejects(
     main(["55", RE_ENTRY_PROMPT, "--repo-id", "r"], {
+      env: NO_ENV,
       apiBase: "http://api.test",
       fetchImpl: async () => {
         fetched = true;
@@ -160,6 +219,7 @@ test("an invalid spec argument is a hard error before any fetch", async () => {
   let fetched = false;
   await assert.rejects(
     main(["spec-55", RE_ENTRY_PROMPT], {
+      env: NO_ENV,
       apiBase: "http://api.test",
       fetchImpl: async () => {
         fetched = true;
@@ -198,6 +258,7 @@ test("a connection-level failure resolving ids falls back to the pause and prese
   });
 
   const result = await main(["55", RE_ENTRY_PROMPT], {
+    env: NO_ENV,
     apiBase: "http://127.0.0.1:1",
     fetchImpl,
     worktreePath: "/work/tree",
@@ -229,6 +290,7 @@ test("a connection-level failure creating the session falls back to the pause wi
   });
 
   const result = await main(["55", RE_ENTRY_PROMPT, "--repo-id", "r", "--worktree-id", "w", "--task-id", "t"], {
+    env: NO_ENV,
     apiBase: "http://api.test",
     fetchImpl,
     write: (line) => lines.push(line),
@@ -270,6 +332,7 @@ test("an HTTP error creating the session is a hard error — no pause fallback",
 
   await assert.rejects(
     main(["55", RE_ENTRY_PROMPT, "--repo-id", "r", "--worktree-id", "w", "--task-id", "t"], {
+      env: NO_ENV,
       apiBase: "http://api.test",
       fetchImpl,
       write: (line) => lines.push(line),
@@ -286,6 +349,7 @@ test("a malformed create response is a hard error — no pause fallback", async 
 
   await assert.rejects(
     main(["55", RE_ENTRY_PROMPT, "--repo-id", "r", "--worktree-id", "w", "--task-id", "t"], {
+      env: NO_ENV,
       apiBase: "http://api.test",
       fetchImpl,
       write: () => {},
@@ -298,6 +362,7 @@ test("a create response without a sessionId is a hard error", async () => {
 
   await assert.rejects(
     main(["55", RE_ENTRY_PROMPT, "--repo-id", "r", "--worktree-id", "w", "--task-id", "t"], {
+      env: NO_ENV,
       apiBase: "http://api.test",
       fetchImpl,
       write: () => {},
@@ -315,6 +380,7 @@ test("a failure after the session exists is a hard error carrying the session id
 
   await assert.rejects(
     main(["55", RE_ENTRY_PROMPT, "--repo-id", "r", "--worktree-id", "w", "--task-id", "t"], {
+      env: NO_ENV,
       apiBase: "http://api.test",
       fetchImpl,
       write: (line) => lines.push(line),
@@ -345,6 +411,7 @@ test("a connection-level failure after the session exists is still a hard error 
 
   await assert.rejects(
     main(["55", RE_ENTRY_PROMPT, "--repo-id", "r", "--worktree-id", "w", "--task-id", "t"], {
+      env: NO_ENV,
       apiBase: "http://api.test",
       fetchImpl,
       write: (line) => lines.push(line),
