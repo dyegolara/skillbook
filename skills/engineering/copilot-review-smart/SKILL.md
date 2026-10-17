@@ -147,8 +147,8 @@ Lifecycle:
 5. A Flow closes at `notify_ready` (All-clear) or when the PR is closed or
    merged; `needs-human` keeps its weekly retry. When no open PR is left to
    watch, the Listener exits (`--keep-alive` keeps it up under a supervisor).
-   Pending Expectations and Hook ids persist in the Listener state file and
-   survive restarts.
+   Pending Expectations, confirmed PR-closure evidence and Hook ids persist in
+   the Listener state file and survive restarts.
 
 Events subscribed (all filtered by watched repo): `pull_request` `opened` /
 `synchronize` / `reopened` / `ready_for_review` / `converted_to_draft` /

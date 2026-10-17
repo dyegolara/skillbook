@@ -370,6 +370,65 @@ test("GET /flows returns one row per watched PR in the glossary's Stage words", 
   }
 });
 
+test("closed Flow evidence clears stale schedules in list, detail and timeline routes", async () => {
+  const state = defaultTickState();
+  state["acme/widgets#20"] = {
+    last_head_sha: "sha-20",
+    next_check_at: new Date(NOW + HOUR).toISOString(),
+    tick_history: [record(NOW - HOUR, "wait", "still open")],
+  };
+  state["acme/widgets#21"] = {
+    last_head_sha: "sha-21",
+    next_check_at: new Date(NOW + HOUR).toISOString(),
+    tick_history: [record(NOW - HOUR, "closed", "PR is no longer open", "done")],
+  };
+  const listenerState = defaultListenerState();
+  listenerState.expectations["acme/widgets#20"] = {
+    repo: "acme/widgets",
+    num: 20,
+    deadline_ms: NOW - HOUR,
+    origin: "tick_report",
+    backoff_index: 0,
+  };
+  listenerState.closed_flows = {
+    "acme/widgets#20": {
+      closed_at: new Date(NOW - 30 * 60_000).toISOString(),
+      reason: "PR acme/widgets#20 closed or merged",
+    },
+  };
+  const fixture = new Fixture({ state, listenerState });
+  await fixture.start();
+  try {
+    const { body: timeline } = await fixture.get("/timeline");
+    assert.ok(!timeline.scheduled.some((tick) => tick.key === "acme/widgets#20"));
+    assert.ok(!timeline.scheduled.some((tick) => tick.key === "acme/widgets#21"));
+
+    const { body: rows } = await fixture.get("/flows");
+    for (const num of [20, 21]) {
+      const row = rows.find((flow) => flow.key === `acme/widgets#${num}`);
+      assert.equal(row.action, "closed");
+      assert.equal(row.next_check_at, null);
+      assert.equal(row.terminal, null);
+    }
+    assert.equal(rows.find((flow) => flow.key === "acme/widgets#20").reason, "PR acme/widgets#20 closed or merged");
+    const { status, body: detail } = await fixture.get("/flows/acme/widgets/20");
+    assert.equal(status, 200);
+    assert.equal(detail.done, true);
+    assert.equal(detail.next_check_at, null);
+    assert.equal(detail.expectation, null);
+    assert.deepEqual(statusesOf(detail), {
+      collect: "past",
+      check: "past",
+      reuse: "next",
+      decide: "next",
+      act: "next",
+      schedule: "past",
+    });
+  } finally {
+    await fixture.stop();
+  }
+});
+
 test("a needs-human Flow keeps its glossary outcome and is not done", async () => {
   const state = defaultTickState();
   state["acme/widgets#12"] = {

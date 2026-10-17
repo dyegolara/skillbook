@@ -41,6 +41,9 @@ export function flowKeys(tickState, listenerState) {
   for (const key of Object.keys(listenerState?.expectations || {})) {
     if (parseFlowKey(key)) keys.add(key);
   }
+  for (const key of Object.keys(listenerState?.closed_flows || {})) {
+    if (parseFlowKey(key)) keys.add(key);
+  }
   return [...keys].sort();
 }
 
@@ -98,6 +101,7 @@ export function projectTimeline({ tickState, listenerState, nowMs, isAliveFn }) 
   const scheduled = [];
   const armed = new Set();
   for (const [key, expectation] of Object.entries(listenerState?.expectations || {})) {
+    if (isFlowClosed(key, tickState, listenerState)) continue;
     const flow = parseFlowKey(key);
     if (!flow) continue;
     const deadlineMs = Number(expectation?.deadline_ms);
@@ -117,6 +121,7 @@ export function projectTimeline({ tickState, listenerState, nowMs, isAliveFn }) 
   for (const key of Object.keys(tickState || {})) {
     const flow = parseFlowKey(key);
     if (!flow || armed.has(key)) continue;
+    if (isFlowClosed(key, tickState, listenerState)) continue;
     const nextCheckAt = tickState[key]?.next_check_at;
     if (!nextCheckAt) continue;
     const deadlineMs = Date.parse(nextCheckAt);
@@ -178,11 +183,13 @@ function reachedStages(record) {
   return reached;
 }
 
-function stageOutcome(stage, { last, action, reason, decisionSource, allClear, deadlineIso }) {
+function stageOutcome(stage, { last, action, reason, decisionSource, allClear, closed, closure, deadlineIso }) {
   switch (stage) {
     case "collect":
+      if (closed) return "PR closure recorded";
       return isPrStateFetchFailureReason(reason) ? "PR state collection failed" : "PR state collected";
     case "check":
+      if (closed) return closure?.reason || reason || "PR is closed";
       if (action === "skip_wip") return "draft/WIP — skipped";
       if (action === "request_rebase") return "merge conflicts — conflict-resolution policy";
       if (isGateWaitReason(reason)) return `gate held: ${reason}`;
@@ -203,6 +210,7 @@ function stageOutcome(stage, { last, action, reason, decisionSource, allClear, d
       if (action === "llm_failed" || last?.terminal === "needs-human") return "escalated to owner";
       return "no action taken";
     case "schedule":
+      if (closed) return "not scheduled — PR closed";
       if (allClear) return "not scheduled — flow closed (All-clear)";
       if (deadlineIso) return `next check at ${deadlineIso}`;
       return "quiescent — only a Delivery wakes the Flow";
@@ -211,17 +219,21 @@ function stageOutcome(stage, { last, action, reason, decisionSource, allClear, d
   }
 }
 
-function projectStages({ entry, expectation, deadlineIso }) {
+function projectStages({ entry, expectation, deadlineIso, closed, closure }) {
   const history = Array.isArray(entry?.tick_history) ? entry.tick_history : [];
   const last = history.at(-1) ?? null;
-  const action = last?.action ?? null;
-  const reason = last?.reason ?? "";
+  const action = closed ? "closed" : last?.action ?? null;
+  const reason = closed ? closure?.reason || last?.reason || "PR is closed" : last?.reason ?? "";
   const decisionSource = last?.decision_source ?? null;
-  const allClear = action === "notify_ready" && last?.terminal === "done";
+  const allClear = !closed && action === "notify_ready" && last?.terminal === "done";
   const armed = deadlineIso !== null && deadlineIso !== undefined;
 
   const statuses = Object.fromEntries(STAGES.map((stage) => [stage, "next"]));
-  if (last) {
+  if (closed) {
+    statuses.collect = "past";
+    statuses.check = "past";
+    statuses.schedule = "past";
+  } else if (last) {
     for (const stage of reachedStages(last)) statuses[stage] = "past";
     // Layer 3 is a configuration gap: the Flow waits at `decide` for a
     // decision source rather than having completed a decision.
@@ -239,7 +251,7 @@ function projectStages({ entry, expectation, deadlineIso }) {
     return {
       stage,
       status,
-      outcome: stageOutcome(stage, { last, action, reason, decisionSource, allClear, deadlineIso }),
+      outcome: stageOutcome(stage, { last, action, reason, decisionSource, allClear, closed, closure, deadlineIso }),
       at: last?.ts ?? null,
     };
   });
@@ -247,7 +259,8 @@ function projectStages({ entry, expectation, deadlineIso }) {
 
 /** Glossary outcomes only: All-clear/Notify-ready, Stuck PR, Needs-human.
  * Everything else (waiting, skipped, closed by GitHub) is not terminal. */
-function terminalOutcome(entry, last) {
+function terminalOutcome(entry, last, closed = false) {
+  if (closed) return null;
   if (!last) return null;
   if (last.terminal === "done") {
     return last.action === "notify_ready" ? "All-clear / Notify-ready" : null;
@@ -262,7 +275,8 @@ function terminalOutcome(entry, last) {
   return null;
 }
 
-function effectiveDeadline(entry, expectation) {
+function effectiveDeadline(entry, expectation, closed = false) {
+  if (closed) return null;
   const expectationMs = expectation ? Number(expectation.deadline_ms) : null;
   if (Number.isFinite(expectationMs)) return expectationMs;
   const persisted = entry?.next_check_at ? Date.parse(entry.next_check_at) : NaN;
@@ -276,15 +290,18 @@ export function projectFlow({ key, tickState, listenerState, nowMs }) {
   const flow = parseFlowKey(key);
   if (!flow) return null;
   const entry = tickState?.[key];
+  const closure = listenerState?.closed_flows?.[key] ?? null;
   const expectation = listenerState?.expectations?.[key] ?? null;
-  if (!entry && !expectation) return null;
-
   const history = Array.isArray(entry?.tick_history) ? entry.tick_history : [];
   const last = history.at(-1) ?? null;
-  const deadlineMs = effectiveDeadline(entry, expectation);
+  const closed = Boolean(closure || (last?.action === "closed" && last?.terminal === "done"));
+  const activeExpectation = closed ? null : expectation;
+  if (!entry && !expectation && !closure) return null;
+
+  const deadlineMs = effectiveDeadline(entry, activeExpectation, closed);
   const deadlineIso = deadlineMs === null ? null : iso(deadlineMs);
   const armed = deadlineIso !== null;
-  const stages = projectStages({ entry, expectation, deadlineIso });
+  const stages = projectStages({ entry, expectation: activeExpectation, deadlineIso, closed, closure });
 
   return {
     key,
@@ -293,13 +310,13 @@ export function projectFlow({ key, tickState, listenerState, nowMs }) {
     head_sha: entry?.last_head_sha ?? null,
     stage: stages.find((stage) => stage.status === "current")?.stage ?? null,
     stages,
-    action: last?.action ?? null,
-    reason: last?.reason ?? null,
+    action: closed ? "closed" : last?.action ?? null,
+    reason: closed ? closure?.reason ?? last?.reason ?? "PR is closed" : last?.reason ?? null,
     next_check_at: deadlineIso,
-    terminal: terminalOutcome(entry, last),
-    done: Boolean(last?.terminal === "done" && !armed),
+    terminal: terminalOutcome(entry, last, closed),
+    done: closed || Boolean(last?.terminal === "done" && !armed),
     tick_history: history.map(tickRecordFields),
-    expectation: expectation
+    expectation: activeExpectation
       ? {
           repo: flow.repo,
           num: flow.num,
@@ -310,6 +327,13 @@ export function projectFlow({ key, tickState, listenerState, nowMs }) {
         }
       : null,
   };
+}
+
+function isFlowClosed(key, tickState, listenerState) {
+  if (listenerState?.closed_flows?.[key]) return true;
+  const history = tickState?.[key]?.tick_history;
+  const last = Array.isArray(history) ? history.at(-1) : null;
+  return last?.action === "closed" && last?.terminal === "done";
 }
 
 /** `GET /flows`: summary rows with the same Stage projection as the detail

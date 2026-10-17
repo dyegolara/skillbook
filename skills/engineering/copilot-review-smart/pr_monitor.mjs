@@ -87,6 +87,7 @@ const REBASE_STALE_RETRY_HOURS = 24 * 7;
 const ACTIVE_WORK_QUIET_HOURS = 3;
 const REVIEW_FIX_MAX_PINGS = 3;
 const LLM_RETRY_HOURS = 1;
+const NO_DECISION_SOURCE_RECHECK_HOURS = 24;
 // Mergeability is computed asynchronously by GitHub and has no webhook
 // event; re-check once an hour while it is unknown.
 const MERGE_UNKNOWN_RECHECK_HOURS = 1;
@@ -763,38 +764,15 @@ function killDecisionCommandTree(rootPid) {
     execFile("taskkill", ["/pid", String(rootPid), "/t", "/f"], () => {});
     return;
   }
-  execFile("ps", ["-eo", "pid=,ppid="], (error, stdout) => {
-    const children = new Map();
-    if (!error) {
-      for (const line of stdout.split("\n")) {
-        const [pid, ppid] = line.trim().split(/\s+/).map(Number);
-        if (Number.isInteger(pid) && Number.isInteger(ppid)) {
-          const siblings = children.get(ppid) || [];
-          siblings.push(pid);
-          children.set(ppid, siblings);
-        }
-      }
-    }
-    const descendants = [];
-    const pending = [...(children.get(rootPid) || [])];
-    while (pending.length) {
-      const pid = pending.pop();
-      descendants.push(pid);
-      pending.push(...(children.get(pid) || []));
-    }
-    for (const pid of descendants.reverse()) {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        // already gone
-      }
-    }
+  try {
+    process.kill(-rootPid, "SIGKILL");
+  } catch {
     try {
       process.kill(rootPid, "SIGKILL");
     } catch {
       // already gone
     }
-  });
+  }
 }
 
 /** Layer 1a of the decision-source resolution chain (ADR-0007): an explicit
@@ -804,27 +782,59 @@ function killDecisionCommandTree(rootPid) {
 function callDecisionCommand(command, decisionCtx) {
   const timeoutMs = decisionCommandTimeoutMs();
   return new Promise((resolve, reject) => {
-    const child = spawn("sh", ["-c", command], { stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn("sh", ["-c", command], {
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: process.platform !== "win32",
+    });
     const stdout = [];
     const stderr = [];
     let outputBytes = 0;
     let timedOut = false;
     let outputLimited = false;
     let terminationStarted = false;
+    let settled = false;
+    const signalHandlers = [];
+    const cleanupSignalHandlers = () => {
+      for (const [signal, handler] of signalHandlers) process.removeListener(signal, handler);
+    };
+    const finishError = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      cleanupSignalHandlers();
+      child.stdin.destroy();
+      child.stdout.destroy();
+      child.stderr.destroy();
+      reject(error);
+    };
     const terminateTree = () => {
       if (terminationStarted) return;
       terminationStarted = true;
       killDecisionCommandTree(child.pid);
     };
+    if (process.platform !== "win32") {
+      for (const signal of ["SIGINT", "SIGTERM"]) {
+        const handler = () => {
+          terminateTree();
+          process.exit(128 + os.constants.signals[signal]);
+        };
+        signalHandlers.push([signal, handler]);
+        process.once(signal, handler);
+      }
+    }
     const timer = setTimeout(() => {
       timedOut = true;
       terminateTree();
+      finishError(new LLMDecisionError(`LLM command timed out after ${timeoutMs}ms`));
     }, timeoutMs);
     const collect = (chunks) => (chunk) => {
       outputBytes += chunk.length;
       if (outputBytes > DECISION_COMMAND_MAX_OUTPUT_BYTES) {
         outputLimited = true;
         terminateTree();
+        finishError(new LLMDecisionError(
+          `LLM command exceeded the ${DECISION_COMMAND_MAX_OUTPUT_BYTES}-byte output limit`
+        ));
       } else if (!outputLimited) {
         chunks.push(chunk);
       }
@@ -832,11 +842,13 @@ function callDecisionCommand(command, decisionCtx) {
     child.stdout.on("data", collect(stdout));
     child.stderr.on("data", collect(stderr));
     child.once("error", (error) => {
-      clearTimeout(timer);
-      reject(new LLMDecisionError(`could not start LLM command: ${error.message}`));
+      finishError(new LLMDecisionError(`could not start LLM command: ${error.message}`));
     });
     child.once("close", (code, signal) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      cleanupSignalHandlers();
       if (timedOut) {
         reject(new LLMDecisionError(`LLM command timed out after ${timeoutMs}ms`));
       } else if (outputLimited) {
@@ -974,6 +986,7 @@ function computeNextCheckAt({
   ctx,
   stateEntry,
   action,
+  decisionSource = null,
   pingedAtMs = null,
   reviewFixResponseSig = null,
   nowMs,
@@ -983,6 +996,9 @@ function computeNextCheckAt({
 
   if (action === "notify_ready" || action === "skip_wip") return null;
   if (action === "llm_failed") return iso(nowMs + H(LLM_RETRY_HOURS));
+  if (action === "wait" && decisionSource === DECISION_SOURCES.none) {
+    return iso(nowMs + H(NO_DECISION_SOURCE_RECHECK_HOURS));
+  }
   if (
     action === "wait" &&
     st.llm_failures_sha === ctx.headSha &&
@@ -1102,7 +1118,15 @@ function buildPrReport({
     reused_cached_decision: reused,
     github_action_posted: githubActionPosted,
     next_check_at: ctx
-      ? computeNextCheckAt({ ctx, stateEntry, action, pingedAtMs, reviewFixResponseSig, nowMs })
+      ? computeNextCheckAt({
+          ctx,
+          stateEntry,
+          action,
+          decisionSource,
+          pingedAtMs,
+          reviewFixResponseSig,
+          nowMs,
+        })
       : null,
     owner_notifications: ownerNotifications,
     ...(fetchFailed ? { fetch_failed: true } : {}),
@@ -1129,7 +1153,7 @@ function buildOverallReport({ reports, targetPr, scopeFetchFailures = 0 }) {
 function buildTerminalPrReport({
   repo,
   pr,
-  action = "wait",
+  action = "closed",
   reason,
   headSha = pr?.head?.sha || null,
   terminal = "done",
@@ -1228,6 +1252,7 @@ export async function runMonitorOnce({
     if (report?.type !== "pr" || !report.repo || !Number.isInteger(report.pr)) return;
     const skey = `${report.repo}#${report.pr}`;
     const entry = { ...(nextState[skey] || {}) };
+    if (report.head_sha) entry.last_head_sha = report.head_sha;
     entry.next_check_at = report.next_check_at ?? null;
     const history = Array.isArray(entry.tick_history) ? entry.tick_history : [];
     entry.tick_history = [
@@ -1279,6 +1304,28 @@ export async function runMonitorOnce({
       } catch (e) {
         scopeFetchFailures++;
         console.error(`⚠️ Could not list PRs for ${repo}: ${String(e).slice(0, 200)}`);
+      }
+    }
+  }
+
+  if (!targetPr) {
+    for (const [repo, prs] of Object.entries(prsByRepo)) {
+      const openNumbers = new Set(prs.map((pr) => String(pr.number)));
+      const prefix = `${repo}#`;
+      for (const [key, entry] of Object.entries(nextState)) {
+        if (!key.startsWith(prefix)) continue;
+        const number = key.slice(prefix.length);
+        if (!/^\d+$/.test(number) || openNumbers.has(number)) continue;
+        const history = Array.isArray(entry?.tick_history) ? entry.tick_history : [];
+        const latest = history.at(-1);
+        if (latest?.action === "closed" && latest?.terminal === "done") continue;
+        pushReport(buildTerminalPrReport({
+          repo,
+          pr: { number: Number(number) },
+          headSha: entry?.last_head_sha || null,
+          action: "closed",
+          reason: "PR is no longer open (absent from a successful open-PR listing); monitoring is complete.",
+        }));
       }
     }
   }

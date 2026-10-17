@@ -32,13 +32,14 @@ export function readTickState(statePath) {
   return isPlainObject(parsed) ? parsed : {};
 }
 
-/** The Listener state file (`listener-state.json`): armed Expectations and
- * Hook ids. A missing file reads as no armed Expectations. */
+/** The Listener state file (`listener-state.json`): armed Expectations,
+ * persistent closure evidence and Hook ids. */
 export function readListenerState(listenerStatePath) {
   const parsed = readJsonFile(listenerStatePath);
   return {
     version: isPlainObject(parsed) && Number.isInteger(parsed.version) ? parsed.version : 1,
     expectations: isPlainObject(parsed?.expectations) ? parsed.expectations : {},
+    closed_flows: isPlainObject(parsed?.closed_flows) ? parsed.closed_flows : {},
   };
 }
 

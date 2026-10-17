@@ -51,7 +51,8 @@ function truncateVisible(line, columns) {
     out += line[i];
     shown++;
   }
-  return `${out}…${ANSI.reset}`;
+  const reset = /\u001b\[(?!0m)[0-9;]*m/.test(out) ? ANSI.reset : "";
+  return `${out}…${reset}`;
 }
 
 function terminalCode(terminal) {

@@ -208,6 +208,14 @@ test("the TUI CLI truncates colored output to the configured terminal width", as
       assert.ok(visible(line).length <= 24, `too wide: ${visible(line)}`);
     }
     assert.ok(stdout.includes("…"), stdout);
+
+    const plain = await runTui(
+      ["--url", fixture.baseUrl, "--once", "--no-color"],
+      { COLUMNS: "24" }
+    );
+    assert.equal(plain.code, 0, plain.stdout);
+    assert.ok(plain.stdout.includes("…"), plain.stdout);
+    assert.ok(!plain.stdout.includes("\u001b["), plain.stdout);
   } finally {
     await fixture.stop();
   }

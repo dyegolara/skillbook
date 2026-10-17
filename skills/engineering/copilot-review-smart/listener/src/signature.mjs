@@ -105,6 +105,7 @@ export function classifyDelivery({ event, payload = {}, repos = [], login = "" }
     num,
     sender,
     closesFlow: event === "pull_request" && action === "closed",
+    reopensFlow: event === "pull_request" && action === "reopened",
   };
 }
 

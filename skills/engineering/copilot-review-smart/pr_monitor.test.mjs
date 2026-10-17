@@ -406,6 +406,7 @@ test("single-PR scope stays non-terminal when inline transcript fetch fails", as
   assert.equal(prLine.action, "wait");
   assert.equal(prLine.done, false);
   assert.match(prLine.reason, /could not fetch inline review comments/i);
+  assert.equal(out.state[`${REPO}#42`].last_head_sha, "inline-fail");
   assert.equal(overallLine.done, false);
   assert.equal(overallLine.scope_fetch_failures, 1);
 });
@@ -557,6 +558,7 @@ test("single-PR scope emits an explicit terminal report for non-open PRs", async
   const out = await runMonitorOnce({
     state: {
       [`${REPO}#42`]: {
+        last_head_sha: "old-sha",
         next_check_at: new Date(nowMs + 60_000).toISOString(),
         tick_history: [{ ts: new Date(nowMs - 60_000).toISOString(), action: "wait", reason: "still open", terminal: null }],
       },
@@ -584,13 +586,67 @@ test("single-PR scope emits an explicit terminal report for non-open PRs", async
   assert.equal(lines.length, 2);
   assert.equal(lines[0].type, "pr");
   assert.equal(lines[0].pr, 42);
+  assert.equal(lines[0].action, "closed");
+  assert.equal(lines[0].head_sha, "closed123");
   assert.equal(lines[0].done, true);
   assert.equal(lines[0].terminal, "done");
   assert.match(lines[0].reason, /not open \(merged\)/i);
   assert.equal(out.state[`${REPO}#42`].next_check_at, null);
+  assert.equal(out.state[`${REPO}#42`].last_head_sha, "closed123");
   assert.equal(out.state[`${REPO}#42`].tick_history.at(-1).terminal, "done");
   assert.match(out.state[`${REPO}#42`].tick_history.at(-1).reason, /not open \(merged\)/i);
   assert.equal(lines[1].done, true);
+});
+
+test("successful repo listings persist closure for watched PRs that disappeared", async () => {
+  const nowMs = Date.parse("2026-09-08T00:00:00.000Z");
+  const key = `${REPO}#42`;
+  const state = {
+    [key]: {
+      last_head_sha: "known-sha",
+      next_check_at: new Date(nowMs + 60_000).toISOString(),
+      tick_history: [{ ts: new Date(nowMs - 60_000).toISOString(), action: "wait", reason: "still open", terminal: null }],
+    },
+  };
+  const out = await runMonitorOnce({
+    repos: [REPO],
+    state,
+    nowMs,
+    dryRun: true,
+    runGhFn: async (args) => {
+      if (args[0] === `repos/${REPO}/pulls?state=open&per_page=100&page=1`) return [];
+      throw new Error(`unexpected gh call: ${args[0]}`);
+    },
+  });
+  assert.equal(out.reports.length, 1);
+  assert.equal(out.reports[0].action, "closed");
+  assert.equal(out.reports[0].head_sha, "known-sha");
+  assert.equal(out.state[key].next_check_at, null);
+  assert.equal(out.state[key].last_head_sha, "known-sha");
+  assert.equal(out.state[key].tick_history.length, 2);
+  assert.equal(out.state[key].tick_history.at(-1).terminal, "done");
+});
+
+test("a failed repo listing does not infer closure or clear its schedule", async () => {
+  const nextCheckAt = "2026-09-08T01:00:00.000Z";
+  const key = `${REPO}#42`;
+  const state = {
+    [key]: {
+      last_head_sha: "known-sha",
+      next_check_at: nextCheckAt,
+      tick_history: [{ ts: "2026-09-07T23:00:00.000Z", action: "wait", reason: "still open", terminal: null }],
+    },
+  };
+  const out = await runMonitorOnce({
+    repos: [REPO],
+    state,
+    nowMs: Date.parse("2026-09-08T00:00:00.000Z"),
+    dryRun: true,
+    runGhFn: async () => { throw new Error("listing failed"); },
+  });
+  assert.deepEqual(out.reports, []);
+  assert.equal(out.state[key].next_check_at, nextCheckAt);
+  assert.equal(out.state[key].tick_history.length, 1);
 });
 
 test("request_fix posts the provided feedback URLs instead of falling back to review", async () => {
@@ -2077,6 +2133,89 @@ test("decision command timeout terminates descendant processes", { skip: process
   }
 });
 
+test("decision command timeout settles when its shell exits but a child retains the pipes", { skip: process.platform === "win32" }, async () => {
+  const dir = makeTempDir("pr-monitor-command-orphan-");
+  const pidPath = path.join(dir, "descendant.pid");
+  const command = `sleep 30 & echo $! > ${JSON.stringify(pidPath)}`;
+  const startedAt = Date.now();
+  try {
+    const result = await withEnv(
+      {
+        ...NO_DECISION_ENV,
+        HOME: makeTempDir("pr-monitor-command-orphan-home-"),
+        PR_MONITOR_LLM_CMD: command,
+        PR_MONITOR_LLM_CMD_TIMEOUT_MS: "250",
+      },
+      () => runMonitorOnce({
+        repos: [REPO],
+        state: {},
+        nowMs: Date.parse("2026-09-08T00:00:00.000Z"),
+        dryRun: true,
+        runGhFn: repoScopeGh("orphan123"),
+        collectPrStateFn: async () => makeCtx({ headSha: "orphan123" }),
+      })
+    );
+    assert.ok(Date.now() - startedAt < 5_000, "timeout must not wait for the inherited pipes to close naturally");
+    assert.match(result.reports[0].reason, /timed out after 250ms/);
+    await waitForProcessExit(Number(fs.readFileSync(pidPath, "utf8").trim()));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("Listener Tick termination also terminates the decision command process group", { skip: process.platform === "win32" }, async () => {
+  const dir = makeTempDir("pr-monitor-listener-kill-");
+  const pidPath = path.join(dir, "descendant.pid");
+  const childScript = path.join(dir, "descendant.mjs");
+  const runnerScript = path.join(dir, "runner.mjs");
+  fs.writeFileSync(childScript, "setInterval(() => {}, 1000);");
+  const command = `${JSON.stringify(process.execPath)} ${JSON.stringify(childScript)} & echo $! > ${JSON.stringify(pidPath)}; wait`;
+  fs.writeFileSync(
+    runnerScript,
+    [
+      `import { runMonitorOnce } from ${JSON.stringify(PR_MONITOR_PATH)};`,
+      `const repo = ${JSON.stringify(REPO)};`,
+      "await runMonitorOnce({",
+      "  repos: [repo],",
+      "  state: {},",
+      '  nowMs: Date.parse("2026-09-08T00:00:00.000Z"),',
+      "  dryRun: true,",
+      "  runGhFn: async () => [{ number: 7, draft: false, title: 'PR', head: { sha: 'tickcleanup' } }],",
+      "  collectPrStateFn: async () => ({ num: 7, title: 'PR', draft: false, headSha: 'tickcleanup', issueTranscript: [], reviewTranscript: [], inlineTranscript: [], approved: false, latestReviewTs: null, latestReviewState: null, nInlineUnresolved: 0, latestInlineTs: null, lastCopilotComment: '', lastCopilotCommentTs: null, lastCommitTs: null, mergeable: true, mergeableState: 'clean', hasConflicts: false, mergeUnknown: false }),",
+      "});",
+    ].join("\n")
+  );
+  let tick = null;
+  try {
+    tick = spawn(process.execPath, [runnerScript], {
+      detached: true,
+      stdio: "ignore",
+      env: {
+        ...process.env,
+        ...NO_DECISION_ENV,
+        HOME: makeTempDir("pr-monitor-listener-kill-home-"),
+        PR_MONITOR_LLM_CMD: command,
+        PR_MONITOR_LLM_CMD_TIMEOUT_MS: "30000",
+      },
+    });
+    const startedAt = Date.now();
+    while (!fs.existsSync(pidPath)) {
+      if (tick.exitCode !== null) throw new Error(`Tick exited early with ${tick.exitCode}`);
+      if (Date.now() - startedAt > 5000) throw new Error("decision child did not start");
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    const descendantPid = Number(fs.readFileSync(pidPath, "utf8").trim());
+    process.kill(-tick.pid, "SIGTERM");
+    await new Promise((resolve) => tick.once("exit", resolve));
+    await waitForProcessExit(descendantPid);
+  } finally {
+    if (tick?.exitCode === null) {
+      try { process.kill(-tick.pid, "SIGKILL"); } catch {}
+    }
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("decision command output-limit failure terminates descendant processes", { skip: process.platform === "win32" }, async () => {
   const dir = makeTempDir("pr-monitor-command-output-tree-");
   const pidPath = path.join(dir, "descendant.pid");
@@ -2124,7 +2263,7 @@ test("unparseable decision command output consumes the failure budget and escala
   assertCommandFailureEscalation(ticks, /unparseable LLM command JSON/i);
 });
 
-test("no decision source resolves to an actionable wait without notification or budget movement", async () => {
+test("no decision source resolves to an actionable wait without notification or budget movement", async (t) => {
   const home = makeTempDir("pr-monitor-none-home-");
   const runTick = (state, nowMs) => runMonitorOnce({
     repos: [REPO],
@@ -2135,7 +2274,7 @@ test("no decision source resolves to an actionable wait without notification or 
     collectPrStateFn: async () => makeCtx({ headSha: "nosource123" }),
   });
 
-  test("no decision source does not promote an old pending review request", async () => {
+  await t.test("no decision source does not promote an old pending review request", async () => {
     const now = Date.parse("2026-09-08T00:00:00.000Z");
     const home = makeTempDir("pr-monitor-none-retry-home-");
     const requested = await runMonitorOnce({
@@ -2178,10 +2317,16 @@ test("no decision source resolves to an actionable wait without notification or 
     assert.equal(result.reports[0].action, "wait");
     assert.equal(result.reports[0].decision_source, "none");
     assert.match(result.reports[0].reason, /No LLM decision source is configured/);
+    assert.equal(
+      result.reports[0].next_check_at,
+      new Date(now + 24 * 3600_000).toISOString(),
+      "a missing decider gets a future configuration recheck, not the expired ping deadline"
+    );
+    assert.equal(result.state[`${REPO}#7`].last_head_sha, "pending123");
     assert.deepEqual(posts, []);
   });
 
-  test("injected deciders preserve adapter metadata and bare functions use injected_decider", async () => {
+  await t.test("injected deciders preserve adapter metadata and bare functions use injected_decider", async () => {
     const home = makeTempDir("pr-monitor-injected-home-");
     const invoke = async (llmDecider) => withEnv(
       { ...NO_DECISION_ENV, HOME: home },

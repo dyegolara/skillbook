@@ -127,8 +127,9 @@ Listener is not running.
   exists and the heartbeat is fresh; a crashed Tick reads `alive: false`, and
   no marker reads `null`. The marker is run-level, so it names no Flow.
 - `scheduled` is the armed Expectations with their deadlines, plus a persisted
-  `next_check_at` only where no Expectation is armed for that Flow; sorted by
-  deadline. `overdue` compares the deadline with the server's clock.
+  `next_check_at` only where no Expectation is armed for that Flow; closed Flows
+  are excluded even if old schedule data remains. Rows are sorted by deadline;
+  `overdue` compares the deadline with the server's clock.
 
 ### `GET /flows`
 
@@ -185,7 +186,7 @@ A Stage is `past` when the latest Tick record proves it ran:
 | `action: request_review`, `request_fix`, `notify_ready`, `llm_failed` | `reuse`, `decide`, `act` |
 | `action: wait`, gate reason (conflict window, rebase budget, unknown mergeability) | — (the gate held before the cache) |
 | `action: wait`, any other reason | `reuse`; plus `decide` only when a non-`none` `decision_source` proves a decision ran |
-| `action: wait`, `decision_source: none` (no LLM configured) | `reuse`; `decide` stays `current` — a configuration gap waiting for setup, never a completed decision |
+| `action: wait`, `decision_source: none` (no LLM configured) | `reuse`; `decide` stays `current` — a configuration gap waiting for setup, never a completed decision; a configuration recheck is scheduled within 24h |
 | `action: wait`, `terminal: needs-human` | plus `act` (the escalation notification) |
 | recognized PR-state collection failure reason | `collect` only |
 
@@ -201,9 +202,11 @@ its `next_check_at`:
   holds the deadline. The outcome names the effective deadline (Expectation
   first, then persisted `next_check_at`) or reads "quiescent — only a Delivery
   wakes the Flow" when none is armed.
-- `past` only when the Flow closed at All-clear (`notify_ready`, `terminal:
-  done`) and no deadline is armed — in that case every Stage is `past` and the
-  row's `stage` is `null`.
+- `past` when the Flow closed at All-clear (`notify_ready`, `terminal: done`)
+  and no deadline is armed — every Stage is past in that case. For a confirmed
+  PR closure (from a Tick or Listener evidence), `collect`, `check` and
+  `schedule` are past, while downstream decision/action Stages remain `next`;
+  the row's `stage` is `null`.
 
 Stage outcomes are fixed strings: `collect` ("PR state collected" /
 "PR state collection failed"), `check` ("deterministic gates passed",
@@ -224,11 +227,13 @@ never report `waiting` as terminal:
 | `terminal: done`, `action: notify_ready` | `All-clear / Notify-ready` | `true` when no deadline is armed |
 | `terminal: needs-human`, conflict pings exhausted for the current head | `Stuck PR` | `false` |
 | `terminal: needs-human`, otherwise | `Needs-human` | `false` |
-| `terminal: done` with any other action (PR closed or merged) | `null` — a Flow closure, not a decision outcome | `true` when no deadline is armed |
+| `terminal: done` with any other action (Tick observed PR closed or merged) | `null` — a Flow closure, not a decision outcome | `true` when no deadline is armed |
+| Persisted Listener evidence that the PR closed or merged | `null` | `true` |
 | `terminal: skipped`, `null`, or any other | `null` | `false` |
 
-A Flow whose next check is armed is never `done`, because `done` requires the
-last Tick to be `done` and no deadline to be armed.
+A Flow with a next check is never `done`. A Tick-completed Flow also requires
+no deadline; confirmed Listener closure evidence is done independently of old
+Tick deadlines or Expectations.
 
 ## Tests
 
