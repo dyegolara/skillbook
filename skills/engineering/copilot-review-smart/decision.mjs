@@ -1,7 +1,19 @@
+import { DECISION_SOURCES } from "./decision_source.mjs";
+
 const COPILOT_SUBSTR = "copilot";
 const WIP_TITLE_RE = /^\s*\[?(wip|draft|dnm|do not merge|work in progress)\b/i;
 const H = (h) => h * 3600_000;
 const LLM_MAX_FAILURES_PER_HEAD = 3;
+
+/** Layer 3 of the resolution chain (ADR-0007): no decider resolved. This is a
+ * configuration gap, not a decision failure — it must never consume the
+ * per-head budget or escalate to Needs-human. */
+export class NoDecisionSourceError extends Error {
+  constructor(reason) {
+    super(reason);
+    this.name = "NoDecisionSourceError";
+  }
+}
 
 function toMs(ts) {
   if (!ts) return null;
@@ -33,6 +45,31 @@ function newestRebaseRequestTsMs(issueTranscript, copilotSubstr = COPILOT_SUBSTR
     if (ts !== null && (best === null || ts > best)) best = ts;
   }
   return best;
+}
+
+/** The opening words of every deterministic gate wait emitted before the
+ * signature cache. The reasons are the interface the observability
+ * projection reads, so they are defined here beside the gate that emits
+ * them: `isGateWaitReason` and the emitters can never drift apart. */
+const CONFLICT_WINDOW_PREFIX = "Conflict-resolution request is newer than";
+const REBASE_BUDGET_PREFIX = "Rebase retry budget exhausted";
+const MERGE_UNKNOWN_REASON = "GitHub has not computed PR mergeability yet; wait for next tick.";
+const LLM_RETRY_PREFIX = "Could not decide with LLM (";
+
+/** Did a deterministic gate hold this wait before the cache? The persisted
+ * Tick record has no Stage field (#107), so the projection asks the module
+ * that emitted the reason instead of matching the prose on its own. */
+export function isGateWaitReason(reason) {
+  const text = String(reason || "");
+  return (
+    text.startsWith(CONFLICT_WINDOW_PREFIX) ||
+    text.startsWith(REBASE_BUDGET_PREFIX) ||
+    text === MERGE_UNKNOWN_REASON
+  );
+}
+
+export function isLlmRetryReason(reason) {
+  return String(reason || "").startsWith(LLM_RETRY_PREFIX);
 }
 
 export function decideDeterministic({
@@ -72,7 +109,7 @@ export function decideDeterministic({
     } else if (nowMs - reqTsMs < H(rebaseRetryHours)) {
       action = "wait";
       reason =
-        `Conflict-resolution request is newer than ${rebaseRetryHours}h and no ` +
+        `${CONFLICT_WINDOW_PREFIX} ${rebaseRetryHours}h and no ` +
         "new commits were pushed: wait before retrying.";
     } else if (rebasePings >= rebaseMaxPings) {
       const lastPingMs = toMs(st.last_ping_ts);
@@ -93,7 +130,7 @@ export function decideDeterministic({
       } else {
         action = "wait";
         reason =
-          `Rebase retry budget exhausted (${rebasePings} pings on this sha) and ` +
+          `${REBASE_BUDGET_PREFIX} (${rebasePings} pings on this sha) and ` +
           "PR is still conflicted: owner escalated; weekly retry only.";
         if (st.stuck_notified_sha !== ctx.headSha) {
           st.stuck_notified_sha = ctx.headSha;
@@ -117,7 +154,7 @@ export function decideDeterministic({
     }
   } else if (ctx.mergeUnknown) {
     action = "wait";
-    reason = "GitHub has not computed PR mergeability yet; wait for next tick.";
+    reason = MERGE_UNKNOWN_REASON;
   } else if (cachedSig === sig && cachedAction) {
     action = cachedAction;
     reason = st._reason || action;
@@ -175,6 +212,7 @@ export async function decideWithLlm({
   rebaseStaleRetryHours,
   llmContext,
   llmDecider,
+  decisionSource = null,
 }) {
   const deterministic = decideDeterministic({
     ctx,
@@ -194,6 +232,20 @@ export async function decideWithLlm({
   try {
     decision = await llmDecider(llmContext);
   } catch (e) {
+    // Layer 3: no source resolved. A configuration gap is not a decision
+    // failure: wait with the setup path, never touch the per-head budget,
+    // never escalate to Needs-human.
+    if (e instanceof NoDecisionSourceError) {
+      return {
+        handled: true,
+        action: "wait",
+        reason: e.message,
+        reused: false,
+        decision_source: DECISION_SOURCES.none,
+        stateEntry: st,
+        notifications,
+      };
+    }
     const failures = st.llm_failures_sha === ctx.headSha
       ? (Number(st.llm_failures) || 0) + 1
       : 1;
@@ -204,13 +256,14 @@ export async function decideWithLlm({
       delete st._sig;
       delete st._action;
       st._reason =
-        `Could not decide with LLM (${e.message || e}); retrying ` +
+        `${LLM_RETRY_PREFIX}${e.message || e}); retrying ` +
         `(${failures}/${LLM_MAX_FAILURES_PER_HEAD}).`;
       return {
         handled: true,
         action: "wait",
         reason: st._reason,
         reused: false,
+        decision_source: decisionSource,
         stateEntry: st,
         notifications,
       };
@@ -234,6 +287,7 @@ export async function decideWithLlm({
       action: "llm_failed",
       reason: st._reason,
       reused: false,
+      decision_source: decisionSource,
       stateEntry: st,
       notifications,
     };
@@ -250,6 +304,7 @@ export async function decideWithLlm({
     action,
     reason,
     reused: false,
+    decision_source: decisionSource,
     stateEntry: st,
     notifications,
   };

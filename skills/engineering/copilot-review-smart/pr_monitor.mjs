@@ -14,8 +14,20 @@
  *   PR_MONITOR_PR          (optional) single PR scope: "owner/repo#123"
  *   PR_MONITOR_STATE_PATH  state file (default ~/.cache/pr-monitor/state.json)
  *   PR_MONITOR_REPORT      "jsonl" / "1" => emit agent-facing JSON lines
- *   PR_MONITOR_MODEL       OpenRouter model for the decision LLM
- *   OPENROUTER_API_KEY     (or in ~/.hermes/.env / ~/.pr-monitor.env)
+ *   PR_MONITOR_MODEL       model for the decision LLM
+ *   PR_MONITOR_LLM_ENDPOINT  chat-completions endpoint for the decision LLM
+ *                          (default https://openrouter.ai/api/v1/chat/completions)
+ *   PR_MONITOR_LLM_API_KEY  credential for that endpoint
+ *                          (default: OPENROUTER_API_KEY)
+ *   PR_MONITOR_LLM_CMD     explicit decider command: decision request on stdin,
+ *                          JSON decision ({"action","reason"}) on stdout
+ *   PR_MONITOR_LLM_CMD_TIMEOUT_MS  decision command timeout (default 60000)
+ *   OPENROUTER_API_KEY     default credential for the OpenRouter endpoint
+ *                          (or in ~/.hermes/.env / ~/.pr-monitor.env)
+ *   (auto)                 with none of the above defined, a Tick launched
+ *                          from an agent session decides with that agent's
+ *                          own CLI and model (pi, Claude Code or opencode)
+ *                          when discoverable
  *   DRY_RUN=1              print would-be comments; never post, never persist
  *
  * CLI flags:
@@ -25,13 +37,21 @@
  *   --json-report          emit one JSON line per PR plus one overall line
  */
 
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { decideWithLlm, newestRebaseRequestTsMs } from "./decision.mjs";
+import { decideWithLlm, newestRebaseRequestTsMs, NoDecisionSourceError } from "./decision.mjs";
+import { resolveAutoDecisionSource } from "./agents.mjs";
+import { DECISION_SOURCES, NO_DECISION_SOURCE_REASON } from "./decision_source.mjs";
+import { isPidAlive, tickInFlight } from "./tick_liveness.mjs";
+import { prStateFetchFailureReason } from "./collection_failure.mjs";
+
+/** The Tick's public liveness reader; the rule lives in tick_liveness.mjs so
+ * the read-only projection can share it without importing this module. */
+export { tickInFlight };
 
 const execFileP = promisify(execFile);
 
@@ -39,7 +59,10 @@ const STATE_PATH = process.env.PR_MONITOR_STATE_PATH ||
   path.join(os.homedir(), ".cache", "pr-monitor", "state.json");
 
 const COPILOT_SUBSTR = "copilot";
-const MODEL = process.env.PR_MONITOR_MODEL || "deepseek/deepseek-v4-flash-0731";
+const DEFAULT_LLM_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
+const DEFAULT_MODEL = "deepseek/deepseek-v4-flash-0731";
+const DECISION_COMMAND_DEFAULT_TIMEOUT_MS = 60_000;
+const DECISION_COMMAND_MAX_OUTPUT_BYTES = 1024 * 1024;
 const DRY_RUN = process.env.DRY_RUN === "1";
 
 // Don't re-ping Copilot on the same head sha more often than this. This is
@@ -64,6 +87,7 @@ const REBASE_STALE_RETRY_HOURS = 24 * 7;
 const ACTIVE_WORK_QUIET_HOURS = 3;
 const REVIEW_FIX_MAX_PINGS = 3;
 const LLM_RETRY_HOURS = 1;
+const NO_DECISION_SOURCE_RECHECK_HOURS = 24;
 // Mergeability is computed asynchronously by GitHub and has no webhook
 // event; re-check once an hour while it is unknown.
 const MERGE_UNKNOWN_RECHECK_HOURS = 1;
@@ -72,6 +96,13 @@ const STATE_LOCK_TIMEOUT_MS = 30_000;
 const STATE_LOCK_RETRY_MS = 200;
 const STATE_LOCK_STALE_MS = 10 * 60_000;
 const STATE_LOCK_HEARTBEAT_MS = 60_000;
+
+// Persisted Tick observability (ADR-0009): the per-PR Tick history is bounded
+// so an idle watched repo cannot grow the state file forever, and the
+// in-flight marker heartbeats so a projection can rule a crashed Tick dead
+// (see tickInFlight).
+const TICK_HISTORY_MAX = 20;
+const TICK_IN_FLIGHT_HEARTBEAT_MS = 60_000;
 
 const H = (h) => h * 3600_000;
 const JSON_REPORT_ENV_VALUES = new Set(["1", "true", "json", "jsonl"]);
@@ -206,17 +237,43 @@ function loadEnvKey(name) {
   return "";
 }
 
-function loadState() {
+function loadState(statePath = STATE_PATH) {
   try {
-    return JSON.parse(fs.readFileSync(STATE_PATH, "utf8"));
+    return JSON.parse(fs.readFileSync(statePath, "utf8"));
   } catch {
     return {};
   }
 }
 
-function saveState(state) {
-  fs.mkdirSync(path.dirname(STATE_PATH), { recursive: true });
-  fs.writeFileSync(STATE_PATH, JSON.stringify(state, null, 2));
+function saveState(state, statePath = STATE_PATH) {
+  const directory = path.dirname(statePath);
+  fs.mkdirSync(directory, { recursive: true });
+  let mode = null;
+  try {
+    mode = fs.statSync(statePath).mode & 0o777;
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  const tempPath = path.join(directory, `.${path.basename(statePath)}.${randomUUID()}.tmp`);
+  let fd;
+  try {
+    fd = fs.openSync(tempPath, "wx", mode ?? 0o666);
+    fs.writeFileSync(fd, JSON.stringify(state, null, 2));
+    if (mode !== null) fs.fchmodSync(fd, mode);
+    fs.closeSync(fd);
+    fd = undefined;
+    fs.renameSync(tempPath, statePath);
+  } finally {
+    try {
+      if (fd !== undefined) fs.closeSync(fd);
+    } finally {
+      try {
+        fs.unlinkSync(tempPath);
+      } catch (error) {
+        if (error.code !== "ENOENT") throw error;
+      }
+    }
+  }
 }
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -247,16 +304,6 @@ function readLockRecord(lockPath) {
 
 function sameLockOwner(a, b) {
   return Boolean(a && b && a.pid === b.pid && a.token === b.token);
-}
-
-function isPidAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (e) {
-    return e?.code !== "ESRCH";
-  }
 }
 
 function startLockHeartbeat(fd, intervalMs = STATE_LOCK_HEARTBEAT_MS) {
@@ -336,6 +383,74 @@ function releaseStateLock(lock) {
     fs.closeSync(lock.fd);
   } catch {
     // already closed
+  }
+}
+
+// ---------------------------------------------------------------------------
+// persisted in-flight Tick marker (observability, ADR-0009)
+// ---------------------------------------------------------------------------
+
+/**
+ * The run-level in-flight marker written before a Tick starts and deleted on
+ * a graceful exit. The persisted state gained one top-level field for it:
+ *
+ *   tick_in_flight: {
+ *     pid:          number   — the Tick process id
+ *     token:        string   — random per Tick; internal, for safe clearing
+ *     started_at:   ISO-8601 — when this Tick started
+ *     heartbeat_at: ISO-8601 — refreshed every TICK_IN_FLIGHT_HEARTBEAT_MS
+ *   }
+ *
+ * A reader decides liveness from disk alone with tickInFlight(): a marker
+ * whose pid is gone or whose heartbeat is stale is not running, so a Tick
+ * that crashed mid-run is never read as in flight forever. DRY_RUN never
+ * writes it.
+ */
+function inFlightMarker(token, nowMs = Date.now()) {
+  const ts = new Date(nowMs).toISOString();
+  return { pid: process.pid, token, started_at: ts, heartbeat_at: ts };
+}
+
+/** One heartbeat beat: refresh the in-flight marker only while this process
+ * still owns the state lock the file's every other mutation uses. The Tick
+ * holds that lock for its whole run, so a beat that finds a foreign or
+ * missing lock must not load-modify-save over a concurrent writer's state.
+ * Returns whether the beat wrote. */
+export function heartbeatTickInFlight(owner, { lockPath = STATE_LOCK_PATH, statePath = STATE_PATH } = {}) {
+  try {
+    if (!sameLockOwner(readLockRecord(lockPath).owner, owner)) return false;
+    const state = loadState(statePath);
+    if (state.tick_in_flight?.token !== owner.token) return false;
+    state.tick_in_flight.heartbeat_at = new Date().toISOString();
+    saveState(state, statePath);
+    return true;
+  } catch {
+    // best effort: the marker is advisory and must never break the Tick
+    return false;
+  }
+}
+
+function startTickInFlightHeartbeat(owner, {
+  intervalMs = TICK_IN_FLIGHT_HEARTBEAT_MS,
+  lockPath = STATE_LOCK_PATH,
+} = {}) {
+  const timer = setInterval(() => {
+    heartbeatTickInFlight(owner, { lockPath });
+  }, intervalMs);
+  timer.unref?.();
+  return timer;
+}
+
+/** Remove the in-flight marker only if it still belongs to `owner`; a crash
+ * leaves it behind for tickInFlight() to rule dead. */
+function clearTickInFlight(owner) {
+  try {
+    const state = loadState();
+    if (state.tick_in_flight?.token !== owner?.token) return;
+    delete state.tick_in_flight;
+    saveState(state);
+  } catch {
+    // best effort
   }
 }
 
@@ -463,7 +578,7 @@ async function collectPrState(pr, num, repo, { runGhFn = runGh } = {}) {
   // exists in this payload — always-true bug, fixed here by being honest.)
   const rcomments = await ghPaginatedWith(runGhFn, `repos/${repo}/pulls/${num}/comments`).catch((error) => {
     throw new PrStateFetchError(
-      `Could not fetch inline review comments for ${repo}#${num}: ${String(error).slice(0, 200)}`
+      prStateFetchFailureReason("inline", repo, num, error)
     );
   });
   const copilotRcomments = rcomments.filter(isCopilot);
@@ -477,7 +592,7 @@ async function collectPrState(pr, num, repo, { runGhFn = runGh } = {}) {
   // review" and Copilot replied). Only Copilot's replies carry its verdict.
   const icomments = await ghPaginatedWith(runGhFn, `repos/${repo}/issues/${num}/comments`).catch((error) => {
     throw new PrStateFetchError(
-      `Could not fetch issue comments for ${repo}#${num}: ${String(error).slice(0, 200)}`
+      prStateFetchFailureReason("issue", repo, num, error)
     );
   });
   const copilotIcomments = icomments.filter(isCopilot);
@@ -551,8 +666,10 @@ async function collectPrState(pr, num, repo, { runGhFn = runGh } = {}) {
 class LLMDecisionError extends Error {}
 
 async function callLlm(decisionCtx) {
-  const apiKey = loadEnvKey("OPENROUTER_API_KEY");
-  if (!apiKey) throw new LLMDecisionError("no OPENROUTER_API_KEY");
+  const apiKey = loadEnvKey("PR_MONITOR_LLM_API_KEY") || loadEnvKey("OPENROUTER_API_KEY");
+  if (!apiKey) throw new LLMDecisionError("no LLM API key configured");
+  const endpoint =
+    String(loadEnvKey("PR_MONITOR_LLM_ENDPOINT") || "").trim() || DEFAULT_LLM_ENDPOINT;
 
   const system =
     "You are a senior engineer's PR-watchdog. Given the state of a GitHub " +
@@ -587,11 +704,11 @@ async function callLlm(decisionCtx) {
 
   let res;
   try {
-    res = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+    res = await fetch(endpoint, {
       method: "POST",
       headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: MODEL,
+        model: loadEnvKey("PR_MONITOR_MODEL") || DEFAULT_MODEL,
         messages: [
           { role: "system", content: system },
           { role: "user", content: JSON.stringify(decisionCtx) },
@@ -616,6 +733,182 @@ async function callLlm(decisionCtx) {
     if (m) return JSON.parse(m[0]);
     throw new LLMDecisionError(`unparseable LLM JSON: ${content.slice(0, 200)}`);
   }
+}
+
+function decisionCommandTimeoutMs() {
+  const raw = Number(loadEnvKey("PR_MONITOR_LLM_CMD_TIMEOUT_MS"));
+  return Number.isFinite(raw) && raw > 0 ? raw : DECISION_COMMAND_DEFAULT_TIMEOUT_MS;
+}
+
+function parseDecisionJson(text, label) {
+  const raw = String(text || "").trim();
+  if (!raw) throw new LLMDecisionError(`${label} returned no output`);
+  try {
+    return JSON.parse(raw);
+  } catch {
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (match) {
+      try {
+        return JSON.parse(match[0]);
+      } catch {
+        // fall through to the unparseable error below
+      }
+    }
+    throw new LLMDecisionError(`unparseable ${label} JSON: ${raw.slice(0, 200)}`);
+  }
+}
+
+function killDecisionCommandTree(rootPid) {
+  if (!rootPid) return;
+  if (process.platform === "win32") {
+    execFile("taskkill", ["/pid", String(rootPid), "/t", "/f"], () => {});
+    return;
+  }
+  try {
+    process.kill(-rootPid, "SIGKILL");
+  } catch {
+    try {
+      process.kill(rootPid, "SIGKILL");
+    } catch {
+      // already gone
+    }
+  }
+}
+
+/** Layer 1a of the decision-source resolution chain (ADR-0007): an explicit
+ * command decides. It reads the decision request on stdin and writes a JSON
+ * decision on stdout. Non-zero exit, timeout and unparseable output are real
+ * decision failures (per-head budget + Needs-human escalation). */
+function callDecisionCommand(command, decisionCtx) {
+  const timeoutMs = decisionCommandTimeoutMs();
+  return new Promise((resolve, reject) => {
+    const child = spawn("sh", ["-c", command], {
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: process.platform !== "win32",
+    });
+    const stdout = [];
+    const stderr = [];
+    let outputBytes = 0;
+    let timedOut = false;
+    let outputLimited = false;
+    let terminationStarted = false;
+    let settled = false;
+    const signalHandlers = [];
+    const cleanupSignalHandlers = () => {
+      for (const [signal, handler] of signalHandlers) process.removeListener(signal, handler);
+    };
+    const finishError = (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      cleanupSignalHandlers();
+      child.stdin.destroy();
+      child.stdout.destroy();
+      child.stderr.destroy();
+      reject(error);
+    };
+    const terminateTree = () => {
+      if (terminationStarted) return;
+      terminationStarted = true;
+      killDecisionCommandTree(child.pid);
+    };
+    if (process.platform !== "win32") {
+      for (const signal of ["SIGINT", "SIGTERM"]) {
+        const handler = () => {
+          terminateTree();
+          process.exit(128 + os.constants.signals[signal]);
+        };
+        signalHandlers.push([signal, handler]);
+        process.once(signal, handler);
+      }
+    }
+    const timer = setTimeout(() => {
+      timedOut = true;
+      terminateTree();
+      finishError(new LLMDecisionError(`LLM command timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    const collect = (chunks) => (chunk) => {
+      outputBytes += chunk.length;
+      if (outputBytes > DECISION_COMMAND_MAX_OUTPUT_BYTES) {
+        outputLimited = true;
+        terminateTree();
+        finishError(new LLMDecisionError(
+          `LLM command exceeded the ${DECISION_COMMAND_MAX_OUTPUT_BYTES}-byte output limit`
+        ));
+      } else if (!outputLimited) {
+        chunks.push(chunk);
+      }
+    };
+    child.stdout.on("data", collect(stdout));
+    child.stderr.on("data", collect(stderr));
+    child.once("error", (error) => {
+      finishError(new LLMDecisionError(`could not start LLM command: ${error.message}`));
+    });
+    child.once("close", (code, signal) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      cleanupSignalHandlers();
+      if (timedOut) {
+        reject(new LLMDecisionError(`LLM command timed out after ${timeoutMs}ms`));
+      } else if (outputLimited) {
+        reject(new LLMDecisionError(
+          `LLM command exceeded the ${DECISION_COMMAND_MAX_OUTPUT_BYTES}-byte output limit`
+        ));
+      } else if (code !== 0) {
+        const errorText = Buffer.concat(stderr).toString("utf8").trim().slice(0, 200);
+        reject(new LLMDecisionError(
+          `LLM command exited ${code ?? `on signal ${signal}`}: ${errorText || `signal ${signal}`}`
+        ));
+      } else {
+        try {
+          resolve(parseDecisionJson(Buffer.concat(stdout).toString("utf8"), "LLM command"));
+        } catch (error) {
+          reject(error);
+        }
+      }
+    });
+    // A command that exits before reading stdin must not crash the Tick with
+    // an unhandled EPIPE.
+    child.stdin.on("error", () => {});
+    child.stdin.end(JSON.stringify(decisionCtx));
+  });
+}
+
+/** The decision-source resolution chain (ADR-0007), in order: layer 1 is
+ * explicit and always wins (a decision command is the more specific pin over
+ * model+credential); layer 2 discovers the invoking agent and synthesizes its
+ * own CLI command; layer 3 is the handled none case. Every layer yields a
+ * decider, so the decide Stage consumes the chain without knowing which layer
+ * resolved. */
+function resolveDecisionSource() {
+  const command = String(loadEnvKey("PR_MONITOR_LLM_CMD") || "").trim();
+  if (command) {
+    return {
+      adapter: DECISION_SOURCES.decisionCommand,
+      decider: (decisionCtx) => callDecisionCommand(command, decisionCtx),
+    };
+  }
+  // Layer 1b: a configured chat-completions provider (custom endpoint and
+  // credential, or the legacy OpenRouter default) fills the model+credential slot.
+  const providerKey = loadEnvKey("PR_MONITOR_LLM_API_KEY") || loadEnvKey("OPENROUTER_API_KEY");
+  if (providerKey) {
+    return { adapter: DECISION_SOURCES.modelCredential, decider: callLlm };
+  }
+  // Layer 2 (auto: current agent, current provider). Only the markers of the
+  // agent session actually surrounding this process select an adapter, and
+  // that adapter's CLI must be runnable on PATH.
+  const auto = resolveAutoDecisionSource();
+  if (auto) {
+    return {
+      adapter: auto.adapter,
+      decider: (decisionCtx) => callDecisionCommand(auto.command, decisionCtx),
+    };
+  }
+  return {
+    adapter: DECISION_SOURCES.none,
+    decider: async () => { throw new NoDecisionSourceError(NO_DECISION_SOURCE_REASON); },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -693,6 +986,7 @@ function computeNextCheckAt({
   ctx,
   stateEntry,
   action,
+  decisionSource = null,
   pingedAtMs = null,
   reviewFixResponseSig = null,
   nowMs,
@@ -702,6 +996,9 @@ function computeNextCheckAt({
 
   if (action === "notify_ready" || action === "skip_wip") return null;
   if (action === "llm_failed") return iso(nowMs + H(LLM_RETRY_HOURS));
+  if (action === "wait" && decisionSource === DECISION_SOURCES.none) {
+    return iso(nowMs + H(NO_DECISION_SOURCE_RECHECK_HOURS));
+  }
   if (
     action === "wait" &&
     st.llm_failures_sha === ctx.headSha &&
@@ -806,6 +1103,7 @@ function buildPrReport({
   reviewFixResponseSig = null,
   ownerNotifications = [],
   fetchFailed = false,
+  decisionSource = null,
   nowMs,
 }) {
   return {
@@ -816,10 +1114,19 @@ function buildPrReport({
     head_sha: ctx?.headSha ?? null,
     action,
     reason,
+    ...(decisionSource ? { decision_source: decisionSource } : {}),
     reused_cached_decision: reused,
     github_action_posted: githubActionPosted,
     next_check_at: ctx
-      ? computeNextCheckAt({ ctx, stateEntry, action, pingedAtMs, reviewFixResponseSig, nowMs })
+      ? computeNextCheckAt({
+          ctx,
+          stateEntry,
+          action,
+          decisionSource,
+          pingedAtMs,
+          reviewFixResponseSig,
+          nowMs,
+        })
       : null,
     owner_notifications: ownerNotifications,
     ...(fetchFailed ? { fetch_failed: true } : {}),
@@ -846,7 +1153,7 @@ function buildOverallReport({ reports, targetPr, scopeFetchFailures = 0 }) {
 function buildTerminalPrReport({
   repo,
   pr,
-  action = "wait",
+  action = "closed",
   reason,
   headSha = pr?.head?.sha || null,
   terminal = "done",
@@ -880,7 +1187,7 @@ export async function runMonitorOnce({
   state = {},
   collectPrStateFn = collectPrState,
   decideFn = decideWithLlm,
-  llmDecider = callLlm,
+  llmDecider = null,
   runGhFn = runGh,
   dryRun = DRY_RUN,
   emitJsonReport = false,
@@ -905,15 +1212,66 @@ export async function runMonitorOnce({
   // Per-repo head shas already reported "ready" (key "repo:sha") -> notify once.
   const seenReady = new Set(nextState.seen_ready_shas || []);
 
+  // One resolution per Tick, consumed by every PR's decide Stage. An
+  // injected llmDecider (embedders, tests) stands in for the built-in
+  // model+credential adapter and bypasses environment resolution.
+  const resolvedSource = typeof llmDecider === "function"
+    ? { adapter: DECISION_SOURCES.injectedDecider, decider: llmDecider }
+    : llmDecider && typeof llmDecider.decider === "function"
+      ? { adapter: llmDecider.adapter || DECISION_SOURCES.injectedDecider, decider: llmDecider.decider }
+      : resolveDecisionSource();
+
   const notifications = [];
   const dryRunLogs = [];
   const reports = [];
   let githubActionsTaken = 0;
   let scopeFetchFailures = 0;
   const ownerNotifications = [];
+
+  // --- Persisted per-PR observability state (ADR-0009, ticket #107) --------
+  // The per-PR state entry keeps its watchdog bookkeeping fields and gains
+  // exactly two observability fields, written here so the API (#110) can
+  // project a Flow from disk alone:
+  //
+  //   next_check_at  ISO-8601 string | null — the deadline the next Tick is
+  //                  worth its cost, exactly as the report carries it. null
+  //                  means quiescent: nothing is scheduled, only a Delivery
+  //                  should wake the Flow. Always overwritten, so a decision
+  //                  that disarms the Expectation clears the persisted one.
+  //
+  //   tick_history   Oldest-first array of the most recent Tick outcomes,
+  //                  capped at TICK_HISTORY_MAX (newest kept). Each record:
+  //                    ts               ISO-8601, the Tick's clock
+  //                    action           the report's action
+  //                    reason           the report's reason
+  //                    terminal         "done" | "needs-human" | "skipped" | null
+  //                    decision_source  optional; only when the report carries
+  //                                     one (the adapter that decided, #106)
+  //
+  const persistReportOutcome = (report) => {
+    if (report?.type !== "pr" || !report.repo || !Number.isInteger(report.pr)) return;
+    const skey = `${report.repo}#${report.pr}`;
+    const entry = { ...(nextState[skey] || {}) };
+    if (report.head_sha) entry.last_head_sha = report.head_sha;
+    entry.next_check_at = report.next_check_at ?? null;
+    const history = Array.isArray(entry.tick_history) ? entry.tick_history : [];
+    entry.tick_history = [
+      ...history,
+      {
+        ts: new Date(nowMs).toISOString(),
+        action: report.action,
+        reason: report.reason,
+        terminal: report.terminal ?? null,
+        ...(report.decision_source ? { decision_source: report.decision_source } : {}),
+      },
+    ].slice(-TICK_HISTORY_MAX);
+    nextState[skey] = entry;
+  };
+
   const pushReport = (report) => {
     reports.push(report);
     ownerNotifications.push(...(report.owner_notifications || []));
+    persistReportOutcome(report);
   };
 
   // Collect open PRs from every watched repo. A failure on one repo must
@@ -925,7 +1283,7 @@ export async function runMonitorOnce({
       if (pr && typeof pr === "object" && pr.state === "open") {
         prsByRepo[targetPr.repo] = [pr];
       } else {
-        reports.push(buildTerminalPrReport({
+        pushReport(buildTerminalPrReport({
           repo: targetPr.repo,
           pr,
           reason: `Requested PR is not open (${pr?.merged ? "merged" : pr?.state || "closed"}); monitoring is complete.`,
@@ -946,6 +1304,28 @@ export async function runMonitorOnce({
       } catch (e) {
         scopeFetchFailures++;
         console.error(`⚠️ Could not list PRs for ${repo}: ${String(e).slice(0, 200)}`);
+      }
+    }
+  }
+
+  if (!targetPr) {
+    for (const [repo, prs] of Object.entries(prsByRepo)) {
+      const openNumbers = new Set(prs.map((pr) => String(pr.number)));
+      const prefix = `${repo}#`;
+      for (const [key, entry] of Object.entries(nextState)) {
+        if (!key.startsWith(prefix)) continue;
+        const number = key.slice(prefix.length);
+        if (!/^\d+$/.test(number) || openNumbers.has(number)) continue;
+        const history = Array.isArray(entry?.tick_history) ? entry.tick_history : [];
+        const latest = history.at(-1);
+        if (latest?.action === "closed" && latest?.terminal === "done") continue;
+        pushReport(buildTerminalPrReport({
+          repo,
+          pr: { number: Number(number) },
+          headSha: entry?.last_head_sha || null,
+          action: "closed",
+          reason: "PR is no longer open (absent from a successful open-PR listing); monitoring is complete.",
+        }));
       }
     }
   }
@@ -1060,7 +1440,8 @@ export async function runMonitorOnce({
         rebaseMaxPings: REBASE_MAX_PINGS,
         rebaseStaleRetryHours: REBASE_STALE_RETRY_HOURS,
         llmContext: decisionCtx,
-        llmDecider,
+        llmDecider: resolvedSource.decider,
+        decisionSource: resolvedSource.adapter,
       });
       Object.assign(st, decided.stateEntry);
       for (const note of decided.notifications || []) recordOwnerNote(note);
@@ -1073,6 +1454,7 @@ export async function runMonitorOnce({
           : null;
       const pendingRetryDue =
         action === "wait" &&
+        decided.decision_source !== DECISION_SOURCES.none &&
         pendingReviewFixAction &&
         st.review_fix_pending_response_sig === reviewFixResponseSig &&
         !agentWorking &&
@@ -1105,6 +1487,7 @@ export async function runMonitorOnce({
         pingedAtMs,
         reviewFixResponseSig,
         ownerNotifications: prOwnerNotes,
+        decisionSource: decided.decision_source ?? null,
         nowMs,
         ...overrides,
       });
@@ -1299,9 +1682,18 @@ async function main() {
   }
 
   let lock = null;
+  let heartbeat = null;
   try {
     if (!DRY_RUN) lock = await acquireStateLock();
     const state = loadState();
+    if (!DRY_RUN) {
+      // Mark the Tick in flight before any work starts, so a projection that
+      // reads the state file while it runs sees "running"; a crash leaves the
+      // marker behind for tickInFlight() to rule dead.
+      state.tick_in_flight = inFlightMarker(lock.owner.token);
+      saveState(state);
+      heartbeat = startTickInFlightHeartbeat(lock.owner, { lockPath: lock.lockPath });
+    }
     const out = await runMonitorOnce({
       nowMs: Date.now(),
       repos,
@@ -1313,12 +1705,21 @@ async function main() {
 
     // Never persist in dry-run — a dry run must not poison the real
     // throttle/cache bookkeeping.
-    if (!DRY_RUN) saveState(out.state);
+    if (!DRY_RUN) {
+      clearInterval(heartbeat);
+      heartbeat = null;
+      delete out.state.tick_in_flight;
+      saveState(out.state);
+    }
 
     // Output: only emit human-facing notifications (empty otherwise ->
     // no_agent cron stays silent so we don't spam the owner).
     if (out.output) console.log(out.output);
   } finally {
+    if (!DRY_RUN) {
+      if (heartbeat) clearInterval(heartbeat);
+      clearTickInFlight(lock?.owner);
+    }
     releaseStateLock(lock);
   }
 }

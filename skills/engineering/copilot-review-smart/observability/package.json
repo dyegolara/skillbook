@@ -1,0 +1,13 @@
+{
+  "name": "@skillbook/pr-monitor-observability",
+  "version": "2.3.0",
+  "private": true,
+  "type": "module",
+  "description": "Read-only observability API for the copilot-review-smart skill: projects the persisted Tick state and Listener state on loopback (GET /health, /timeline, /flows, /flows/:owner/:repo/:num).",
+  "scripts": {
+    "start": "node src/cli.mjs",
+    "tui": "node src/tui-cli.mjs",
+    "test": "node --test test/"
+  },
+  "license": "MIT"
+}

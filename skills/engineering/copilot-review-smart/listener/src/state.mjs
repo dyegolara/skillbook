@@ -10,7 +10,7 @@ function clone(value) {
 }
 
 export function emptyListenerState() {
-  const state = { version: 1, expectations: {}, hooks: {} };
+  const state = { version: 1, expectations: {}, hooks: {}, closed_flows: {} };
   savedSnapshots.set(state, clone(state));
   return state;
 }
@@ -34,7 +34,13 @@ export function loadListenerState(statePath = defaultListenerStatePath()) {
   } catch (error) {
     throw new Error(`Invalid Listener state JSON at ${statePath}: ${error.message}`, { cause: error });
   }
-  const state = { ...emptyListenerState(), ...parsed, expectations: parsed.expectations || {}, hooks: parsed.hooks || {} };
+  const state = {
+    ...emptyListenerState(),
+    ...parsed,
+    expectations: parsed.expectations || {},
+    hooks: parsed.hooks || {},
+    closed_flows: parsed.closed_flows || {},
+  };
   savedSnapshots.set(state, clone(state));
   return state;
 }
@@ -85,21 +91,32 @@ export function saveListenerState(state, statePath = defaultListenerStatePath())
     }
   }
 
-  const previous = savedSnapshots.get(state) || { version: undefined, expectations: {}, hooks: {} };
+  const previous = savedSnapshots.get(state) || {
+    version: undefined,
+    expectations: {},
+    hooks: {},
+    closed_flows: {},
+  };
   const next = clone(state);
   try {
-    let current = { version: 1, expectations: {}, hooks: {} };
+    let current = { version: 1, expectations: {}, hooks: {}, closed_flows: {} };
     try {
       const parsed = JSON.parse(fs.readFileSync(statePath, "utf8"));
-      current = { ...current, ...parsed, expectations: parsed.expectations || {}, hooks: parsed.hooks || {} };
+      current = {
+        ...current,
+        ...parsed,
+        expectations: parsed.expectations || {},
+        hooks: parsed.hooks || {},
+        closed_flows: parsed.closed_flows || {},
+      };
     } catch (error) {
       if (error?.code !== "ENOENT" && !(error instanceof SyntaxError)) throw error;
     }
     for (const field of Object.keys(next)) {
-      if (field === "expectations" || field === "hooks") continue;
+      if (field === "expectations" || field === "hooks" || field === "closed_flows") continue;
       if (JSON.stringify(previous[field]) !== JSON.stringify(next[field])) current[field] = next[field];
     }
-    for (const field of ["expectations", "hooks"]) {
+    for (const field of ["expectations", "hooks", "closed_flows"]) {
       const before = previous[field] || {};
       const after = next[field] || {};
       for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {

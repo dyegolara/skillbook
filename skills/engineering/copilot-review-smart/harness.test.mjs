@@ -9,6 +9,24 @@ test("fixture runner selects the first-tick scenario and freezes the LLM respons
   assert.equal(out.fetchLog.length, 1);
 });
 
+test("fixture runner pins its provider despite operator endpoint and credential overrides", async () => {
+  const previousEndpoint = process.env.PR_MONITOR_LLM_ENDPOINT;
+  const previousKey = process.env.PR_MONITOR_LLM_API_KEY;
+  process.env.PR_MONITOR_LLM_ENDPOINT = "https://operator.example.invalid/v1/chat/completions";
+  process.env.PR_MONITOR_LLM_API_KEY = "operator-key";
+  try {
+    const out = await runFixtureScenario("first-tick-wait");
+    assert.equal(out.code, 0, out.stderr);
+    assert.equal(out.fetchLog.length, 1);
+    assert.equal(out.fetchLog[0].url, "https://openrouter.ai/api/v1/chat/completions");
+  } finally {
+    if (previousEndpoint === undefined) delete process.env.PR_MONITOR_LLM_ENDPOINT;
+    else process.env.PR_MONITOR_LLM_ENDPOINT = previousEndpoint;
+    if (previousKey === undefined) delete process.env.PR_MONITOR_LLM_API_KEY;
+    else process.env.PR_MONITOR_LLM_API_KEY = previousKey;
+  }
+});
+
 test("idle cached scenario makes no LLM call and stays silent", async () => {
   const out = await runFixtureScenario("idle-tick");
   assert.equal(out.code, 0);

@@ -56,10 +56,12 @@ PR_MONITOR_PUBLIC_URL="https://your-public-host" \
 node pr_monitor_webhook.mjs --serve --setup-hooks
 ```
 
-Other env: `PR_MONITOR_STATE_PATH` (default `~/.cache/pr-monitor/state.json`),
-`PR_MONITOR_MODEL` (OpenRouter model), `OPENROUTER_API_KEY` (env or
-`~/.pr-monitor.env` / `~/.hermes/.env`), `DRY_RUN=1` (print would-be
-comments, never post, never persist state).
+Other env: `PR_MONITOR_STATE_PATH` (default `~/.cache/pr-monitor/state.json`)
+and `DRY_RUN=1` (print would-be comments, never post, never persist state).
+The decision source — an explicit command, an explicit model+credential pair,
+or the auto-discovered agent session, with its precedence, settings and launch
+examples — is documented under
+[Decision source](#decision-source-what-an-invoking-agent-defines-or-exports).
 
 ## Invocation API
 
@@ -145,8 +147,8 @@ Lifecycle:
 5. A Flow closes at `notify_ready` (All-clear) or when the PR is closed or
    merged; `needs-human` keeps its weekly retry. When no open PR is left to
    watch, the Listener exits (`--keep-alive` keeps it up under a supervisor).
-   Pending Expectations and Hook ids persist in the Listener state file and
-   survive restarts.
+   Pending Expectations, confirmed PR-closure evidence and Hook ids persist in
+   the Listener state file and survive restarts.
 
 Events subscribed (all filtered by watched repo): `pull_request` `opened` /
 `synchronize` / `reopened` / `ready_for_review` / `converted_to_draft` /
@@ -181,6 +183,56 @@ Serving and management:
 
 Cron remains the alternate mode for Hosts that cannot expose a public
 endpoint; everything below applies unchanged.
+
+## Observability API (read-only)
+
+A separate loopback process projects the persisted state — it is not part of
+the Listener (which is ephemeral and absent under tick and cron), so it
+answers in every mode and whether or not the watchdog is running. It holds no
+state of its own and never writes; GET only, no version prefix:
+
+```bash
+node pr_monitor_observability.mjs            # http://127.0.0.1:8788 by default
+curl -s http://127.0.0.1:8788/flows | jq
+```
+
+Routes: `/health` (watchdog liveness, in the Listener's health shape),
+`/timeline` (executed, in-flight and scheduled ticks), `/flows` (one row per
+watched PR with its Stage sequence) and `/flows/:owner/:repo/:num` (one Flow
+in full; 404 when unknown). Stage statuses, outcomes and terminal words use
+`GLOSSARY.md`; the projection derivation is documented in
+`observability/README.md`.
+
+`pr_monitor_tui.mjs` is the coloured client of that contract — one command,
+no setup beyond the API being reachable:
+
+```bash
+node pr_monitor_tui.mjs            # refresh every 2s; Ctrl-C exits
+node pr_monitor_tui.mjs --once     # one frame, for scripts
+node pr_monitor_tui.mjs --url http://127.0.0.1:8788 --interval 5000
+```
+
+The header is the loop's tick timeline: ticks done (with the last one), the
+in-flight tick and when the next check fires. One line per watched PR shows
+its Stage sequence in glossary order — `collect check reuse decide act
+schedule` — with **past** green, **current** bold yellow and **next** grey,
+then the terminal outcome in the glossary's words (`All-clear /
+Notify-ready`, `Stuck PR`, `Needs-human`; `waiting` is not terminal). The TUI
+reads only `GET /timeline` and `GET /flows`; it never touches the state
+files. When the API is unreachable it names the URL, says what to start and
+keeps retrying. Settings: `--url` / `PR_MONITOR_OBSERVABILITY_URL` (default
+`http://127.0.0.1:8788`), `--interval` / `PR_MONITOR_TUI_INTERVAL_MS`
+(default `2000`), `--once`, `--color` / `--no-color` / `NO_COLOR`.
+
+Settings (flags override env): `--host` /
+`PR_MONITOR_OBSERVABILITY_HOST` (loopback only; default `127.0.0.1`),
+`--port` / `PR_MONITOR_OBSERVABILITY_PORT` (default `8788`), `--state` /
+`PR_MONITOR_STATE_PATH` (Tick state, default `~/.cache/pr-monitor/state.json`),
+`--listener-state` / `PR_MONITOR_WEBHOOK_STATE_PATH` (default
+`~/.cache/pr-monitor/listener-state.json`) and `--pid` /
+`PR_MONITOR_WEBHOOK_PID_PATH` (default `~/.cache/pr-monitor/listener.pid`).
+The implementation is the private `observability/` package
+(`@skillbook/pr-monitor-observability`, zero dependencies).
 
 ## Decision flow (deterministic gates first, LLM last)
 
@@ -240,6 +292,99 @@ Weekly retries anchor at the escalation moment recorded in state
 | `notify_ready` | review transcript reached an All-clear on the current head (LLM) | owner notification only — NEVER pings GitHub |
 | `wait` | not enough info / too soon (LLM or gates) | silence |
 
+### Decision source (what an invoking agent defines or exports)
+
+A Tick resolves one decider per invocation, first match wins:
+
+**decision command → model+credential pair → auto → none**
+
+1. **Decision command** — `PR_MONITOR_LLM_CMD`: the request goes to the
+   command on stdin, a `{"action","reason"}` JSON decision comes back on
+   stdout. Timeout `PR_MONITOR_LLM_CMD_TIMEOUT_MS` (default 60000 ms). The
+   universal adapter — any agent CLI that answers a prompt non-interactively
+   fits. Non-zero exit, timeout and unparseable output are real decision
+   failures: they consume the three-attempt-per-head budget and can escalate
+   to Needs-human.
+2. **Model + credential pair** — `PR_MONITOR_LLM_API_KEY` (default
+   `OPENROUTER_API_KEY`) with `PR_MONITOR_MODEL` (default
+   `deepseek/deepseek-v4-flash-0731`) and `PR_MONITOR_LLM_ENDPOINT` (default
+   `https://openrouter.ai/api/v1/chat/completions`). This is exactly the
+   deployed OpenRouter cron path, and the defaults keep it unchanged. The key
+   selects this layer — a model without a key does not.
+3. **Auto — the invoking agent session** — export nothing: the Tick finds the
+   agent surrounding it (the session's marker variables plus the agent CLI on
+   `PATH`) and synthesizes that CLI as the decision command, pinning the
+   session's model where the host exposes one. Registered adapters, in match
+   order:
+
+   | Agent | Session markers | Session model pinned | Synthesized command |
+   |---|---|---|---|
+   | `pi` | `PI_CODING_AGENT=true` or `AI_AGENT=pi` | `PI_PROVIDER` / `PI_MODEL` | `pi --print [--provider …] [--model …] …` |
+   | `claude` | `CLAUDECODE=1` or `AI_AGENT=claude-code…` | `ANTHROPIC_MODEL` | `claude --print [--model …] …` |
+   | `opencode` | `OPENCODE=1`, `OPENCODE_CLIENT` or `AI_AGENT=opencode` | `OPENCODE_CONFIG_CONTENT.model` | `opencode run [--model …] …` |
+
+   Discovery is innermost-first: a nested agent session inherits the outer
+   session's env, so when several markers coexist the explicit `AI_AGENT`
+   marker names the session that actually surrounds the process and selects
+   that adapter (when its CLI is runnable). Without `AI_AGENT`, the table's
+   registry order is the deterministic fallback.
+
+   Each adapter authenticates through its own CLI; the skill never reads or
+   prints another tool's credential store. Claude Code authentication through
+   a Teams seat is not confirmed — see the caveat on that unit in `agents.mjs`
+   and confirm it in the Teams-seat environment before relying on the adapter.
+4. **None** — the handled case, not a failure: action `wait`,
+   `decision_source: "none"`, no owner notification, and the
+   three-attempt-per-head budget untouched. The reason is the operator's
+   checklist — it starts `No LLM decision source is configured:` and names
+   the setup paths: define `PR_MONITOR_LLM_CMD`, or define a
+   chat-completions provider with `PR_MONITOR_LLM_API_KEY` (default
+   `OPENROUTER_API_KEY`) and optionally `PR_MONITOR_LLM_ENDPOINT` /
+   `PR_MONITOR_MODEL`.
+
+Settings are read from the invoking agent's environment first, then from the
+skill's env files (`~/.pr-monitor.env`, then `~/.hermes/.env`, the legacy
+deployed cron location), and never printed:
+
+| Setting | Meaning | Where it may be set |
+|---|---|---|
+| `PR_MONITOR_LLM_CMD` | decision command (stdin request, stdout JSON) | process env, then either env file |
+| `PR_MONITOR_LLM_CMD_TIMEOUT_MS` | decision-command timeout (default 60000) | process env, then either env file |
+| `PR_MONITOR_LLM_API_KEY` | credential for the chat-completions provider | process env, then either env file |
+| `OPENROUTER_API_KEY` | credential fallback when `PR_MONITOR_LLM_API_KEY` is unset | process env, then either env file |
+| `PR_MONITOR_LLM_ENDPOINT` | provider endpoint (default `https://openrouter.ai/api/v1/chat/completions`) | process env, then either env file |
+| `PR_MONITOR_MODEL` | provider model (default `deepseek/deepseek-v4-flash-0731`) | process env, then either env file |
+
+Traceability: every LLM decision carries `decision_source` in the Tick's JSON
+report — `decision_command`, `model_credential`,
+`auto:<agent>` or `auto:<agent>:<provider>/<model>` (the provider part only
+when the host exposes one), `injected_decider` for a bare injected callable, or
+`none` when no decision source is configured (a configuration gap, not a
+decision). An injected `{ adapter, decider }` unit retains its declared adapter.
+Deterministic gate decisions carry no `decision_source` field at all. The same value persists into the per-PR Tick history
+(`tick_history` in the state file), so a decision can be traced after the
+fact; the observability API projects it (see "Observability API" above).
+
+Launch examples — one per explicit form, then the auto default:
+
+```bash
+# decision command: request on stdin, {"action","reason"} on stdout.
+PR_MONITOR_REPOS="your-org/your-repo" \
+PR_MONITOR_LLM_CMD='claude --print "Reply with only one JSON decision object."' \
+PR_MONITOR_LLM_CMD_TIMEOUT_MS=90000 \
+node pr_monitor.mjs --json-report
+
+# model + credential pair: the deployed OpenRouter path, defaults unchanged.
+PR_MONITOR_REPOS="your-org/your-repo" \
+PR_MONITOR_MODEL="deepseek/deepseek-v4-flash-0731" \
+PR_MONITOR_LLM_API_KEY="$OPENROUTER_API_KEY" \
+node pr_monitor.mjs --json-report
+# custom provider: add PR_MONITOR_LLM_ENDPOINT="https://your-provider.example/v1/chat/completions"
+
+# auto default: export nothing; launch from the agent session.
+PR_MONITOR_REPOS="your-org/your-repo" node pr_monitor.mjs --json-report
+```
+
 ## Guardrails (the anti-spam core)
 
 - **WIP/active-work guard**: draft PRs and WIP/[WIP]/DNM-titled PRs skip the
@@ -289,10 +434,11 @@ Weekly retries anchor at the escalation moment recorded in state
 - `repos/{r}/pulls/{n}/commits` → last commit ts (oldest-first; take
   `max(author.date)`).
 
-LLM: OpenRouter `chat/completions`, temperature 0, `response_format:
-json_object`, four-action prompt (`request_rebase` is deterministic — the
-LLM never picks it; English reasoning, see `callLlm` in the script). Key
-from `OPENROUTER_API_KEY` (env, `~/.pr-monitor.env`, or `~/.hermes/.env`).
+LLM: a chat-completions provider (OpenRouter by default), temperature 0,
+`response_format: json_object`, four-action prompt (`request_rebase` is
+deterministic — the LLM never picks it; English reasoning, see `callLlm` in
+the script). The endpoint, credential and model are the decision-source
+settings above.
 
 Decision architecture and policy intent are documented in ADRs:
 - `resources/docs/adr/0003-llm-decision-maker-behind-deterministic-gates.md`
