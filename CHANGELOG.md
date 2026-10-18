@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.3.0
+
+- Add `skills/software-factory/scripts/env-defaults.mjs`: the single source of
+  the chain's pins and resolution rules, so every pin resolves from the
+  environment (`DEV_ENV_*`) and falls back to the current values (#161, #162).
+- Route every launch helper pin through that resolver; the verifier follows the
+  file and `.env.example` documents the per-docker pattern (ADR-0006 amendment,
+  #163).
+- Extend the fixture harness so a `DEV_ENV_` launch produces the resolved pinned
+  command end to end (#164, #165).
+
 ## 1.2.0
 
 - Add the software-factory pack: grill-with-spec, dev-flow, code-review-loop,
