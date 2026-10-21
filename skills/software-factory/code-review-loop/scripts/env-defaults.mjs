@@ -47,6 +47,21 @@ export const DEFAULTS = {
 };
 
 /**
+ * The launch stages and their env-defaults keys, in one map: the kebab name
+ * the helpers take and the SCREAMING key `DEFAULTS.stages` uses. `GRILL` is
+ * deliberately absent — it is the grill helper's stage (`open-grill-session.mjs`
+ * `grillPin`), which resolves it through this module without entering a launch
+ * or wake path. The map owns the launch stage set and both spellings; the
+ * launch guard and the fixture harness both read it.
+ */
+export const LAUNCH_STAGES = Object.freeze({
+  "dev-flow": "DEV_FLOW",
+  "implement-spec": "IMPLEMENT_SPEC",
+  "code-review-loop": "CODE_REVIEW_LOOP",
+  "create-pr": "CREATE_PR",
+});
+
+/**
  * The provider→key-variable table: each provider's API key lives in its own
  * environment variable, carried by the environment (docker) for that
  * provider's account. There is no universal fallback, and `OPENROUTER_API_KEY`
@@ -186,13 +201,30 @@ export function resolveValue({ name, env = process.env, fallback, allowed = null
   return value;
 }
 
+/** The one unknown-stage error: the caller's stage argument and the expected names. */
+function unknownStage(stage, expected) {
+  return new Error(`unknown stage "${stage}" — expected one of ${expected.join(", ")}`);
+}
+
 /** The stage's default pin, or a hard error for a stage outside the chain. */
 export function stageDefaults(stage) {
   const defaults = DEFAULTS.stages[stage];
-  if (!defaults) {
-    throw new Error(`unknown stage "${stage}" — expected one of ${Object.keys(DEFAULTS.stages).join(", ")}`);
-  }
+  if (!defaults) throw unknownStage(stage, Object.keys(DEFAULTS.stages));
   return defaults;
+}
+
+/**
+ * The env-defaults stage key for a launch-stage name: `code-review-loop`
+ * resolves `CODE_REVIEW_LOOP`. This is the launch guard — the launch helper
+ * calls it before any launch path, and the wake helper calls it (through
+ * `launch-stage.mjs`) before any fetch — so the launch stage set and the
+ * kebab⇄SCREAMING conversion have one source. An unknown stage emits the same
+ * single error shape `stageDefaults` emits, naming the launch stages.
+ */
+export function stageKey(stage) {
+  const name = String(stage).replaceAll("_", "-").toLowerCase();
+  if (!Object.hasOwn(LAUNCH_STAGES, name)) throw unknownStage(stage, Object.keys(LAUNCH_STAGES));
+  return LAUNCH_STAGES[name];
 }
 
 /** The run's provider: `DEV_ENV_PROVIDER`, defaulting to today's global pin. */

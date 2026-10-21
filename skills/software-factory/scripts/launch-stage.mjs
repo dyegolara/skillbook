@@ -53,36 +53,15 @@ import {
   resolveKey,
   resolveModel,
   resolveProvider,
-  stageDefaults,
+  stageKey,
 } from "./env-defaults.mjs";
 
+// The launch guard is env-defaults.mjs's `stageKey`: the launch stage set and
+// the kebab⇄SCREAMING conversion live there. It is re-exported here because
+// the wake helper imports its guard from the launch helper.
+export { stageKey };
+
 export const KEPLER_DATA_DIR = join(homedir(), ".kepler-server", "data");
-
-/**
- * The stages the launch helper launches — and the only stages the wake
- * helper's guard accepts. `GRILL` is deliberately not here: it is the grill
- * helper's stage (`open-grill-session.mjs` `grillPin`), which resolves it
- * through `env-defaults.mjs` without entering a launch or wake path.
- */
-const LAUNCH_STAGE_KEYS = ["DEV_FLOW", "IMPLEMENT_SPEC", "CODE_REVIEW_LOOP", "CREATE_PR"];
-
-/**
- * The env-defaults stage key for a launch-stage stage name: `code-review-loop`
- * resolves `CODE_REVIEW_LOOP`. The guard lives here so every caller —
- * including the wake helper, which resolves no pins — validates against the
- * launch stage set before any fetch or launch; the accepted keys resolve
- * through the same `DEFAULTS.stages` table `grillPin` uses for `GRILL`.
- */
-export function stageKey(stage) {
-  const key = String(stage).replaceAll("-", "_").toUpperCase();
-  if (!LAUNCH_STAGE_KEYS.includes(key)) {
-    throw new Error(
-      `unknown stage "${stage}" — expected one of ${LAUNCH_STAGE_KEYS.map((launchKey) => launchKey.toLowerCase().replaceAll("_", "-")).join(", ")}`
-    );
-  }
-  stageDefaults(key);
-  return key;
-}
 
 /**
  * The stage's resolved pins: `DEV_ENV_PROVIDER` (global) plus the stage's
@@ -129,6 +108,12 @@ function argvCommand(argv) {
  * spawn. Nothing is injected: the environment carries the key under the
  * provider's own variable, so the launched stage inherits it already paired
  * with the resolved provider (ADR-0006, amended 2026-10-21).
+ *
+ * The named seam is kept deliberately, not as an accidental delegate: the
+ * stage-level preflight reads as "resolve the stage's key", and this docblock
+ * is the one place the unconditional-before-any-fetch/spawn contract lives.
+ * `resolveKey` is the provider-key primitive; inlining it would move that
+ * contract back into the launch path.
  */
 export function resolveStageKey(provider, env = process.env) {
   return resolveKey(provider, env);

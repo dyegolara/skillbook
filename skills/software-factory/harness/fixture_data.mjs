@@ -17,18 +17,11 @@ import {
   AGENTS,
   DEFAULTS,
   EFFORTS,
+  LAUNCH_STAGES,
   PROVIDERS,
   PROVIDER_KEY_VARS,
+  stageKey,
 } from "../scripts/env-defaults.mjs";
-
-// The launch stages and their env-defaults keys. GRILL is not a launch stage:
-// its route is `openGrillSession`, covered by GRILL_SCENARIOS.
-const STAGE_KEY_BY_NAME = {
-  "dev-flow": "DEV_FLOW",
-  "implement-spec": "IMPLEMENT_SPEC",
-  "code-review-loop": "CODE_REVIEW_LOOP",
-  "create-pr": "CREATE_PR",
-};
 
 /** The fixture's fixed launch facts: spec, pointers, ids and worktree. */
 export const FIXTURE = Object.freeze({
@@ -41,11 +34,11 @@ export const FIXTURE = Object.freeze({
 });
 
 /** Every launch-stage name the harness drives, in the defaults table's order. */
-export const LAUNCH_STAGE_NAMES = Object.keys(STAGE_KEY_BY_NAME);
+export const LAUNCH_STAGE_NAMES = Object.keys(LAUNCH_STAGES);
 
 /** The stage's default pins read from env-defaults: global provider + stage model/effort. */
 export function defaultPin(stage) {
-  const pin = DEFAULTS.stages[STAGE_KEY_BY_NAME[stage]];
+  const pin = DEFAULTS.stages[stageKey(stage)];
   return { provider: DEFAULTS.provider, model: pin.model, effort: pin.effort };
 }
 
