@@ -46,9 +46,10 @@
  *      every expected stage (the LAUNCH_STAGES map plus the grill stage) must
  *      have a parsed ADR row, and the verifier reads each row's model and
  *      effort, in the ADR's recorded spellings, to compare them to the same
- *      table the frontmatter is checked against — the only verifier-side guard
- *      for the implement-spec pin, which has no SKILL.md frontmatter, so a
- *      missing row, a malformed row or a drift is a pack-contract problem.
+ *      table the frontmatter is checked against — one of the two verifier-side
+ *      guards for the implement-spec pin, which has no SKILL.md frontmatter
+ *      (item 3's README chain-map check is the other), so a missing row, a
+ *      malformed row or a drift is a pack-contract problem.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -81,7 +82,8 @@ const PACKAGED_HELPERS = ["launch-stage.mjs", "open-wake-session.mjs", "env-defa
 const ADR_FILE = "docs/adr/0006-chain-skills-cross-model-handoffs.md";
 const PACK_README_FILE = "skills/software-factory/README.md";
 // The grill stage is not a launch stage (LAUNCH_STAGES omits it), yet ADR-0006
-// documents its pin row; the expected ADR row set is this row plus the map.
+// documents its pin row and the pack README's chain map repeats it; the
+// expected pin-row set for both surfaces is this row plus the map.
 const GRILL_STAGE = { stage: "grill-with-spec", key: "GRILL" };
 // The skills that close with the shared `## Handoff rules` block.
 const HANDOFF_RULES_SKILLS = ["dev-flow", "code-review-loop"];
@@ -93,6 +95,7 @@ export function verifySoftwareFactoryPack(packDir) {
   const defaults = readDefaults(packDir, problems);
   const launchStageEntries = readLaunchStages(packDir, problems);
   const launchStages = launchStageEntries.map((entry) => entry.stage);
+  const PIN_STAGES = [GRILL_STAGE, ...launchStageEntries];
 
   for (const skill of CHAIN_SKILLS) {
     const label = `skills/software-factory/${skill.name}/SKILL.md`;
@@ -135,8 +138,8 @@ export function verifySoftwareFactoryPack(packDir) {
     }
   }
 
-  checkAdrPins(problems, repoRoot, defaults, [GRILL_STAGE, ...launchStageEntries]);
-  checkReadmeChainMapPins(problems, repoRoot, defaults, [GRILL_STAGE, ...launchStageEntries]);
+  checkAdrPins(problems, repoRoot, defaults, PIN_STAGES);
+  checkReadmeChainMapPins(problems, repoRoot, defaults, PIN_STAGES);
   checkLaunchMechanism(problems, packDir, repoRoot, defaultsSource(packDir));
   checkGrillMechanism(problems, packDir);
   checkWakeMechanism(problems, packDir);
@@ -801,13 +804,60 @@ function parseAdrPins(text) {
 }
 
 /**
+ * Cross-check parsed pin rows against the DEFAULTS table the verifier already
+ * reads from env-defaults.mjs. One loop serves both pin surfaces — ADR-0006's
+ * documented rows and the pack README's chain-map rows — because both name a
+ * stage, a model and an effort, and both must carry a row for every expected
+ * stage. A row whose pin fields are null (the chain-map parser's unreadable
+ * cells) is reported with the expected model and effort; the ADR parser never
+ * yields null fields, so that branch is inert there.
+ */
+function checkPinRows(problems, { file, label, pins, defaults, stageEntries }) {
+  // An unreadable DEFAULTS table is already reported by readDefaults.
+  if (defaults === null) return;
+  const pinsByStage = new Map(pins.map((pin) => [pin.stage, pin]));
+  for (const { stage, key } of stageEntries) {
+    const documented = defaults.stages[key];
+    if (documented === undefined) {
+      problems.push(
+        `${file}: ${stage} ${label} pin row has no ${DEFAULTS_FILE} DEFAULTS.stages.${key} entry`
+      );
+      continue;
+    }
+    const pin = pinsByStage.get(stage);
+    if (pin === undefined) {
+      problems.push(
+        `${file}: missing the ${label} ${stage} pin row for ${DEFAULTS_FILE} DEFAULTS.stages.${key}`
+      );
+      continue;
+    }
+    if (pin.model === null || pin.effort === null) {
+      problems.push(
+        `${file}: cannot read the ${label} ${stage} pin row for ${DEFAULTS_FILE} DEFAULTS.stages.${key} (expected model "${documented.model}" and effort "${documented.effort}")`
+      );
+      continue;
+    }
+    if (pin.model !== documented.model) {
+      problems.push(
+        `${file}: ${stage} model pin "${pin.model}" does not match ${DEFAULTS_FILE} DEFAULTS.stages.${key}.model "${documented.model}"`
+      );
+    }
+    if (pin.effort !== documented.effort) {
+      problems.push(
+        `${file}: ${stage} effort pin "${pin.effort}" does not match ${DEFAULTS_FILE} DEFAULTS.stages.${key}.effort "${documented.effort}"`
+      );
+    }
+  }
+}
+
+/**
  * Cross-check ADR-0006's documented pin rows against the DEFAULTS table the
  * verifier already reads from env-defaults.mjs. The 2026-10-16 amendment names
  * that table as the pin list's source, while the ADR's historical text is never
  * rewritten — so drift between the record and the file is caught here instead.
  * The expected rows come from the launch-stage map plus the grill row; every
- * one must parse, and extra or unknown rows are ignored. This is the one check
- * that guards the implement-spec pin.
+ * one must parse, and extra or unknown rows are ignored. This is one of the two
+ * checks that guard the implement-spec pin.
  */
 function checkAdrPins(problems, repoRoot, defaults, stageEntries) {
   const path = join(repoRoot, ADR_FILE);
@@ -818,36 +868,21 @@ function checkAdrPins(problems, repoRoot, defaults, stageEntries) {
     problems.push(`${ADR_FILE}: cannot read the documented pin table rows`);
     return;
   }
-  // An unreadable DEFAULTS table is already reported by readDefaults.
-  if (defaults === null) return;
-  const pinsByStage = new Map(pins.map((pin) => [pin.stage, pin]));
-  for (const { stage, key } of stageEntries) {
-    const documented = defaults.stages[key];
-    if (documented === undefined) {
-      problems.push(
-        `${ADR_FILE}: ${stage} pin row has no ${DEFAULTS_FILE} DEFAULTS.stages.${key} entry`
-      );
-      continue;
-    }
-    const pin = pinsByStage.get(stage);
-    if (pin === undefined) {
-      problems.push(
-        `${ADR_FILE}: missing the documented ${stage} pin row for ${DEFAULTS_FILE} DEFAULTS.stages.${key}`
-      );
-      continue;
-    }
-    if (pin.model !== documented.model) {
-      problems.push(
-        `${ADR_FILE}: ${stage} model pin "${pin.model}" does not match ${DEFAULTS_FILE} DEFAULTS.stages.${key}.model "${documented.model}"`
-      );
-    }
-    if (pin.effort !== documented.effort) {
-      problems.push(
-        `${ADR_FILE}: ${stage} effort pin "${pin.effort}" does not match ${DEFAULTS_FILE} DEFAULTS.stages.${key}.effort "${documented.effort}"`
-      );
-    }
-  }
+  checkPinRows(problems, {
+    file: ADR_FILE,
+    label: "documented",
+    pins,
+    defaults,
+    stageEntries,
+  });
 }
+
+// The chain-map table's columns, in order:
+// Stage | Skill | Harness | Model pin (default) | Effort (default).
+const CHAIN_MAP_SKILL_COLUMN = 1;
+const CHAIN_MAP_MODEL_COLUMN = 3;
+const CHAIN_MAP_EFFORT_COLUMN = 4;
+const CHAIN_MAP_COLUMN_COUNT = CHAIN_MAP_EFFORT_COLUMN + 1;
 
 /**
  * Read the pack README's chain-map pin rows as source text. The table's Skill
@@ -870,15 +905,17 @@ function parseReadmeChainMapPins(text) {
       .replace(/\|$/, "")
       .split("|")
       .map((cell) => cell.trim());
-    if (cells.length < 5) continue;
+    if (cells.length < CHAIN_MAP_COLUMN_COUNT) continue;
     if (cells[0] === "Stage") continue;
     if (cells.every((cell) => /^:?-{3,}:?$/.test(cell))) continue;
-    const stage = /^`([a-z][a-z-]*)`(?:\s*\(referenced\))?$/.exec(cells[1]);
+    const stage = /^`([a-z][a-z-]*)`(?:\s*\(referenced\))?$/.exec(
+      cells[CHAIN_MAP_SKILL_COLUMN]
+    );
     if (stage === null) continue;
     pins.push({
       stage: stage[1],
-      model: /^`([^`]+)`$/.exec(cells[3])?.[1] ?? null,
-      effort: /^([a-z][\w.-]*)$/.exec(cells[4])?.[1] ?? null,
+      model: /^`([^`]+)`$/.exec(cells[CHAIN_MAP_MODEL_COLUMN])?.[1] ?? null,
+      effort: /^([a-z][\w.-]*)$/.exec(cells[CHAIN_MAP_EFFORT_COLUMN])?.[1] ?? null,
     });
   }
   return pins;
@@ -900,41 +937,13 @@ function checkReadmeChainMapPins(problems, repoRoot, defaults, stageEntries) {
     problems.push(`${PACK_README_FILE}: cannot read the chain-map pin table rows`);
     return;
   }
-  // An unreadable DEFAULTS table is already reported by readDefaults.
-  if (defaults === null) return;
-  const pinsByStage = new Map(pins.map((pin) => [pin.stage, pin]));
-  for (const { stage, key } of stageEntries) {
-    const documented = defaults.stages[key];
-    if (documented === undefined) {
-      problems.push(
-        `${PACK_README_FILE}: ${stage} chain-map pin row has no ${DEFAULTS_FILE} DEFAULTS.stages.${key} entry`
-      );
-      continue;
-    }
-    const pin = pinsByStage.get(stage);
-    if (pin === undefined) {
-      problems.push(
-        `${PACK_README_FILE}: missing the chain-map ${stage} pin row for ${DEFAULTS_FILE} DEFAULTS.stages.${key}`
-      );
-      continue;
-    }
-    if (pin.model === null || pin.effort === null) {
-      problems.push(
-        `${PACK_README_FILE}: cannot read the chain-map ${stage} pin row for ${DEFAULTS_FILE} DEFAULTS.stages.${key} (expected model "${documented.model}" and effort "${documented.effort}")`
-      );
-      continue;
-    }
-    if (pin.model !== documented.model) {
-      problems.push(
-        `${PACK_README_FILE}: ${stage} model pin "${pin.model}" does not match ${DEFAULTS_FILE} DEFAULTS.stages.${key}.model "${documented.model}"`
-      );
-    }
-    if (pin.effort !== documented.effort) {
-      problems.push(
-        `${PACK_README_FILE}: ${stage} effort pin "${pin.effort}" does not match ${DEFAULTS_FILE} DEFAULTS.stages.${key}.effort "${documented.effort}"`
-      );
-    }
-  }
+  checkPinRows(problems, {
+    file: PACK_README_FILE,
+    label: "chain-map",
+    pins,
+    defaults,
+    stageEntries,
+  });
 }
 
 function sectionLines(text, heading) {
