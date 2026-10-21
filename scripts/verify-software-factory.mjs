@@ -8,8 +8,11 @@
  *      the model and effort defaults recorded in env-defaults.mjs
  *      (DEFAULTS.stages.<STAGE>) — the verifier follows the file, never pins;
  *   2. every chain skill is registered in the plugin manifest;
- *   3. the pack README exists and the book's tables carry the pack's rows
- *      (README "What's inside", AGENTS "Own skills");
+ *   3. the pack README exists, its chain-map pin rows cross-check against the
+ *      DEFAULTS table (every stage's model and effort, so a missing row, a
+ *      malformed row or a drift is a pack-contract problem), and the book's
+ *      tables carry the pack's rows (README "What's inside", AGENTS "Own
+ *      skills");
  *   4. the referenced Matt Pocock pack is wired as a dependency: its row in
  *      both books' referenced-skills tables, both published-channel checks,
  *      and the skills:install command;
@@ -76,6 +79,7 @@ const DEFAULTS_FILE = "skills/software-factory/scripts/env-defaults.mjs";
 // in every skill that launches a stage.
 const PACKAGED_HELPERS = ["launch-stage.mjs", "open-wake-session.mjs", "env-defaults.mjs"];
 const ADR_FILE = "docs/adr/0006-chain-skills-cross-model-handoffs.md";
+const PACK_README_FILE = "skills/software-factory/README.md";
 // The grill stage is not a launch stage (LAUNCH_STAGES omits it), yet ADR-0006
 // documents its pin row; the expected ADR row set is this row plus the map.
 const GRILL_STAGE = { stage: "grill-with-spec", key: "GRILL" };
@@ -132,13 +136,14 @@ export function verifySoftwareFactoryPack(packDir) {
   }
 
   checkAdrPins(problems, repoRoot, defaults, [GRILL_STAGE, ...launchStageEntries]);
+  checkReadmeChainMapPins(problems, repoRoot, defaults, [GRILL_STAGE, ...launchStageEntries]);
   checkLaunchMechanism(problems, packDir, repoRoot, defaultsSource(packDir));
   checkGrillMechanism(problems, packDir);
   checkWakeMechanism(problems, packDir);
   checkHandoffRules(problems, packDir);
 
   if (!existsSync(join(packDir, "README.md"))) {
-    problems.push("skills/software-factory/README.md: missing");
+    problems.push(`${PACK_README_FILE}: missing`);
   }
 
   checkTableRow(problems, repoRoot, {
@@ -839,6 +844,94 @@ function checkAdrPins(problems, repoRoot, defaults, stageEntries) {
     if (pin.effort !== documented.effort) {
       problems.push(
         `${ADR_FILE}: ${stage} effort pin "${pin.effort}" does not match ${DEFAULTS_FILE} DEFAULTS.stages.${key}.effort "${documented.effort}"`
+      );
+    }
+  }
+}
+
+/**
+ * Read the pack README's chain-map pin rows as source text. The table's Skill
+ * cell carries the stage's kebab name in backticks (`implement-spec` adds a
+ * `(referenced)` suffix), its Model pin cell carries the model in backticks,
+ * and its Effort cell carries the bare value. Header and separator rows are
+ * skipped; a row with a readable stage but unreadable pin cells is kept with
+ * null fields so the check can report it against that stage. Returns the rows,
+ * or null when the README has no `## Chain map` section.
+ */
+function parseReadmeChainMapPins(text) {
+  const lines = sectionLines(text, "Chain map");
+  if (lines === null) return null;
+  const pins = [];
+  for (const line of lines) {
+    if (!line.trimStart().startsWith("|")) continue;
+    const cells = line
+      .trim()
+      .replace(/^\|/, "")
+      .replace(/\|$/, "")
+      .split("|")
+      .map((cell) => cell.trim());
+    if (cells.length < 5) continue;
+    if (cells[0] === "Stage") continue;
+    if (cells.every((cell) => /^:?-{3,}:?$/.test(cell))) continue;
+    const stage = /^`([a-z][a-z-]*)`(?:\s*\(referenced\))?$/.exec(cells[1]);
+    if (stage === null) continue;
+    pins.push({
+      stage: stage[1],
+      model: /^`([^`]+)`$/.exec(cells[3])?.[1] ?? null,
+      effort: /^([a-z][\w.-]*)$/.exec(cells[4])?.[1] ?? null,
+    });
+  }
+  return pins;
+}
+
+/**
+ * Cross-check the pack README's chain-map pin rows against the DEFAULTS table
+ * the verifier already reads from env-defaults.mjs — the same guard the
+ * frontmatter (item 1) and ADR-0006 rows (item 10) carry. The expected rows
+ * come from the launch-stage map plus the grill row; every one must parse, and
+ * a missing row, a malformed row or a drift is a pack-contract problem.
+ */
+function checkReadmeChainMapPins(problems, repoRoot, defaults, stageEntries) {
+  const path = join(repoRoot, PACK_README_FILE);
+  // A missing pack README is reported by the README existence check.
+  if (!existsSync(path)) return;
+  const pins = parseReadmeChainMapPins(readFileSync(path, "utf8"));
+  if (pins === null) {
+    problems.push(`${PACK_README_FILE}: cannot read the chain-map pin table rows`);
+    return;
+  }
+  // An unreadable DEFAULTS table is already reported by readDefaults.
+  if (defaults === null) return;
+  const pinsByStage = new Map(pins.map((pin) => [pin.stage, pin]));
+  for (const { stage, key } of stageEntries) {
+    const documented = defaults.stages[key];
+    if (documented === undefined) {
+      problems.push(
+        `${PACK_README_FILE}: ${stage} chain-map pin row has no ${DEFAULTS_FILE} DEFAULTS.stages.${key} entry`
+      );
+      continue;
+    }
+    const pin = pinsByStage.get(stage);
+    if (pin === undefined) {
+      problems.push(
+        `${PACK_README_FILE}: missing the chain-map ${stage} pin row for ${DEFAULTS_FILE} DEFAULTS.stages.${key}`
+      );
+      continue;
+    }
+    if (pin.model === null || pin.effort === null) {
+      problems.push(
+        `${PACK_README_FILE}: cannot read the chain-map ${stage} pin row for ${DEFAULTS_FILE} DEFAULTS.stages.${key} (expected model "${documented.model}" and effort "${documented.effort}")`
+      );
+      continue;
+    }
+    if (pin.model !== documented.model) {
+      problems.push(
+        `${PACK_README_FILE}: ${stage} model pin "${pin.model}" does not match ${DEFAULTS_FILE} DEFAULTS.stages.${key}.model "${documented.model}"`
+      );
+    }
+    if (pin.effort !== documented.effort) {
+      problems.push(
+        `${PACK_README_FILE}: ${stage} effort pin "${pin.effort}" does not match ${DEFAULTS_FILE} DEFAULTS.stages.${key}.effort "${documented.effort}"`
       );
     }
   }

@@ -132,6 +132,64 @@ const adr = [
   "",
 ].join("\n");
 
+// The pack README's chain-map table: the Skill cell carries the kebab stage
+// name in backticks (implement-spec adds the referenced suffix), the Model pin
+// cell carries the model in backticks, and the Effort cell carries the bare
+// value. Every pin comes from the defaults module, so the matching table passes
+// and a seeded drift is one substitution away.
+const CHAIN_MAP_STAGES = { "grill-with-spec": "GRILL", ...LAUNCH_STAGES };
+
+const CHAIN_MAP_ROWS = {
+  "grill-with-spec": {
+    label: "Grill and spec",
+    skill: "`grill-with-spec`",
+    harness: "Kepler (interactive)",
+  },
+  "dev-flow": { label: "Tickets", skill: "`dev-flow`", harness: "pi (Kepler terminal)" },
+  "implement-spec": {
+    label: "Implement",
+    skill: "`implement-spec` (referenced)",
+    harness: "pi (Kepler terminal)",
+  },
+  "code-review-loop": {
+    label: "Review",
+    skill: "`code-review-loop`",
+    harness: "pi (Kepler terminal)",
+  },
+  "create-pr": { label: "PR", skill: "`create-pr`", harness: "pi (Kepler terminal)" },
+};
+
+function chainMapRows() {
+  return Object.entries(CHAIN_MAP_STAGES)
+    .map(([stage, key]) => {
+      const pin = DEFAULTS.stages[key];
+      const { label, skill, harness } = CHAIN_MAP_ROWS[stage];
+      return `| ${label} | ${skill} | ${harness} | \`${pin.model}\` | ${pin.effort} |`;
+    })
+    .join("\n");
+}
+
+const packReadme = [
+  "# software-factory pack",
+  "",
+  "## Chain map",
+  "",
+  "| Stage | Skill | Harness | Model pin (default) | Effort (default) |",
+  "|---|---|---|---|---|",
+  chainMapRows(),
+  "",
+].join("\n");
+
+/** Seed a drift in one chain-map row, leaving the other stages untouched. */
+function chainMapWith(stage, mutate) {
+  const mutated = chainMapRows()
+    .split("\n")
+    .map((row) => (row.includes(`\`${stage}\``) ? mutate(row) : row))
+    .join("\n");
+  assert.notEqual(mutated, chainMapRows(), `the fixture must change the ${stage} row`);
+  return packReadme.replace(chainMapRows(), mutated);
+}
+
 // The real defaults module's source text: the fixture pack carries it so the
 // verifier reads the same table it checks the real pack against. Its bytes are
 // the test's source of truth for every expected default.
@@ -275,6 +333,7 @@ function makeRepo({
   omitGrillRoute = false,
   omitAdr = false,
   adrText = adr,
+  packReadmeText = packReadme,
   omitHandoffRules = null,
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), "software-factory-verify-"));
@@ -313,7 +372,7 @@ function makeRepo({
   if (!omitWakeHelper) write(root, "skills/software-factory/scripts/open-wake-session.mjs", wakeHelperText);
   if (!omitDefaults) write(root, "skills/software-factory/scripts/env-defaults.mjs", defaultsText);
   if (!omitAdr) write(root, "docs/adr/0006-chain-skills-cross-model-handoffs.md", adrText);
-  if (!skipPackReadme) write(root, "skills/software-factory/README.md", "# software-factory pack\n");
+  if (!skipPackReadme) write(root, "skills/software-factory/README.md", packReadmeText);
   write(
     root,
     ".claude-plugin/plugin.json",
@@ -578,6 +637,78 @@ test("ignores an ADR-0006 pin row outside the expected stage set", () => {
   const adrText = adr.replace(adrPinRows(), `${adrPinRows()}\n${extraRow}`);
   assert.match(adrText, /review-spec/, "the fixture must add an unexpected row");
   assert.deepEqual(verify(makeRepo({ adrText })), []);
+});
+
+test("rejects a README chain-map model pin that diverges from env-defaults", () => {
+  const expected = DEFAULTS.stages.IMPLEMENT_SPEC.model;
+  const wrong = "opencode-go/gpt-9";
+  const problems = verify(
+    makeRepo({
+      packReadmeText: chainMapWith("implement-spec", (row) =>
+        row.replace(`\`${expected}\``, `\`${wrong}\``)
+      ),
+    })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        `skills/software-factory/README.md: implement-spec model pin "${wrong}" does not match skills/software-factory/scripts/env-defaults.mjs DEFAULTS.stages.IMPLEMENT_SPEC.model "${expected}"`
+      )
+    )
+  );
+});
+
+test("rejects a README chain-map effort pin that diverges from env-defaults", () => {
+  const expected = DEFAULTS.stages.CODE_REVIEW_LOOP.effort;
+  const wrong = "low";
+  const problems = verify(
+    makeRepo({
+      packReadmeText: chainMapWith("code-review-loop", (row) =>
+        row.replace(`| ${expected} |`, `| ${wrong} |`)
+      ),
+    })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        `skills/software-factory/README.md: code-review-loop effort pin "${wrong}" does not match skills/software-factory/scripts/env-defaults.mjs DEFAULTS.stages.CODE_REVIEW_LOOP.effort "${expected}"`
+      )
+    )
+  );
+});
+
+test("rejects a README chain-map that drops a stage row", () => {
+  const rows = chainMapRows().split("\n");
+  const withoutImplementSpec = rows.filter((row) => !row.includes("`implement-spec`")).join("\n");
+  assert.notEqual(withoutImplementSpec, chainMapRows(), "the fixture must remove the implement-spec row");
+  const problems = verify(
+    makeRepo({ packReadmeText: packReadme.replace(chainMapRows(), withoutImplementSpec) })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        "skills/software-factory/README.md: missing the chain-map implement-spec pin row for skills/software-factory/scripts/env-defaults.mjs DEFAULTS.stages.IMPLEMENT_SPEC"
+      )
+    )
+  );
+});
+
+test("rejects a README chain-map pin row that cannot be parsed", () => {
+  const expected = DEFAULTS.stages.IMPLEMENT_SPEC;
+  const problems = verify(
+    makeRepo({
+      packReadmeText: chainMapWith("implement-spec", (row) =>
+        row.replace(`\`${expected.model}\``, "no model")
+      ),
+    })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        `skills/software-factory/README.md: cannot read the chain-map implement-spec pin row for skills/software-factory/scripts/env-defaults.mjs DEFAULTS.stages.IMPLEMENT_SPEC (expected model "${expected.model}" and effort "${expected.effort}")`
+      )
+    )
+  );
 });
 
 test("rejects a chain skill missing from the plugin manifest", () => {
