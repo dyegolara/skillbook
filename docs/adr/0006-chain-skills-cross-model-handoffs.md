@@ -93,6 +93,20 @@ context is not independent.
   passes all three flags together. The ask-the-user sentence lands in the
   three standalone-invocable SKILL.md files (`dev-flow`,
   `code-review-loop`, `create-pr`).
+  Amended 2026-10-21, spec #160's fix wave (review finding 8, ticket
+  #168): two launch-helper behaviors the review flagged as un-ticketed
+  are kept deliberately. The helper's stage guard accepts only the four
+  launch stages — `GRILL` is rejected before any launch or wake path,
+  because grill launches go through the grill helper
+  (`open-grill-session.mjs` `grillPin`), which resolves the stage
+  through the same `env-defaults.mjs` tables without entering a launch
+  or wake; the split answers the inline review's regression finding (a
+  `grill` launch built a command instead of erroring) and stays. The
+  injected command's shell token rules are boundary shell-safety, not
+  cosmetics: the string is a shell command injected into a terminal, so
+  command names and flag values stay unquoted while pointers and
+  anything unsafe are single-quoted (`shellQuote`/`shellToken`/
+  `argvCommand`). Both are part of the helper's contract, not anomalies.
 - A stage that fails to run or dies mid-run does not stall the chain
   silently. The injected command is a retry wrapper around the stage's
   pinned agent command — whatever the harness, `pi` is not load-bearing —
