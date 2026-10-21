@@ -47,27 +47,33 @@ Routes out of `code-review-loop`:
 ## Configuration
 
 Every pin resolves from the environment; unset variables fall back to the
-defaults in [`scripts/env-defaults.mjs`](scripts/env-defaults.mjs), so a bare
-environment runs the chain exactly as before. The repo root's
-[`.env.example`](../../.env.example) lists every variable with its default.
+defaults in [`scripts/env-defaults.mjs`](scripts/env-defaults.mjs), so an
+unset environment runs the chain with today's pins. The one exception is the
+provider's key: it has no default and must be set. The repo root's
+[`.env.example`](../../.env.example) lists every variable and its default
+(the provider's key is required, with no default).
 
-The per-docker pattern is an opt-in pair: set `DEV_ENV_PROVIDER` and
-`DEV_ENV_API_KEY` together. With neither set — even when the ambient
-environment carries provider keys — the chain keeps the agent's ambient auth:
-no key is injected and no error fires. A set `DEV_ENV_PROVIDER` or
-`DEV_ENV_API_KEY` with no resolvable key is a hard error naming the provider
-and both variables. The shipped `.env.example` keeps the pair commented, so
-sourcing it as-is is safe.
+The per-docker pattern is the provider-environment pattern: each docker sets
+`DEV_ENV_PROVIDER` plus that provider's own key variable —
+`OPENCODE_GO_API_KEY` for `opencode-go`, `OPENAI_API_KEY` for `openai`, and
+so on for `openrouter`, `xai` and `anthropic` — carrying its own account for
+that provider. The provider's key variable is the pattern's only key
+mechanism: there is no generic key variable and no fallback chain. The
+resolved provider's variable must be set and non-empty after trim; a missing
+key is a hard error naming the provider and the variable to set. The key is
+never injected into the launch command — the environment carries it, so the
+launched stage inherits it already paired with the resolved provider
+(ADR-0006, amended 2026-10-21). The shipped `.env.example` keeps the account
+block commented, so sourcing it as-is sets no key.
 
 | Scope | Variables | Default |
 |---|---|---|
-| Per-docker account — the opt-in pair, set together; with neither set the chain keeps the agent's ambient auth | `DEV_ENV_PROVIDER`, `DEV_ENV_API_KEY` | `opencode-go`, empty |
+| Per-docker provider — one provider per docker and run | `DEV_ENV_PROVIDER` | `opencode-go` |
+| Per-docker key — the provider's own variable, required; a missing key is a hard error naming the provider and the variable to set | `OPENROUTER_API_KEY`, `OPENCODE_GO_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, `ANTHROPIC_API_KEY` | unset — no fallback |
 | Stage pins — retune one stage at a time | `DEV_ENV_MODEL_<STAGE>`, `DEV_ENV_EFFORT_<STAGE>`, `DEV_ENV_AGENT_<STAGE>` | the chain map above |
-| Provider-specific key variables — manual override only, their own provider first | `OPENROUTER_API_KEY`, `OPENCODE_GO_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, `ANTHROPIC_API_KEY` | unset |
 
 An off-list provider, effort or agent value is a hard error naming the
-variable and listing the allowed values. A provider-specific key variable
-wins over `DEV_ENV_API_KEY` only for its own provider.
+variable and listing the allowed values.
 
 ## How context travels between stages
 
