@@ -42,37 +42,89 @@
  *     [--repo-id <id> --worktree-id <id> --task-id <id>]
  */
 import { spawn } from "node:child_process";
+import { createHmac, randomBytes } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  buildAgentCommand,
+  DEFAULTS,
+  resolveAgent,
+  resolveEffort,
+  resolveModel,
+  resolveProvider,
+  PROVIDER_KEY_VARS,
+  stageKey,
+} from "./env-defaults.mjs";
 
 export const KEPLER_DATA_DIR = join(homedir(), ".kepler-server", "data");
 
-// Pins per ADR-0006: the three own pi stages are mirrored from their SKILL.md
-// frontmatter; implement-spec is referenced and its pin is recorded in ADR-0006.
-export const STAGE_PINS = {
-  "dev-flow": { provider: "opencode-go", model: "opencode-go/glm-5.3", thinking: "max" },
-  "implement-spec": { provider: "opencode-go", model: "opencode-go/deepseek-v4.1-flash", thinking: "max" },
-  "code-review-loop": { provider: "opencode-go", model: "opencode-go/mimo-v2.6-pro", thinking: "high" },
-  "create-pr": { provider: "opencode-go", model: "opencode-go/muse-spark-1.3-contributor", thinking: "xhigh" },
-};
-
-export function stagePin(stage) {
-  const pin = STAGE_PINS[stage];
-  if (!pin) {
-    throw new Error(`unknown stage "${stage}" — expected one of ${Object.keys(STAGE_PINS).join(", ")}`);
-  }
-  return pin;
+/**
+ * The stage's resolved pins: `DEV_ENV_PROVIDER` (global) plus the stage's
+ * `DEV_ENV_MODEL_<STAGE>`, `DEV_ENV_EFFORT_<STAGE>` and `DEV_ENV_AGENT_<STAGE>`,
+ * each falling back to `env-defaults.mjs`'s `DEFAULTS`. With no `DEV_ENV_*`
+ * set every value is today's pin. An unknown stage is a hard error before any
+ * environment is read.
+ */
+export function stagePin(stage, env = process.env) {
+  const key = stageKey(stage);
+  return {
+    provider: resolveProvider(env),
+    model: resolveModel(key, env),
+    effort: resolveEffort(key, env),
+    agent: resolveAgent(key, env),
+  };
 }
 
 export function shellQuote(value) {
   return `'${String(value).replaceAll("'", "'\\''")}'`;
 }
 
-export function buildPiCommand(stage, pointers) {
-  const pin = stagePin(stage);
-  return `pi --print --provider ${pin.provider} --model ${pin.model} --thinking ${pin.thinking} ${shellQuote(pointers)}`;
+// The shell-safe token set: command names and flag values (model ids, effort
+// levels, `key=value` configs) stay unquoted in the injected command; anything
+// else — pointers above all — is single-quoted. The default pins all pass, so
+// their command is byte-identical to the old fixed-pin string.
+const SHELL_SAFE_TOKEN = /^[\w@%+=:,./-]+$/;
+
+function shellToken(value) {
+  const text = String(value);
+  return SHELL_SAFE_TOKEN.test(text) ? text : shellQuote(text);
+}
+
+/**
+ * Join an agent argv into the shell command. The pointers are an explicit
+ * parameter, not a positional convention: `AGENT_COMMANDS` rows append them
+ * last, so the argv's trailing element must be the same `pointers`, and the
+ * pointers are always single-quoted. A call that misses them — or whose argv
+ * does not end with them — is a readable hard error instead of the quoted
+ * literal `'undefined'`.
+ */
+export function commandWithPointer(argv, pointers) {
+  const last = argv.at(-1);
+  if (pointers === undefined || last !== pointers) {
+    throw new Error(
+      `commandWithPointer: the argv must end with the pointers — got ${JSON.stringify(last)}, pointers ${JSON.stringify(pointers)}`
+    );
+  }
+  return [...argv.slice(0, -1).map(shellToken), shellQuote(pointers)].join(" ");
+}
+
+/**
+ * The stage's pinned command, built through the resolved agent's
+ * `AGENT_COMMANDS` row (`buildAgentCommand`) and shell-quoted for injection.
+ * One pin object is born here — `stagePin`'s resolved provider, model, effort
+ * and agent plus the pointers — and travels whole to `buildAgentCommand`: the
+ * rows destructure the fields they build with (`pointers` above all) and
+ * ignore a field they do not name (`agent`). With no `DEV_ENV_*` set the
+ * resolved pins are today's defaults, so the string is byte-identical to the
+ * old fixed-pin command. The command never carries a key or a variable
+ * prefix. Provider authentication is configured by the user for the agent
+ * runtime.
+ */
+export function buildStageCommand(stage, pointers, env = process.env) {
+  const pin = { ...stagePin(stage, env), pointers };
+  return commandWithPointer(buildAgentCommand(pin.agent, pin), pointers);
 }
 
 /**
@@ -201,11 +253,20 @@ export async function waitForSentinel({
   pollIntervalMs = VERIFY_POLL_INTERVAL_MS,
   sleepImpl = sleep,
   relaunched = false,
+  credentialMismatchMarker,
+  credentialKeyVariable,
 }) {
   const polls = Math.max(1, Math.ceil(timeoutMs / pollIntervalMs));
   for (let poll = 0; poll < polls; poll += 1) {
     if (poll > 0) await sleepImpl(pollIntervalMs);
     const buffer = await readTerminalBuffer({ apiBase, fetchImpl, terminalId });
+    if (credentialMismatchMarker && sentinelSeen(buffer, credentialMismatchMarker)) {
+      const error = new Error(
+        `Kepler terminal ${terminalId} does not have the caller's matching ${credentialKeyVariable} environment`
+      );
+      error.code = "PROVIDER_CREDENTIAL_ENV_MISMATCH";
+      throw error;
+    }
     if (sentinelSeen(buffer, sentinel)) return buffer;
   }
   throw new SentinelTimeoutError({ terminalId, sentinel, timeoutMs, relaunched });
@@ -221,14 +282,42 @@ export function launchHelperPath() {
   return fileURLToPath(new URL("./launch-stage.mjs", import.meta.url));
 }
 
+const RUN_PIN_ENV_NAMES = [
+  "DEV_ENV_PROVIDER",
+  ...Object.keys(DEFAULTS.stages).flatMap((stage) =>
+    ["MODEL", "EFFORT", "AGENT"].map((field) => `DEV_ENV_${field}_${stage}`)
+  ),
+];
+
+/** The allowlisted, non-secret pin overrides carried to a child stage. */
+export function runPinEnvironment(env = process.env) {
+  return Object.fromEntries(
+    RUN_PIN_ENV_NAMES.map((name) => {
+      const value = env?.[name];
+      return [name, value === undefined || value === null ? "" : String(value).trim()];
+    })
+  );
+}
+
+function pinEnvironmentAssignments(env) {
+  return Object.entries(runPinEnvironment(env))
+    .map(([name, value]) => `${name}=${shellQuote(value)}`)
+    .join(" ");
+}
+
 /**
  * The resume command the give-up marker and the wake carry: re-enter this
  * protected route — the launch helper from the stage's worktree — so a resume
  * runs under the retry wrapper and the helper's post-injection check, never
  * the bare pinned command.
  */
-export function buildResumeCommand({ stage, spec, pointers, worktreePath }) {
-  return `cd ${shellQuote(worktreePath)} && node ${shellQuote(launchHelperPath())} ${stage} ${spec} ${shellQuote(pointers)}`;
+export function buildResumeCommand({ stage, spec, pointers, worktreePath, env = process.env }) {
+  const assignments = pinEnvironmentAssignments(env);
+  return (
+    `cd ${shellQuote(worktreePath)} && ` +
+    `${assignments ? `export ${assignments} && ` : ""}` +
+    `node ${shellQuote(launchHelperPath())} ${stage} ${spec} ${shellQuote(pointers)}`
+  );
 }
 
 /**
@@ -240,12 +329,15 @@ export function buildResumeCommand({ stage, spec, pointers, worktreePath }) {
  * actuates the wake by running the sibling helper; the wake's output and
  * exit status are never swallowed. The pinned command inside stays unchanged;
  * the resume command is the launch-helper invocation, so a resume re-enters
- * the retry wrapper and the helper's post-injection check.
+ * the retry wrapper and the helper's post-injection check. The command is
+ * the stage's resolved pins, whatever its agent, because every pin resolves
+ * from `env-defaults.mjs` plus `DEV_ENV_*`.
  */
-export function buildRetryWrapper(stage, spec, pointers, worktreePath) {
-  const command = buildPiCommand(stage, pointers); // the stage's pinned command, unchanged inside
+export function buildRetryWrapper(stage, spec, pointers, worktreePath, env = process.env) {
+  const command = buildStageCommand(stage, pointers, env); // the stage's pinned command, unchanged inside
   const sentinel = stageSentinel(spec, stage); // the first action, before attempt 1
-  const resumeCommand = buildResumeCommand({ stage, spec, pointers, worktreePath });
+  const resumeCommand = buildResumeCommand({ stage, spec, pointers, worktreePath, env });
+  const assignments = pinEnvironmentAssignments(env);
   const marker = [
     `FAILED: ${chainCore(spec, stage)} gave up after ${RETRY_ATTEMPTS} attempts`,
     `FAILED: resume with: ${resumeCommand}`,
@@ -253,6 +345,7 @@ export function buildRetryWrapper(stage, spec, pointers, worktreePath) {
   const sleepCases = RETRY_SLEEPS_SECONDS.map((seconds, index) => `${index + 1}) sleep ${seconds};;`).join(" ");
   return (
     `printf '%s\\n' ${shellQuote(sentinel)}; ` +
+    `${assignments ? `export ${assignments}; ` : ""}` +
     `chain_attempt=1; chain_status=0; while [ "$chain_attempt" -le ${RETRY_ATTEMPTS} ]; do ` +
     `${command}; chain_status=$?; [ "$chain_status" -eq 0 ] && break; ` +
     `case "$chain_attempt" in ${sleepCases} esac; ` +
@@ -263,8 +356,18 @@ export function buildRetryWrapper(stage, spec, pointers, worktreePath) {
   );
 }
 
-export function buildTerminalInput(stage, spec, pointers, worktreePath) {
-  return `${buildRetryWrapper(stage, spec, pointers, worktreePath)}\n`;
+export function buildTerminalInput(
+  stage,
+  spec,
+  pointers,
+  worktreePath,
+  env = process.env,
+  credentialGuard = providerCredentialGuard(stage, env)
+) {
+  const guard = credentialGuard
+    ? `${credentialGuard.header}\n${credentialGuard.command}\n`
+    : "";
+  return `${guard}${buildRetryWrapper(stage, spec, pointers, worktreePath, env)}\n`;
 }
 
 /** The packaged helpers' name for the label shape; delegates to `chainLabel`. */
@@ -499,7 +602,7 @@ export function failureLines(toolName, error) {
  * creation carries the session's id (`error.sessionId`) and is a hard error,
  * so a caller must never fall back once a session exists.
  *
- * @param {{ label: string, prompt: string, beforeSend?: (sessionId: string) => Promise<void>, ids: TaskIds, worktreePath: string, apiBase: string, fetchImpl?: typeof fetch }} options
+ * @param {{ label: string, prompt: string, beforeSend?: (sessionId: string) => Promise<void>, ids: TaskIds, worktreePath: string, apiBase: string, fetchImpl?: typeof fetch, adapterId?: string }} options
  * @returns {Promise<{ sessionId: string, label: string }>}
  */
 export async function createLabeledSession({
@@ -510,11 +613,12 @@ export async function createLabeledSession({
   worktreePath,
   apiBase,
   fetchImpl = fetch,
+  adapterId = "opencode",
 }) {
   const created = await requestJson(fetchImpl, `${apiBase}/agent/sessions`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ adapterId: "opencode", worktreePath, ...ids }),
+    body: JSON.stringify({ adapterId, worktreePath, ...ids }),
   });
   const sessionId = created?.sessionId;
   if (!sessionId) throw new Error("Kepler agent session start returned no sessionId");
@@ -621,7 +725,7 @@ export function runSessionCli({ toolName, moduleUrl, main }) {
  * `POST /terminal/start` may have created a terminal, the caller must never
  * fall back to `nohup` (that would double-launch the stage).
  *
- * @param {{ stage: string, spec: number|string, label: string, pointers: string, ids: TaskIds, worktreePath: string, apiBase: string, fetchImpl?: typeof fetch, sleepImpl?: (ms: number) => Promise<void> }} options
+ * @param {{ stage: string, spec: number|string, label: string, pointers: string, ids: TaskIds, worktreePath: string, apiBase: string, fetchImpl?: typeof fetch, sleepImpl?: (ms: number) => Promise<void>, env?: Object }} options
  */
 export async function launchInTerminal({
   stage,
@@ -633,6 +737,7 @@ export async function launchInTerminal({
   apiBase,
   fetchImpl = fetch,
   sleepImpl = sleep,
+  env = process.env,
 }) {
   const startTerminal = async () => {
     const started = await requestJson(fetchImpl, `${apiBase}/terminal/start`, {
@@ -645,9 +750,10 @@ export async function launchInTerminal({
     return terminalId;
   };
 
-  let terminalId = await startTerminal();
   const sentinel = stageSentinel(spec, stage);
-  const input = buildTerminalInput(stage, spec, pointers, worktreePath);
+  const credentialGuard = providerCredentialGuard(stage, env);
+  const input = buildTerminalInput(stage, spec, pointers, worktreePath, env, credentialGuard);
+  let terminalId = await startTerminal();
   const postInput = () =>
     requestJson(fetchImpl, `${apiBase}/terminal/input`, {
       method: "POST",
@@ -660,9 +766,26 @@ export async function launchInTerminal({
     try {
       // The wrapper prints the sentinel immediately on execution, so a wait
       // that times out means the command never started.
-      await waitForSentinel({ apiBase, fetchImpl, terminalId, sentinel, sleepImpl, relaunched: relaunches > 0 });
+      await waitForSentinel({
+        apiBase,
+        fetchImpl,
+        terminalId,
+        sentinel,
+        sleepImpl,
+        relaunched: relaunches > 0,
+        credentialMismatchMarker: credentialGuard?.mismatchMarker,
+        credentialKeyVariable: credentialGuard?.keyVariable,
+      });
       return { terminalId, label };
     } catch (error) {
+      if (error?.code === "PROVIDER_CREDENTIAL_ENV_MISMATCH") {
+        await requestJson(fetchImpl, `${apiBase}/terminal/close`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ terminalId }),
+        });
+        throw error;
+      }
       // A non-wedge failure (buffer read HTTP error, connection failure,
       // malformed body) is a hard error, never a silent pass. A second
       // timeout after the relaunch is a hard error too.
@@ -684,25 +807,66 @@ export async function launchInTerminal({
 
 /**
  * The fallback path: the detached `nohup pi` launch, stdout/stderr in
- * /tmp/skillbook-<stage>-pi.log.
+ * /tmp/skillbook-<stage>-pi.log. Provider authentication is user-managed; the
+ * child inherits the resolved pins and ordinary environment but not
+ * credential-like environment variables.
  */
-export function launchDetached({ stage, pointers, spawnImpl = spawn }) {
-  const command = buildPiCommand(stage, pointers);
+export function launchDetached({ stage, pointers, spawnImpl = spawn, env = process.env }) {
+  const command = buildStageCommand(stage, pointers, env);
   const log = `/tmp/skillbook-${stage}-pi.log`;
   const child = spawnImpl("sh", ["-c", `nohup ${command} > ${log} 2>&1 &`], {
     detached: true,
     stdio: "ignore",
+    env: agentEnvironment(env),
   });
   child.unref?.();
   return { path: "nohup", command, log };
 }
 
-export async function launchStage({ stage, spec, pointers, flags, deps = {} }) {
-  const { fetchImpl = fetch, spawnImpl = spawn, worktreePath = process.cwd() } = deps;
-  stagePin(stage); // unknown stage is a hard error, before any launch path
-  const label = stageLabel(spec, stage); // spec comes from the argument, never a label
+/** Remove credential-like variables from the environment inherited by agents. */
+export function agentEnvironment(env = process.env) {
+  const providerKeyVariables = new Set(Object.values(PROVIDER_KEY_VARS));
+  const sensitiveVariable = /API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL/i;
+  return Object.fromEntries(
+    Object.entries(env).filter(([name]) => !providerKeyVariables.has(name) && !sensitiveVariable.test(name))
+  );
+}
 
-  const fallback = (error) => ({ ...launchDetached({ stage, pointers, spawnImpl }), reason: error.message });
+/**
+ * Compare a caller-supplied provider key with the API terminal's inherited key
+ * using a one-use HMAC challenge. The key itself never enters the command or
+ * API request; only the nonce-scoped proof does.
+ */
+export function providerCredentialGuard(stage, env = process.env) {
+  const keyVariable = PROVIDER_KEY_VARS[stagePin(stage, env).provider];
+  const key = env?.[keyVariable];
+  if (key === undefined || key === null || String(key).trim() === "") return null;
+
+  const nonce = randomBytes(32).toString("hex");
+  const digest = createHmac("sha256", String(key)).update(nonce).digest("hex");
+  const mismatchMarker = `PROVIDER-CREDENTIAL-MISMATCH-${nonce}`;
+  const script =
+    `const c=require("node:crypto");` +
+    `const k=process.env[${JSON.stringify(keyVariable)}];` +
+    `const actual=k?c.createHmac("sha256",k).update(${JSON.stringify(nonce)}).digest("hex"):"";` +
+    `process.exit(actual===${JSON.stringify(digest)}?0:1)`;
+  return {
+    keyVariable,
+    mismatchMarker,
+    header: `# PROVIDER-CREDENTIAL-CHECK ${keyVariable} ${nonce} ${digest} ${mismatchMarker}`,
+    command: `if ! node -e ${shellQuote(script)}; then printf '%s\\n' ${shellQuote(mismatchMarker)}; exit 1; fi;`,
+  };
+}
+
+export async function launchStage({ stage, spec, pointers, flags, deps = {} }) {
+  const { fetchImpl = fetch, spawnImpl = spawn, worktreePath = process.cwd(), env = process.env } = deps;
+  stageKey(stage); // unknown stage is a hard error, before any launch path
+  buildStageCommand(stage, pointers, env); // validate the complete pin before reaching either launch path
+  const label = stageLabel(spec, stage); // spec comes from the argument, never a label
+  // API-launched terminals use the server's user-configured agent login. This
+  // helper never sends provider credentials to the server or the agent.
+
+  const fallback = (error) => ({ ...launchDetached({ stage, pointers, spawnImpl, env }), reason: error.message });
 
   const reached = await reachApi({ apiBase: deps.apiBase, dataDir: deps.dataDir, fetchImpl, worktreePath, flags });
   if (!reached.ok) return fallback(reached.error);
@@ -719,6 +883,7 @@ export async function launchStage({ stage, spec, pointers, flags, deps = {} }) {
     apiBase,
     fetchImpl,
     sleepImpl: deps.sleepImpl,
+    env,
   });
   return { path: "api", ...launched };
 }

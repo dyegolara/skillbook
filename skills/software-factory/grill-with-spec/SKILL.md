@@ -5,7 +5,7 @@ disable-model-invocation: true
 license: MIT
 metadata:
   model: opencode-go/glm-5.3
-  thinking: max
+  effort: max
 ---
 
 # grill-with-spec
@@ -185,6 +185,12 @@ an implementation guesses at it.
 
 The entry prompt carries the review report path, the original spec issue, the
 tickets and the PR.
+
+When `open-grill-session.mjs` actuates the re-entry, its prompt also carries the
+allowlisted non-secret run pins. Apply the supplied `env ...` prefix unchanged
+to the first launch-helper command; empty values intentionally select the
+shared defaults, and the helper propagates the configuration to later stages
+and resumes. Provider credentials are never part of this context.
 
 ### 1. Status terminal
 

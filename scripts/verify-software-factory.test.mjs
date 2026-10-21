@@ -6,39 +6,37 @@ import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { verifySoftwareFactoryPack } from "./verify-software-factory.mjs";
+import { DEFAULTS, LAUNCH_STAGES } from "../skills/software-factory/scripts/env-defaults.mjs";
 
-const CHAIN_PINS = {
-  "grill-with-spec": { model: "opencode-go/glm-5.3", thinking: "max" },
-  "dev-flow": { model: "opencode-go/glm-5.3", thinking: "max" },
-  "code-review-loop": { model: "opencode-go/mimo-v2.6-pro", thinking: "high" },
-  "create-pr": { model: "opencode-go/muse-spark-1.3-contributor", thinking: "xhigh" },
-};
+// The four chain skills and the env-defaults stage key each one documents. The
+// fixture's pin values are read from the defaults module — no pin literals.
+const CHAIN_SKILLS = [
+  { name: "grill-with-spec", stage: "GRILL" },
+  { name: "dev-flow", stage: "DEV_FLOW" },
+  { name: "code-review-loop", stage: "CODE_REVIEW_LOOP" },
+  { name: "create-pr", stage: "CREATE_PR" },
+];
 
-const IMPLEMENT_SPEC_PIN = { model: "opencode-go/deepseek-v4.1-flash", thinking: "max" };
+/** The stage's default model/effort, read from the defaults module. */
+function defaultPin(stage) {
+  return { model: DEFAULTS.stages[stage].model, effort: DEFAULTS.stages[stage].effort };
+}
 
-function helperEntry(stage, pin) {
-  return `  "${stage}": { provider: "opencode-go", model: "${pin.model}", thinking: "${pin.thinking}" },`;
+/** The `pi` spawn shape with the stage's default pins — a fixture snippet. */
+function piSpawn(stage, pointers) {
+  const pin = defaultPin(stage);
+  return `pi --print --provider ${DEFAULTS.provider} --model ${pin.model} --thinking ${pin.effort} '${pointers}'`;
 }
 
 const RETRY_ATTEMPTS = 5;
 
 const helper = [
-  "export const STAGE_PINS = {",
-  helperEntry("dev-flow", CHAIN_PINS["dev-flow"]),
-  helperEntry("implement-spec", IMPLEMENT_SPEC_PIN),
-  helperEntry("code-review-loop", CHAIN_PINS["code-review-loop"]),
-  helperEntry("create-pr", CHAIN_PINS["create-pr"]),
-  "};",
+  'import { buildAgentCommand } from "./env-defaults.mjs";',
   "",
   `export const RETRY_ATTEMPTS = ${RETRY_ATTEMPTS};`,
   "",
-  "export function stagePin(stage) {",
-  "  return STAGE_PINS[stage];",
-  "}",
-  "",
-  "export function buildPiCommand(stage, pointers) {",
-  "  const pin = stagePin(stage);",
-  "  return `pi --print --provider ${pin.provider} --model ${pin.model} --thinking ${pin.thinking} '${pointers}'`;",
+  "export function buildStageCommand(stage, pointers) {",
+  '  return [...buildAgentCommand(stage, pointers)].join(" ");',
   "}",
   "",
   "export function wakeHelperPath() {",
@@ -46,7 +44,7 @@ const helper = [
   "}",
   "",
   "export function buildRetryWrapper(stage, spec, pointers) {",
-  "  const command = buildPiCommand(stage, pointers);",
+  "  const command = buildStageCommand(stage, pointers);",
   "  const marker = `FAILED: chain #${spec} ${stage} gave up after ${RETRY_ATTEMPTS} attempts`;",
   "  return (",
   '    `while [ "$attempt" -le ${RETRY_ATTEMPTS} ]; do ` +',
@@ -59,10 +57,13 @@ const helper = [
   "",
 ].join("\n");
 
-const GRILL_PIN = { model: "opencode-go/glm-5.3", effort: "max" };
-
 const grillHelper = [
-  `export const GRILL_PIN = { model: "${GRILL_PIN.model}", effort: "${GRILL_PIN.effort}" };`,
+  'import { AGENT_COMMANDS, resolveAgent, resolveEffort, resolveModel } from "./env-defaults.mjs";',
+  "",
+  "export function grillPin(env = process.env) {",
+  '  const agent = resolveAgent("GRILL", env);',
+  '  return { model: resolveModel("GRILL", env), effort: resolveEffort("GRILL", env), adapterId: AGENT_COMMANDS[agent].adapterId };',
+  "}",
   "",
 ].join("\n");
 
@@ -91,22 +92,110 @@ const DRIFTED_HANDOFF_RULES = HANDOFF_RULES.replace(
   "Every stage shares one worktree."
 );
 
+// ADR-0006's documented pin rows and the pack README's chain-map rows share
+// one stage set: the defaults module's LAUNCH_STAGES map plus the grill stage
+// (not a launch stage). Only the row spellings differ — ADR-0006 says
+// "effort <value>" on the grill row and carries the `--thinking` flag on the
+// launch-stage rows (ADR_PIN_NOTES), while the chain map has its own labels
+// and cells (CHAIN_MAP_ROWS). The pin values come from the defaults module, so
+// the matching tables pass and a seeded drift is one substitution away.
+const PIN_STAGES = { "grill-with-spec": "GRILL", ...LAUNCH_STAGES };
+
+const ADR_PIN_NOTES = {
+  "grill-with-spec": (effort) => `effort ${effort}`,
+  "dev-flow": (effort) => `\`--thinking ${effort}\``,
+  "implement-spec": (effort) => `\`--thinking ${effort}\``,
+  "code-review-loop": (effort) => `\`--thinking ${effort}\` — the model's cap: \`max\` clamps to it`,
+  "create-pr": (effort) => `\`--thinking ${effort}\`, provider cap`,
+};
+
+function adrPinRows() {
+  return Object.entries(PIN_STAGES)
+    .map(([stage, key]) => {
+      const pin = DEFAULTS.stages[key];
+      return `  - ${stage} — \`${pin.model}\` (${ADR_PIN_NOTES[stage](pin.effort)})`;
+    })
+    .join("\n");
+}
+
 const adr = [
   "# 0006 — Chain skills hand off across pinned agent/model sessions",
   "",
   "- Each stage's `SKILL.md` pins its model, invoked at the model's highest",
-  "  available effort/thinking:",
-  "  - grill-with-spec — `opencode-go/glm-5.3` (effort max)",
-  "  - dev-flow — `opencode-go/glm-5.3` (`--thinking max`)",
-  "  - implement-spec — `opencode-go/deepseek-v4.1-flash` (`--thinking max`)",
-  "  - code-review-loop — `opencode-go/mimo-v2.6-pro` (`--thinking high`)",
-  "  - create-pr — `opencode-go/muse-spark-1.3-contributor` (`--thinking xhigh`)",
+  "  available effort/thinking (whatever the model exposes — max, xhigh or",
+  "  high):",
+  adrPinRows(),
   "",
   "- A stage that gives up actuates the wake: a new sibling helper,",
   "  `open-wake-session.mjs`, packaged beside `launch-stage.mjs`,",
   '  actuated by the wrapper as `node "<skill-dir>/scripts/open-wake-session.mjs" <stage> <spec> \'<resume command>\'`.',
   "",
 ].join("\n");
+
+// The pack README's chain-map table: the Skill cell carries the kebab stage
+// name in backticks (implement-spec adds the referenced suffix), the Model pin
+// cell carries the model in backticks, and the Effort cell carries the bare
+// value. The row set is the shared PIN_STAGES set, and every pin comes from the
+// defaults module, so the matching table passes and a seeded drift is one
+// substitution away.
+const CHAIN_MAP_ROWS = {
+  "grill-with-spec": {
+    label: "Grill and spec",
+    skill: "`grill-with-spec`",
+    harness: "Kepler (interactive)",
+  },
+  "dev-flow": { label: "Tickets", skill: "`dev-flow`", harness: "pi (Kepler terminal)" },
+  "implement-spec": {
+    label: "Implement",
+    skill: "`implement-spec` (referenced)",
+    harness: "pi (Kepler terminal)",
+  },
+  "code-review-loop": {
+    label: "Review",
+    skill: "`code-review-loop`",
+    harness: "pi (Kepler terminal)",
+  },
+  "create-pr": { label: "PR", skill: "`create-pr`", harness: "pi (Kepler terminal)" },
+};
+
+function chainMapRows() {
+  return Object.entries(PIN_STAGES)
+    .map(([stage, key]) => {
+      const pin = DEFAULTS.stages[key];
+      const { label, skill, harness } = CHAIN_MAP_ROWS[stage];
+      return `| ${label} | ${skill} | ${harness} | \`${pin.model}\` | ${pin.effort} |`;
+    })
+    .join("\n");
+}
+
+const packReadme = [
+  "# software-factory pack",
+  "",
+  "## Chain map",
+  "",
+  "| Stage | Skill | Harness | Model pin (default) | Effort (default) |",
+  "|---|---|---|---|---|",
+  chainMapRows(),
+  "",
+].join("\n");
+
+/** Seed a drift in one chain-map row, leaving the other stages untouched. */
+function chainMapWith(stage, mutate) {
+  const mutated = chainMapRows()
+    .split("\n")
+    .map((row) => (row.includes(`\`${stage}\``) ? mutate(row) : row))
+    .join("\n");
+  assert.notEqual(mutated, chainMapRows(), `the fixture must change the ${stage} row`);
+  return packReadme.replace(chainMapRows(), mutated);
+}
+
+// The real defaults module's source text: the fixture pack carries it so the
+// verifier reads the same table it checks the real pack against. Its bytes are
+// the test's source of truth for every expected default.
+const DEFAULTS_SOURCE = readFileSync(
+  new URL("../skills/software-factory/scripts/env-defaults.mjs", import.meta.url),
+  "utf8"
+);
 
 const SKILL_LAUNCHES = {
   "grill-with-spec": ["dev-flow"],
@@ -167,12 +256,13 @@ function write(root, rel, content) {
 }
 
 function skillFrontmatter(name, overrides = {}) {
-  const pin = CHAIN_PINS[name];
+  const skill = CHAIN_SKILLS.find((entry) => entry.name === name);
+  const pin = defaultPin(skill.stage);
   const fields = {
     name,
     description: `Chain skill ${name}.`,
     model: pin.model,
-    thinking: pin.thinking,
+    effort: pin.effort,
     ...overrides,
   };
   return [
@@ -183,7 +273,7 @@ function skillFrontmatter(name, overrides = {}) {
     "license: MIT",
     "metadata:",
     `  model: ${fields.model}`,
-    `  thinking: ${fields.thinking}`,
+    `  effort: ${fields.effort}`,
     "---",
     "",
     `# ${name}`,
@@ -233,6 +323,8 @@ function makeRepo({
   skillsInstall = "npx skills@latest add mattpocock/skills",
   omitHelper = false,
   helperText = helper,
+  omitDefaults = false,
+  defaultsText = DEFAULTS_SOURCE,
   omitGrillHelper = false,
   grillHelperText = grillHelper,
   omitWakeHelper = false,
@@ -240,11 +332,12 @@ function makeRepo({
   omitGrillRoute = false,
   omitAdr = false,
   adrText = adr,
+  packReadmeText = packReadme,
   omitHandoffRules = null,
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), "software-factory-verify-"));
   roots.push(root);
-  for (const name of Object.keys(CHAIN_PINS)) {
+  for (const { name } of CHAIN_SKILLS) {
     if (name === omitSkill) continue;
     const overrides =
       name === "code-review-loop" && omitGrillRoute
@@ -267,21 +360,25 @@ function makeRepo({
     if (name !== "create-pr" && !omitWakeHelper) {
       write(root, `skills/software-factory/${name}/scripts/open-wake-session.mjs`, wakeHelperText);
     }
+    if (name !== "create-pr" && !omitDefaults) {
+      write(root, `skills/software-factory/${name}/scripts/env-defaults.mjs`, defaultsText);
+    }
   }
   if (!omitHelper) write(root, "skills/software-factory/scripts/launch-stage.mjs", helperText);
   if (!omitGrillHelper) {
     write(root, "skills/software-factory/scripts/open-grill-session.mjs", grillHelperText);
   }
   if (!omitWakeHelper) write(root, "skills/software-factory/scripts/open-wake-session.mjs", wakeHelperText);
+  if (!omitDefaults) write(root, "skills/software-factory/scripts/env-defaults.mjs", defaultsText);
   if (!omitAdr) write(root, "docs/adr/0006-chain-skills-cross-model-handoffs.md", adrText);
-  if (!skipPackReadme) write(root, "skills/software-factory/README.md", "# software-factory pack\n");
+  if (!skipPackReadme) write(root, "skills/software-factory/README.md", packReadmeText);
   write(
     root,
     ".claude-plugin/plugin.json",
     JSON.stringify({
       skills:
         pluginSkills ??
-        Object.keys(CHAIN_PINS).map((name) => `./skills/software-factory/${name}`),
+        CHAIN_SKILLS.map(({ name }) => `./skills/software-factory/${name}`),
     })
   );
   write(root, "README.md", readmeText);
@@ -444,24 +541,171 @@ test("rejects a description longer than 1024 characters", () => {
   assert.ok(problems.some((problem) => problem.includes("longer than 1024 characters")));
 });
 
-test("rejects a model pin that does not match the pinned chain contract", () => {
-  const problems = verify(
-    makeRepo({ skillOverrides: { "grill-with-spec": { model: "opencode-go/gpt-9" } } })
-  );
+test("rejects a frontmatter model pin that diverges from env-defaults", () => {
+  const wrong = "opencode-go/gpt-9";
+  const expected = defaultPin("GRILL").model;
+  const problems = verify(makeRepo({ skillOverrides: { "grill-with-spec": { model: wrong } } }));
   assert.ok(
     problems.some((problem) =>
-      problem.includes('model pin "opencode-go/gpt-9" does not match the pinned chain contract "opencode-go/glm-5.3"')
+      problem.includes(
+        `skills/software-factory/grill-with-spec/SKILL.md: model pin "${wrong}" does not match skills/software-factory/scripts/env-defaults.mjs DEFAULTS.stages.GRILL.model "${expected}"`
+      )
     )
   );
 });
 
-test("rejects a thinking pin that does not match the pinned chain contract", () => {
+test("rejects a frontmatter effort pin that diverges from env-defaults", () => {
+  const wrong = "low";
+  const expected = defaultPin("CREATE_PR").effort;
+  const problems = verify(makeRepo({ skillOverrides: { "create-pr": { effort: wrong } } }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        `skills/software-factory/create-pr/SKILL.md: effort pin "${wrong}" does not match skills/software-factory/scripts/env-defaults.mjs DEFAULTS.stages.CREATE_PR.effort "${expected}"`
+      )
+    )
+  );
+});
+
+test("rejects an ADR-0006 pin row that diverges from env-defaults", () => {
+  const expected = DEFAULTS.stages.IMPLEMENT_SPEC.model;
+  const wrong = "opencode-go/gpt-9";
+  const problems = verify(makeRepo({ adrText: adr.replace(`\`${expected}\``, `\`${wrong}\``) }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        `docs/adr/0006-chain-skills-cross-model-handoffs.md: implement-spec documented model pin "${wrong}" does not match skills/software-factory/scripts/env-defaults.mjs DEFAULTS.stages.IMPLEMENT_SPEC.model "${expected}"`
+      )
+    )
+  );
+});
+
+test("rejects an ADR-0006 effort record that diverges from env-defaults", () => {
+  const expected = DEFAULTS.stages.GRILL.effort;
+  const wrong = "high";
   const problems = verify(
-    makeRepo({ skillOverrides: { "create-pr": { thinking: "high" } } })
+    makeRepo({ adrText: adr.replace(`(effort ${expected})`, `(effort ${wrong})`) })
   );
   assert.ok(
     problems.some((problem) =>
-      problem.includes('thinking pin "high" does not match the pinned chain contract "xhigh"')
+      problem.includes(
+        `docs/adr/0006-chain-skills-cross-model-handoffs.md: grill-with-spec documented effort pin "${wrong}" does not match skills/software-factory/scripts/env-defaults.mjs DEFAULTS.stages.GRILL.effort "${expected}"`
+      )
+    )
+  );
+});
+
+test("rejects an ADR-0006 that drops the implement-spec pin row", () => {
+  const rows = adrPinRows().split("\n");
+  const withoutImplementSpec = rows
+    .filter((row) => !row.includes(" - implement-spec "))
+    .join("\n");
+  assert.notEqual(withoutImplementSpec, adrPinRows(), "the fixture must remove the implement-spec row");
+  const problems = verify(makeRepo({ adrText: adr.replace(adrPinRows(), withoutImplementSpec) }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        "docs/adr/0006-chain-skills-cross-model-handoffs.md: missing the documented implement-spec pin row for skills/software-factory/scripts/env-defaults.mjs DEFAULTS.stages.IMPLEMENT_SPEC"
+      )
+    )
+  );
+});
+
+test("rejects an ADR-0006 whose implement-spec pin row cannot be parsed", () => {
+  const malformed = adrPinRows()
+    .split("\n")
+    .map((row) =>
+      row.includes(" - implement-spec ")
+        ? "  - implement-spec — no backticked model or effort here"
+        : row
+    )
+    .join("\n");
+  assert.notEqual(malformed, adrPinRows(), "the fixture must malform the implement-spec row");
+  const problems = verify(makeRepo({ adrText: adr.replace(adrPinRows(), malformed) }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        "docs/adr/0006-chain-skills-cross-model-handoffs.md: missing the documented implement-spec pin row for skills/software-factory/scripts/env-defaults.mjs DEFAULTS.stages.IMPLEMENT_SPEC"
+      )
+    )
+  );
+});
+
+test("ignores an ADR-0006 pin row outside the expected stage set", () => {
+  const extraRow = "  - review-spec — `opencode-go/gpt-9` (`--thinking max`)";
+  const adrText = adr.replace(adrPinRows(), `${adrPinRows()}\n${extraRow}`);
+  assert.match(adrText, /review-spec/, "the fixture must add an unexpected row");
+  assert.deepEqual(verify(makeRepo({ adrText })), []);
+});
+
+test("rejects a README chain-map model pin that diverges from env-defaults", () => {
+  const expected = DEFAULTS.stages.IMPLEMENT_SPEC.model;
+  const wrong = "opencode-go/gpt-9";
+  const problems = verify(
+    makeRepo({
+      packReadmeText: chainMapWith("implement-spec", (row) =>
+        row.replace(`\`${expected}\``, `\`${wrong}\``)
+      ),
+    })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        `skills/software-factory/README.md: implement-spec chain-map model pin "${wrong}" does not match skills/software-factory/scripts/env-defaults.mjs DEFAULTS.stages.IMPLEMENT_SPEC.model "${expected}"`
+      )
+    )
+  );
+});
+
+test("rejects a README chain-map effort pin that diverges from env-defaults", () => {
+  const expected = DEFAULTS.stages.CODE_REVIEW_LOOP.effort;
+  const wrong = "low";
+  const problems = verify(
+    makeRepo({
+      packReadmeText: chainMapWith("code-review-loop", (row) =>
+        row.replace(`| ${expected} |`, `| ${wrong} |`)
+      ),
+    })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        `skills/software-factory/README.md: code-review-loop chain-map effort pin "${wrong}" does not match skills/software-factory/scripts/env-defaults.mjs DEFAULTS.stages.CODE_REVIEW_LOOP.effort "${expected}"`
+      )
+    )
+  );
+});
+
+test("rejects a README chain-map that drops a stage row", () => {
+  const rows = chainMapRows().split("\n");
+  const withoutImplementSpec = rows.filter((row) => !row.includes("`implement-spec`")).join("\n");
+  assert.notEqual(withoutImplementSpec, chainMapRows(), "the fixture must remove the implement-spec row");
+  const problems = verify(
+    makeRepo({ packReadmeText: packReadme.replace(chainMapRows(), withoutImplementSpec) })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        "skills/software-factory/README.md: missing the chain-map implement-spec pin row for skills/software-factory/scripts/env-defaults.mjs DEFAULTS.stages.IMPLEMENT_SPEC"
+      )
+    )
+  );
+});
+
+test("rejects a README chain-map pin row that cannot be parsed", () => {
+  const expected = DEFAULTS.stages.IMPLEMENT_SPEC;
+  const problems = verify(
+    makeRepo({
+      packReadmeText: chainMapWith("implement-spec", (row) =>
+        row.replace(`\`${expected.model}\``, "no model")
+      ),
+    })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        `skills/software-factory/README.md: cannot read the chain-map implement-spec pin row for skills/software-factory/scripts/env-defaults.mjs DEFAULTS.stages.IMPLEMENT_SPEC (expected model "${expected.model}" and effort "${expected.effort}")`
+      )
     )
   );
 });
@@ -602,6 +846,60 @@ test("rejects a packaged wake helper that drifts from its shared source", () => 
   );
 });
 
+test("rejects a missing shared env-defaults module", () => {
+  const problems = verify(makeRepo({ omitDefaults: true }));
+  assert.ok(problems.some((problem) => problem.includes("skills/software-factory/scripts/env-defaults.mjs: missing")));
+});
+
+test("rejects a launching skill missing its packaged env-defaults module", () => {
+  const pack = makeRepo();
+  rmSync(join(pack, "dev-flow/scripts/env-defaults.mjs"));
+  assert.ok(
+    verify(pack).some((problem) =>
+      problem.includes("dev-flow/scripts/env-defaults.mjs: missing packaged helper")
+    )
+  );
+});
+
+test("rejects a packaged env-defaults module that drifts from its shared source", () => {
+  const pack = makeRepo();
+  writeFileSync(join(pack, "code-review-loop/scripts/env-defaults.mjs"), "export const DEFAULTS = { provider: \"x\", stages: {} };\n");
+  assert.ok(
+    verify(pack).some((problem) =>
+      problem.includes("code-review-loop/scripts/env-defaults.mjs: differs")
+    )
+  );
+});
+
+test("rejects an env-defaults module whose DEFAULTS table cannot be read", () => {
+  const problems = verify(makeRepo({ defaultsText: "export const DEFAULTS = {};\n" }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes("skills/software-factory/scripts/env-defaults.mjs: cannot read the DEFAULTS table")
+    )
+  );
+});
+
+test("rejects an env-defaults module whose LAUNCH_STAGES map cannot be read", () => {
+  const defaultsText = DEFAULTS_SOURCE.replace(
+    /export const LAUNCH_STAGES = Object\.freeze\(\{[\s\S]*?\n\}\);\n/,
+    ""
+  );
+  assert.notEqual(defaultsText, DEFAULTS_SOURCE, "the fixture must remove the LAUNCH_STAGES map");
+  assert.deepEqual(verify(makeRepo({ defaultsText })), [
+    "skills/software-factory/scripts/env-defaults.mjs: cannot read the LAUNCH_STAGES map",
+  ]);
+});
+
+test("rejects an env-defaults module whose pi AGENT_COMMANDS row cannot be read", () => {
+  const problems = verify(makeRepo({ defaultsText: DEFAULTS_SOURCE.replace("pi: {", "processor: {") }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes("skills/software-factory/scripts/env-defaults.mjs: cannot read the AGENT_COMMANDS pi row")
+    )
+  );
+});
+
 test("rejects a code-review-loop whose decision-forcing route does not reference the grill-session helper", () => {
   const problems = verify(makeRepo({ omitGrillRoute: true }));
   assert.ok(
@@ -628,26 +926,59 @@ test("rejects a decision-forcing route that mentions the grill-session helper on
   ]);
 });
 
-test("rejects a grill pin that diverges from the grill-with-spec frontmatter", () => {
-  const problems = verify(
-    makeRepo({ grillHelperText: grillHelper.replace("opencode-go/glm-5.3", "opencode-go/gpt-9") })
-  );
+test("reads the pin defaults from env-defaults.mjs, not hardcoded copies", () => {
+  const expected = defaultPin("GRILL").model;
+  const wrong = "opencode-go/gpt-9";
+  const mutated = DEFAULTS_SOURCE.replace(`model: "${expected}"`, `model: "${wrong}"`);
+  const problems = verify(makeRepo({ defaultsText: mutated }));
   assert.ok(
     problems.some((problem) =>
       problem.includes(
-        'skills/software-factory/scripts/open-grill-session.mjs: grill pin "model opencode-go/gpt-9, effort max" does not match skills/software-factory/grill-with-spec/SKILL.md frontmatter "model opencode-go/glm-5.3, thinking max"'
+        `skills/software-factory/grill-with-spec/SKILL.md: model pin "${expected}" does not match skills/software-factory/scripts/env-defaults.mjs DEFAULTS.stages.GRILL.model "${wrong}"`
       )
     )
   );
 });
 
-test("rejects a grill helper whose GRILL_PIN table cannot be read", () => {
-  const problems = verify(makeRepo({ grillHelperText: "export const GRILL_PIN = {};\n" }));
+test("rejects a grill helper that still carries the GRILL_PIN literal table", () => {
+  const problems = verify(makeRepo({ grillHelperText: `${grillHelper}\nexport const GRILL_PIN = {};\n` }));
   assert.ok(
     problems.some((problem) =>
       problem.includes(
-        "skills/software-factory/scripts/open-grill-session.mjs: cannot read the GRILL_PIN table"
+        "skills/software-factory/scripts/open-grill-session.mjs: still carries the GRILL_PIN literal table"
       )
+    )
+  );
+});
+
+test("rejects a grill helper that does not import env-defaults", () => {
+  const importLine = 'import { AGENT_COMMANDS, resolveAgent, resolveEffort, resolveModel } from "./env-defaults.mjs";\n\n';
+  const problems = verify(makeRepo({ grillHelperText: grillHelper.replace(importLine, "") }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        "skills/software-factory/scripts/open-grill-session.mjs: does not import skills/software-factory/scripts/env-defaults.mjs"
+      )
+    )
+  );
+});
+
+test("rejects a grill helper whose grillPin resolver cannot be read", () => {
+  const problems = verify(makeRepo({ grillHelperText: "export function nothing() {}\n" }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes("skills/software-factory/scripts/open-grill-session.mjs: missing the grillPin resolver")
+    )
+  );
+});
+
+test("rejects a grillPin resolver that does not use the AGENT_COMMANDS table", () => {
+  const problems = verify(
+    makeRepo({ grillHelperText: grillHelper.replace("AGENT_COMMANDS[agent].adapterId", '"opencode"') })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes("skills/software-factory/scripts/open-grill-session.mjs: grillPin does not resolve through AGENT_COMMANDS")
     )
   );
 });
@@ -661,7 +992,39 @@ test("rejects a launch snippet that does not reference the helper", () => {
             "Launch the next stage:",
             "",
             "```bash",
-            "pi --print --provider opencode-go --model opencode-go/glm-5.3 --thinking max 'Run implement-spec.'",
+            piSpawn("DEV_FLOW", "Run implement-spec."),
+            "```",
+            "",
+          ].join("\n"),
+        },
+      },
+    })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        "skills/software-factory/dev-flow/SKILL.md: launch snippet does not reference skills/software-factory/scripts/launch-stage.mjs"
+      )
+    )
+  );
+});
+
+test("reads the launch stage set from env-defaults.mjs, not a hardcoded copy", () => {
+  const defaultsText = DEFAULTS_SOURCE.replace(
+    '"create-pr": "CREATE_PR",',
+    '"create-pr": "CREATE_PR",\n  "review-spec": "REVIEW_SPEC",'
+  );
+  assert.match(defaultsText, /"review-spec": "REVIEW_SPEC"/, "the fixture must add a stage to LAUNCH_STAGES");
+  const problems = verify(
+    makeRepo({
+      defaultsText,
+      skillOverrides: {
+        "dev-flow": {
+          body: [
+            "Launch the review stage:",
+            "",
+            "```bash",
+            "node scripts/run-stage.mjs review-spec <spec> 'Run the review-spec stage.'",
             "```",
             "",
           ].join("\n"),
@@ -948,47 +1311,6 @@ test("ignores a prose mention of the helper", () => {
   assert.deepEqual(problems, []);
 });
 
-test("rejects a helper pins table that diverges from the SKILL.md frontmatter", () => {
-  const problems = verify(
-    makeRepo({ helperText: helper.replace("opencode-go/glm-5.3", "opencode-go/gpt-9") })
-  );
-  assert.ok(
-    problems.some((problem) =>
-      problem.includes(
-        'skills/software-factory/scripts/launch-stage.mjs: dev-flow pin "model opencode-go/gpt-9, thinking max" does not match skills/software-factory/dev-flow/SKILL.md frontmatter "model opencode-go/glm-5.3, thinking max"'
-      )
-    )
-  );
-});
-
-test("rejects a helper pins table that diverges from ADR-0006", () => {
-  const problems = verify(
-    makeRepo({
-      helperText: helper.replace("opencode-go/deepseek-v4.1-flash", "opencode-go/deepseek-v4.1"),
-    })
-  );
-  assert.ok(
-    problems.some((problem) =>
-      problem.includes(
-        'skills/software-factory/scripts/launch-stage.mjs: implement-spec pin "model opencode-go/deepseek-v4.1, thinking max" does not match docs/adr/0006-chain-skills-cross-model-handoffs.md "model opencode-go/deepseek-v4.1-flash, thinking max"'
-      )
-    )
-  );
-});
-
-test("reads the implement-spec pin from ADR-0006, not a hardcoded copy", () => {
-  const problems = verify(
-    makeRepo({ adrText: adr.replace("opencode-go/deepseek-v4.1-flash", "opencode-go/deepseek-v4.1") })
-  );
-  assert.ok(
-    problems.some((problem) =>
-      problem.includes(
-        'skills/software-factory/scripts/launch-stage.mjs: implement-spec pin "model opencode-go/deepseek-v4.1-flash, thinking max" does not match docs/adr/0006-chain-skills-cross-model-handoffs.md "model opencode-go/deepseek-v4.1, thinking max"'
-      )
-    )
-  );
-});
-
 test("rejects a spawn snippet without an explicit --model", () => {
   const problems = verify(
     makeRepo({
@@ -998,7 +1320,7 @@ test("rejects a spawn snippet without an explicit --model", () => {
             "Launch the next stage:",
             "",
             "```bash",
-            "pi --print --provider opencode-go --thinking max 'Run implement-spec.'",
+            piSpawn("DEV_FLOW", "Run implement-spec.").replace(` --model ${defaultPin("DEV_FLOW").model}`, ""),
             "```",
             "",
           ].join("\n"),
@@ -1022,7 +1344,7 @@ test("accepts a pinned sub-agent spawn that is not a stage launch", () => {
             "Run the test author as a sub-agent:",
             "",
             "```bash",
-            "pi --print --provider opencode-go --model opencode-go/glm-5.3 --thinking max 'Run the tdd skill.'",
+            piSpawn("DEV_FLOW", "Run the tdd skill."),
             "```",
             "",
           ].join("\n"),
@@ -1033,16 +1355,36 @@ test("accepts a pinned sub-agent spawn that is not a stage launch", () => {
   assert.deepEqual(problems, []);
 });
 
-test("rejects a helper whose STAGE_PINS table cannot be read", () => {
-  const problems = verify(makeRepo({ helperText: "export const STAGE_PINS = {};\n" }));
+test("rejects a launch helper that does not import env-defaults", () => {
+  const importLine = 'import { buildAgentCommand } from "./env-defaults.mjs";\n\n';
+  const problems = verify(makeRepo({ helperText: helper.replace(importLine, "") }));
   assert.ok(
     problems.some((problem) =>
-      problem.includes("skills/software-factory/scripts/launch-stage.mjs: cannot read the STAGE_PINS table")
+      problem.includes(
+        "skills/software-factory/scripts/launch-stage.mjs: does not import skills/software-factory/scripts/env-defaults.mjs"
+      )
     )
   );
 });
 
-test("rejects a missing ADR-0006 pin source", () => {
+test("rejects a launch helper that still carries the STAGE_PINS literal table", () => {
+  const problems = verify(makeRepo({ helperText: `${helper}\nexport const STAGE_PINS = {};\n` }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes("skills/software-factory/scripts/launch-stage.mjs: still carries the STAGE_PINS literal table")
+    )
+  );
+});
+
+test("rejects a launch helper whose command builder does not use the AGENT_COMMANDS rows", () => {
+  const problems = verify(makeRepo({ helperText: helper.replaceAll("buildAgentCommand", "rawCommand") }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes("skills/software-factory/scripts/launch-stage.mjs: pinned command does not build through the AGENT_COMMANDS rows")
+    )
+  );
+});
+test("rejects a missing ADR-0006 wake record", () => {
   const problems = verify(makeRepo({ omitAdr: true }));
   assert.ok(
     problems.some((problem) =>
@@ -1074,12 +1416,10 @@ test("rejects a retry wrapper whose give-up path drops the wake reference", () =
   ]);
 });
 
-test("rejects a pinned-command builder that drops an explicit pin flag", () => {
-  const problems = verify(
-    makeRepo({ helperText: helper.replace("--model ${pin.model} ", "") })
-  );
+test("rejects a pi AGENT_COMMANDS row that drops an explicit pin flag", () => {
+  const problems = verify(makeRepo({ defaultsText: DEFAULTS_SOURCE.replace('"--model",', "") }));
   assert.deepEqual(problems, [
-    "skills/software-factory/scripts/launch-stage.mjs: pinned command drops the explicit --model",
+    "skills/software-factory/scripts/env-defaults.mjs: the pi row drops the explicit --model",
   ]);
 });
 
@@ -1097,7 +1437,7 @@ test("rejects a resolver pointed at another helper while the ADR name survives i
     makeRepo({
       helperText: helper
         .replace('new URL("./open-wake-session.mjs", import.meta.url)', 'new URL("./open-snooze-session.mjs", import.meta.url)')
-        .replace("export const STAGE_PINS = {", "// The wake helper is open-wake-session.mjs.\nexport const STAGE_PINS = {"),
+        .replace("export const RETRY_ATTEMPTS =", "// The wake helper is open-wake-session.mjs.\nexport const RETRY_ATTEMPTS ="),
     })
   );
   assert.deepEqual(problems, [

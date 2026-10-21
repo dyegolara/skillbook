@@ -93,6 +93,26 @@ context is not independent.
   passes all three flags together. The ask-the-user sentence lands in the
   three standalone-invocable SKILL.md files (`dev-flow`,
   `code-review-loop`, `create-pr`).
+  Amended 2026-10-21, spec #160's fix wave (review finding 8, ticket
+  #168): two launch-helper behaviors the review flagged as un-ticketed
+  are kept deliberately. The helper's stage guard accepts only the four
+  launch stages — `GRILL` is rejected before any launch or wake path,
+  because grill launches go through the grill helper
+  (`open-grill-session.mjs` `grillPin`), which resolves the stage
+  through the same `env-defaults.mjs` tables without entering a launch
+  or wake; the split answers the inline review's regression finding (a
+  `grill` launch built a command instead of erroring) and stays. The
+  injected command's shell token rules are boundary shell-safety, not
+  cosmetics: the string is a shell command injected into a terminal, so
+  command names and flag values stay unquoted while pointers and
+  anything unsafe are single-quoted (`shellQuote`/`shellToken`/
+  `commandWithPointer`, whose explicit `pointers` parameter is always
+  quoted). Both are part of the helper's contract, not anomalies.
+  Recorded 2026-10-21, spec #160's fix wave (review finding 2, ticket
+  #174): a third keep is the stage-key preflight seam — `resolveStageKey`
+  delegates to `env-defaults.mjs`'s `resolveKey`, and its docblock carries
+  the unconditional-before-any-fetch/spawn contract; inlining it would
+  move that contract back into the launch path.
 - A stage that fails to run or dies mid-run does not stall the chain
   silently. The injected command is a retry wrapper around the stage's
   pinned agent command — whatever the harness, `pi` is not load-bearing —
@@ -160,6 +180,17 @@ context is not independent.
   - implement-spec — `opencode-go/deepseek-v4.1-flash` (`--thinking max`)
   - code-review-loop — `opencode-go/mimo-v2.6-pro` (`--thinking high` — the model's cap: `max` clamps to it)
   - create-pr — `opencode-go/muse-spark-1.3-contributor` (`--thinking xhigh`, provider cap)
+  Amended 2026-10-16, spec #160: this list is the default table now recorded
+  in `skills/software-factory/scripts/env-defaults.mjs` (each `SKILL.md`
+  frontmatter documents the same default, and the verifier compares them);
+  `DEV_ENV_MODEL_<STAGE>`, `DEV_ENV_EFFORT_<STAGE>` and
+  `DEV_ENV_AGENT_<STAGE>` override model, effort and agent per stage, so the
+  effort is no longer fixed at the model's cap. Recorded 2026-10-21, fix
+  wave of spec #160 (ticket #173): the agent table's `adapterId` deliberately
+  deviates from the spec's "same table" line — `cursor-cli` maps to Kepler's
+  `cursor` adapter, not `cursor-cli`, per the local `GET /agent/adapters`
+  registry (verified 2026-10-16 and named in the `AGENT_COMMANDS` row
+  comment); matching the spec text would break the registry contract.
 - Every spawned `pi` command — the stage launch and each sub-agent —
   carries an explicit `--provider`, `--model` and `--thinking`; never rely
   on pi's ambient default (the kimi-k3 incident: three un-pinned spawns
@@ -244,7 +275,68 @@ context is not independent.
   code-review-loop/SKILL.md §4 and GLOSSARY.md).
 - Pins are hardcoded in v1 — a deliberate opencode+kepler-specific exception
   to the book's model-agnostic stance; remote/dynamic pin configuration is
-  deferred to #54.
+  deferred to #54. Amended 2026-10-16, spec #160 (which closes #54): the pins
+  stop being fixed. Every pin resolves from the `DEV_ENV_*` environment
+  variables with defaults equal to the v1 pins in the single in-code file
+  `skills/software-factory/scripts/env-defaults.mjs`; the v1 fixed-pins
+  wording is superseded. An unset environment behaves exactly as v1. The
+  per-docker pattern sets `DEV_ENV_PROVIDER` plus `DEV_ENV_API_KEY` with the
+  docker's own account; the provider-specific key variables are a manual
+  override only. The helpers and the verifier resolve against the one file,
+  never against literals, and the operator docs are the repo root's
+  `.env.example` plus the pack README.
+  Amended 2026-10-21, maintainer decision at the decision-forcing pause of
+  spec #160's review (findings 1–2): API keys are provider-environment
+  scoped, never environment-generic. `DEV_ENV_API_KEY` is removed from the
+  design — the 2026-10-16 sentences above that carry it (the per-docker
+  pairing and the manual-override rule) are superseded. A key is carried by
+  the provider's own variable (`OPENCODE_GO_API_KEY`, `OPENAI_API_KEY`,
+  `XAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` — the variables
+  that exist today), and its value is that environment's (docker's) account
+  for that provider. Resolution is that one variable: set and non-empty
+  after trim wins, and a missing key is a hard error naming the provider and
+  the variable to set — no fallback chain, no opt-in gate. Zero exposure:
+  no API key value ever lands in `env-defaults.mjs`, `.env.example` or any
+  git-tracked file; the defaults file carries non-secret values only
+  (provider, models, efforts, agents). Because the key lives in the
+  environment under the provider's own variable, it reaches the launched
+  stage already paired with the provider — the built command stays
+  byte-identical to the fixed-pins era (ticket #162's tracer bullet). The
+  per-docker pattern is `DEV_ENV_PROVIDER` plus the provider's key variable.
+  Two open gaps the pause left are filled here. Key transport is
+  environment-inherent, not a per-agent mechanism: the environment carries
+  the key under the provider's own variable, so the API-path terminal and
+  the `nohup`-fallback child both inherit it already paired with the
+  resolved provider; an agent that reads a different variable name is an
+  implementation detail, not a design change. "The provider requires a key"
+  stays hardcoded for v1 — all five allowed providers require one; a
+  per-provider requires-key table is deferred until a keyless provider
+  exists. The key check is a preflight validation only: the built stage
+  command carries no key and no variable prefix, so it is byte-identical
+  whether the key resolves or not (the `VAR='key'` prefix mechanism is
+  gone). That preflight is the CLI-launched stages' contract. The grill
+  stage is an interactive Kepler agent session on its own configured auth;
+  it resolves no provider and no key, so it runs no key preflight, while
+  its model, effort and agent pins still resolve through `env-defaults.mjs`
+  and `DEV_ENV_*`. The deleted opt-in gate's `isSet` helper died with the
+  gate it served — deleted, not shared — which is the disposition of review
+  finding 7's `isSet`/`readEnv` duplication.
+  Recorded 2026-10-21, fix wave of spec #160 (ticket #169, open gap 3):
+  the wave's live environment still carried `DEV_ENV_API_KEY` from ticket
+  #163, which nothing reads. The wave's own environment file (`~/.dev-env`,
+  outside the repo and never committed) now exports the
+  provider-environment pattern — `DEV_ENV_PROVIDER` plus the provider's own
+  key variable, `OPENCODE_GO_API_KEY`, carrying the account — and no longer
+  exports `DEV_ENV_API_KEY`. An already-running process keeps the stale
+  variable in its inherited environment until the docker or shell restarts;
+  nothing reads it, so it has no effect.
+  Amended 2026-10-21, maintainer instruction: provider authentication is
+  configured manually for each agent and is never provisioned by the chain.
+  The helper selects provider/model pins but does not transmit API keys to
+  Kepler or agent commands; its detached fallback removes provider API-key
+  and credential-like variables from the child environment. The API path
+  uses the Kepler server's user-configured agent login, not a key from the
+  helper's invocation environment.
 - `GLOSSARY.md` replaces `CONTEXT.md`, adopting the referenced pack's glossary
   convention; ADRs keep living in `docs/adr/`.
 

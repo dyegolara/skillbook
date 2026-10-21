@@ -38,10 +38,31 @@ new session on its pinned agent and model. The user enters at the first
 skill only.
 _Avoid_: pipeline, workflow.
 
+**Effort**:
+A per-stage variable of the model pin — its reasoning effort:
+`DEV_ENV_EFFORT_<STAGE>`, with defaults in `env-defaults.mjs`, overridable
+per run, allowed values `max`, `xhigh` and `high`. Renamed from `thinking`
+(spec #160, ticket #168); only the pi command's `--thinking` flag keeps the
+flag's own name. Not fixed at the model's highest available effort.
+_Avoid_: thinking level, effort level.
+
 **Model pin**:
-The model a chain stage is invoked with, at that model's highest available
-effort.
+The model a chain stage is invoked with, plus the stage's effort; both are
+per-stage variables with defaults in `env-defaults.mjs`, overridable per run
+(`DEV_ENV_MODEL_<STAGE>`, `DEV_ENV_EFFORT_<STAGE>`). The effort is no longer
+fixed at the model's highest available effort.
 _Avoid_: model config, model setting.
+
+**Provider-environment pattern**:
+The chain's key rule for its launched stages — dev-flow, implement-spec,
+code-review-loop and create-pr: each docker sets `DEV_ENV_PROVIDER` plus
+that provider's own key variable (`OPENCODE_GO_API_KEY`, `OPENAI_API_KEY`,
+…), carrying its own account. The provider's variable is the only key
+mechanism — no generic key, no fallback; a missing key is a hard error
+naming the provider and the variable to set. The grill stage runs as an
+interactive Kepler agent session on its own configured auth and runs no key
+preflight.
+_Avoid_: universal key, generic API key, opt-in pair.
 
 **Handoff doc**:
 The compacted-conversation document the `handoff` skill writes to the OS

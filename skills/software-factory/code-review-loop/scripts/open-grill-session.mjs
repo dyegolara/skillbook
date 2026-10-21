@@ -9,10 +9,12 @@
  * session on the current worktree, labels it `chain #<spec>:
  * grill-with-spec` with the spec number taken from the explicit argument
  * (never parsed from another label), pins the session's `model` and `effort`
- * config options to the grill pin recorded in grill-with-spec's frontmatter
- * and ADR-0006, and sends the re-entry prompt verbatim — so the session sits
- * `unread` on the maintainer's task. The spec number and the re-entry prompt
- * are explicit arguments; the repo/worktree/task ids reuse the launch
+ * config options to the grill stage's resolved pin — `env-defaults.mjs`
+ * defaults overridden by `DEV_ENV_MODEL_GRILL`/`DEV_ENV_EFFORT_GRILL`, and
+ * the grill agent's `adapterId` from the same table — and sends the re-entry
+ * prompt verbatim, so the session sits `unread` on the maintainer's task.
+ * The spec number and the re-entry prompt are explicit arguments; the
+ * repo/worktree/task ids reuse the launch
  * helper's id anchor (`GET /terminal/list`, preferring a chain-labeled
  * terminal) or its explicit `--repo-id/--worktree-id/--task-id` bootstrap
  * flags — one mechanism, no manual curl procedure.
@@ -35,27 +37,69 @@ import {
   createLabeledSession,
   parseIdFlags,
   requestJson,
+  runPinEnvironment,
   runSessionCli,
   runSessionHelper,
+  shellQuote,
   stageLabel,
 } from "./launch-stage.mjs";
+import { AGENT_COMMANDS, resolveAgent, resolveEffort, resolveModel } from "./env-defaults.mjs";
 
 /** @typedef {import("./launch-stage.mjs").TaskIds} TaskIds */
 
-// Pins per ADR-0006 and grill-with-spec/SKILL.md frontmatter: the grill model
-// at its highest available effort.
-export const GRILL_PIN = { model: "opencode-go/glm-5.3", effort: "max" };
+/**
+ * The grill's resolved pin: the grill stage's model and effort plus the grill
+ * agent's Kepler adapterId, all from `env-defaults.mjs` plus `DEV_ENV_*` —
+ * `DEV_ENV_MODEL_GRILL`, `DEV_ENV_EFFORT_GRILL`, `DEV_ENV_AGENT_GRILL`. With
+ * no `DEV_ENV_*` set these are today's pins (the grill model at its highest
+ * available effort, the opencode adapter).
+ */
+export function grillPin(env = process.env) {
+  const agent = resolveAgent("GRILL", env);
+  return {
+    model: resolveModel("GRILL", env),
+    effort: resolveEffort("GRILL", env),
+    adapterId: AGENT_COMMANDS[agent].adapterId,
+  };
+}
+
+/** Add only the allowlisted, non-secret run pins to a grill re-entry prompt. */
+export function withRunPinContext(prompt, env = process.env) {
+  const pins = runPinEnvironment(env);
+  const assignments = Object.entries(pins)
+    .map(([name, value]) => `${name}=${shellQuote(value)}`)
+    .join(" ");
+  return (
+    `${prompt}\n\n` +
+    "Run pin configuration for this chain (empty values intentionally select shared defaults):\n" +
+    `\`\`\`json\n${JSON.stringify(pins, null, 2)}\n\`\`\`\n` +
+    `Prefix the first launch-helper command with \`env ${assignments}\`. ` +
+    "Keep this prefix unchanged; launch-stage propagates it to later handoffs and resumes. " +
+    "This context contains pin settings only, never provider credentials."
+  );
+}
 
 /**
  * The grill's route-specific create step: the shared create orchestration
- * plus the grill's pre-send pin step — model and effort per `GRILL_PIN`. The
- * pin lives in the grill's own module (ADR-0006: the wake pins nothing). A
+ * plus the grill's pre-send pin step — model and effort from `grillPin`, and
+ * the grill agent's `adapterId` from the same `AGENT_COMMANDS` table. The pin
+ * lives in the grill's own module (ADR-0006: the wake pins nothing). A
  * failure here carries the session's id and is a hard error.
  *
- * @param {{ label: string, prompt: string, ids: TaskIds, worktreePath: string, apiBase: string, fetchImpl?: typeof fetch }} options
+ * @param {{ label: string, prompt: string, ids: TaskIds, worktreePath: string, apiBase: string, fetchImpl?: typeof fetch, env?: Object }} options
  */
-export async function createGrillSession({ label, prompt, ids, worktreePath, apiBase, fetchImpl = fetch }) {
+export async function createGrillSession({
+  label,
+  prompt,
+  ids,
+  worktreePath,
+  apiBase,
+  fetchImpl = fetch,
+  env = process.env,
+}) {
+  const pin = grillPin(env);
   return createLabeledSession({
+    adapterId: pin.adapterId,
     label,
     prompt,
     ids,
@@ -64,8 +108,8 @@ export async function createGrillSession({ label, prompt, ids, worktreePath, api
     fetchImpl,
     beforeSend: async (sessionId) => {
       for (const [configId, value] of [
-        ["model", GRILL_PIN.model],
-        ["effort", GRILL_PIN.effort],
+        ["model", pin.model],
+        ["effort", pin.effort],
       ]) {
         await requestJson(fetchImpl, `${apiBase}/agent/session-config-option`, {
           method: "POST",
@@ -85,15 +129,17 @@ export async function createGrillSession({ label, prompt, ids, worktreePath, api
  * @param {{ spec: number|string, prompt: string, flags?: Object, deps?: Object }} options
  */
 export async function openGrillSession({ spec, prompt, flags, deps = {} }) {
+  grillPin(deps.env);
+  const reEntryPrompt = withRunPinContext(prompt, deps.env);
   return runSessionHelper({
     label: stageLabel(spec, "grill-with-spec"), // a bad spec is a hard error before any fetch
-    prompt,
+    prompt: reEntryPrompt,
     flags,
     deps,
     fallbackPath: "pause",
-    create: createGrillSession,
+    create: (context) => createGrillSession({ ...context, env: deps.env }),
     successLine: (result) => `open-grill-session: opened ${result.label} as Kepler session ${result.sessionId}`,
-    fallbackLines: (result) => buildPauseLines({ label: result.label, prompt, reason: result.reason }),
+    fallbackLines: (result) => buildPauseLines({ label: result.label, prompt: reEntryPrompt, reason: result.reason }),
   });
 }
 

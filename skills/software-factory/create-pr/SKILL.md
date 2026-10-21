@@ -1,11 +1,11 @@
 ---
 name: create-pr
-description: "Software-factory chain stage: push the verified integration branch, write the PR body with the pr skill, mark the existing draft ready or open a ready PR against main, and close the spec and its tickets. Use for /create-pr or shipping a reviewed chain run."
+description: "Software-factory chain stage: push the verified integration branch, write the PR body with the pr skill, then use the branch's PR in whichever state it is — mark a draft ready, apply the written body to an already-ready PR, or open a ready PR against main when there is none, never a draft — and close the spec and its tickets. Use for /create-pr or shipping a reviewed chain run."
 disable-model-invocation: true
 license: MIT
 metadata:
   model: opencode-go/muse-spark-1.3-contributor
-  thinking: xhigh
+  effort: xhigh
 ---
 
 # create-pr
@@ -38,13 +38,24 @@ helper flags apply on this path.
    report's clean result plus the test runs from the implementation; Merge
    Danger states whether the merge is a one-way or two-way door.
 
-4. Finish the PR:
+4. Finish the PR: use the branch's PR in whichever state it is — a branch
+   that already has one never gets a second. Read it first:
+   `gh pr list --head <branch> --state open --json number,isDraft --limit 1`.
+   An empty result means there is no open PR for the branch; otherwise the
+   single returned row supplies its `number` and `isDraft`.
 
-   - If a draft PR exists for the branch (implement-spec opens one after the
-     first merge), mark it ready: `gh pr ready <number>`.
-   - Otherwise create a ready PR against `main`:
+   - **Draft** — the open result is a draft. Mark it ready:
+     `gh pr ready <number>`.
+   - **Ready** — the open result is ready. If step 3 wrote a body, apply it to
+     that PR with `gh pr edit <number> --body-file <path>`, and never create a
+     second one.
+   - **No PR** — the open-only lookup returned an empty result. Create a ready
+     one against `main`:
      `gh pr create --base main --head <branch> --title <title> --body-file <path>`.
      Never open a draft.
+
+   Closed and merged PRs are not reused; when no open PR exists, create a new
+   ready PR for the branch.
 
 5. Close the spec and its tickets through the body's closing keywords — one
    `Closes #<n>` line per issue, the spec and every ticket — or set the same

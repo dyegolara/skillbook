@@ -5,7 +5,7 @@ disable-model-invocation: true
 license: MIT
 metadata:
   model: opencode-go/glm-5.3
-  thinking: max
+  effort: max
 ---
 
 # dev-flow

@@ -5,10 +5,14 @@
  * Checks over skills/software-factory as an artifact, fully offline:
  *   1. the four chain skills exist with spec-conformant frontmatter (name
  *      matches folder, description present and <=1024 characters) and carry
- *      the model and thinking pins recorded in ADR-0006;
+ *      the model and effort defaults recorded in env-defaults.mjs
+ *      (DEFAULTS.stages.<STAGE>) — the verifier follows the file, never pins;
  *   2. every chain skill is registered in the plugin manifest;
- *   3. the pack README exists and the book's tables carry the pack's rows
- *      (README "What's inside", AGENTS "Own skills");
+ *   3. the pack README exists, its chain-map pin rows cross-check against the
+ *      DEFAULTS table (every stage's model and effort, so a missing row, a
+ *      malformed row or a drift is a pack-contract problem), and the book's
+ *      tables carry the pack's rows (README "What's inside", AGENTS "Own
+ *      skills");
  *   4. the referenced Matt Pocock pack is wired as a dependency: its row in
  *      both books' referenced-skills tables, both published-channel checks,
  *      and the skills:install command;
@@ -19,22 +23,33 @@
  *      --task-id` flags (re-entry and mid-chain launches stay unpinned),
  *      code-review-loop's decision-forcing
  *      route goes through open-grill-session.mjs, and every launching skill
- *      packages open-wake-session.mjs byte-identically beside launch-stage.mjs;
- *   6. both pin tables match their records: the launch helper's STAGE_PINS
- *      against the own pi stages' SKILL.md frontmatter and ADR-0006's
- *      implement-spec pin, the grill helper's GRILL_PIN against
- *      grill-with-spec's SKILL.md frontmatter;
+ *      packages launch-stage.mjs, open-wake-session.mjs and env-defaults.mjs
+ *      byte-identically to their shared sources;
+ *   6. the launch and grill helpers resolve through env-defaults.mjs: both
+ *      import it and carry no literal pin tables — the grill helper's resolved
+ *      pin (model, effort, the grill agent's adapterId) comes from the same
+ *      DEFAULTS/AGENT_COMMANDS tables the chain skills' frontmatter is
+ *      checked against;
  *   7. every inline `pi` spawn snippet carries an explicit --model — checked
  *      separately from the launch check, so a pinned sub-agent spawn is not
  *      mistaken for a stage launch;
  *   8. the error route holds: the launch helper injects a bounded retry
- *      wrapper (buildRetryWrapper) around the pinned command (buildPiCommand),
+ *      wrapper (buildRetryWrapper) around the resolved command (buildStageCommand),
  *      the wrapper's give-up path carries the FAILED marker and references the
- *      wake helper ADR-0006 names, and the pinned-command builder emits the
+ *      wake helper ADR-0006 names, the command builder goes through the
+ *      resolved agent's AGENT_COMMANDS row, and the pi row still emits the
  *      explicit --provider/--model/--thinking flags;
  *   9. the shared `## Handoff rules` block is byte-identical between the two
  *      block-carrying skills: dev-flow and code-review-loop close with the
- *      same block, and a drift between them is a pack-contract problem.
+ *      same block, and a drift between them is a pack-contract problem;
+ *   10. ADR-0006's documented pin rows cross-check against the DEFAULTS table:
+ *      every expected stage (the LAUNCH_STAGES map plus the grill stage) must
+ *      have a parsed ADR row, and the verifier reads each row's model and
+ *      effort, in the ADR's recorded spellings, to compare them to the same
+ *      table the frontmatter is checked against — one of the two verifier-side
+ *      guards for the implement-spec pin, which has no SKILL.md frontmatter
+ *      (item 3's README chain-map check is the other), so a missing row, a
+ *      malformed row or a drift is a pack-contract problem.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -43,12 +58,13 @@ import { parseFrontmatter } from "./verify-pstack.mjs";
 
 const DESCRIPTION_LIMIT = 1024;
 
-// Pins per ADR-0006 (the decision record); the check verifies the contract, not the ADR text.
+// The four chain skills and the env-defaults stage key each one's frontmatter
+// documents. The pin values themselves live only in env-defaults.mjs.
 const CHAIN_SKILLS = [
-  { name: "grill-with-spec", model: "opencode-go/glm-5.3", thinking: "max" },
-  { name: "dev-flow", model: "opencode-go/glm-5.3", thinking: "max" },
-  { name: "code-review-loop", model: "opencode-go/mimo-v2.6-pro", thinking: "high" },
-  { name: "create-pr", model: "opencode-go/muse-spark-1.3-contributor", thinking: "xhigh" },
+  { name: "grill-with-spec", stage: "GRILL" },
+  { name: "dev-flow", stage: "DEV_FLOW" },
+  { name: "code-review-loop", stage: "CODE_REVIEW_LOOP" },
+  { name: "create-pr", stage: "CREATE_PR" },
 ];
 
 const DEPENDENCY_CHANNELS = [
@@ -59,12 +75,16 @@ const DEPENDENCY_CHANNELS = [
 const HELPER_FILE = "skills/software-factory/scripts/launch-stage.mjs";
 const GRILL_HELPER_FILE = "skills/software-factory/scripts/open-grill-session.mjs";
 const WAKE_HELPER_FILE = "skills/software-factory/scripts/open-wake-session.mjs";
-// The wake helper is packaged beside the launch helper in every skill that launches a stage.
-const PACKAGED_HELPERS = ["launch-stage.mjs", "open-wake-session.mjs"];
+const DEFAULTS_FILE = "skills/software-factory/scripts/env-defaults.mjs";
+// The defaults module is packaged with the two helpers beside the launch helper
+// in every skill that launches a stage.
+const PACKAGED_HELPERS = ["launch-stage.mjs", "open-wake-session.mjs", "env-defaults.mjs"];
 const ADR_FILE = "docs/adr/0006-chain-skills-cross-model-handoffs.md";
-const LAUNCH_STAGES = ["dev-flow", "implement-spec", "code-review-loop", "create-pr"];
-// The three own pi stages carry frontmatter pins; implement-spec is referenced and pinned via ADR-0006.
-const OWN_PI_STAGE_SKILLS = ["dev-flow", "code-review-loop", "create-pr"];
+const PACK_README_FILE = "skills/software-factory/README.md";
+// The grill stage is not a launch stage (LAUNCH_STAGES omits it), yet ADR-0006
+// documents its pin row and the pack README's chain map repeats it; the
+// expected pin-row set for both surfaces is this row plus the map.
+const GRILL_STAGE = { stage: "grill-with-spec", key: "GRILL" };
 // The skills that close with the shared `## Handoff rules` block.
 const HANDOFF_RULES_SKILLS = ["dev-flow", "code-review-loop"];
 
@@ -72,7 +92,10 @@ export function verifySoftwareFactoryPack(packDir) {
   const problems = [];
   const repoRoot = resolve(packDir, "../..");
   const registered = readRegisteredSkills(repoRoot, problems);
-  const frontmatter = new Map();
+  const defaults = readDefaults(packDir, problems);
+  const launchStageEntries = readLaunchStages(packDir, problems);
+  const launchStages = launchStageEntries.map((entry) => entry.stage);
+  const PIN_STAGES = [GRILL_STAGE, ...launchStageEntries];
 
   for (const skill of CHAIN_SKILLS) {
     const label = `skills/software-factory/${skill.name}/SKILL.md`;
@@ -83,8 +106,7 @@ export function verifySoftwareFactoryPack(packDir) {
     }
     const text = readFileSync(file, "utf8");
     const { data } = parseFrontmatter(text);
-    frontmatter.set(skill.name, data);
-    checkLaunchSnippets(problems, label, text, skill.name);
+    checkLaunchSnippets(problems, label, text, skill.name, launchStages);
     checkPackagedHelpers(problems, packDir, skill.name, text);
     if (
       skill.name === "code-review-loop" &&
@@ -100,14 +122,15 @@ export function verifySoftwareFactoryPack(packDir) {
     } else if (data.description.length > DESCRIPTION_LIMIT) {
       problems.push(`${label}: description longer than ${DESCRIPTION_LIMIT} characters`);
     }
-    if (data.metadata?.model !== skill.model) {
+    const defaultsForStage = defaults?.stages?.[skill.stage];
+    if (defaultsForStage && data.metadata?.model !== defaultsForStage.model) {
       problems.push(
-        `${label}: model pin "${data.metadata?.model ?? ""}" does not match the pinned chain contract "${skill.model}"`
+        `${label}: model pin "${data.metadata?.model ?? ""}" does not match ${DEFAULTS_FILE} DEFAULTS.stages.${skill.stage}.model "${defaultsForStage.model}"`
       );
     }
-    if (data.metadata?.thinking !== skill.thinking) {
+    if (defaultsForStage && data.metadata?.effort !== defaultsForStage.effort) {
       problems.push(
-        `${label}: thinking pin "${data.metadata?.thinking ?? ""}" does not match the pinned chain contract "${skill.thinking}"`
+        `${label}: effort pin "${data.metadata?.effort ?? ""}" does not match ${DEFAULTS_FILE} DEFAULTS.stages.${skill.stage}.effort "${defaultsForStage.effort}"`
       );
     }
     if (!registered.has(`skills/software-factory/${skill.name}`)) {
@@ -115,13 +138,15 @@ export function verifySoftwareFactoryPack(packDir) {
     }
   }
 
-  checkLaunchMechanism(problems, packDir, repoRoot, frontmatter);
-  checkGrillMechanism(problems, packDir, frontmatter);
+  checkAdrPins(problems, repoRoot, defaults, PIN_STAGES);
+  checkReadmeChainMapPins(problems, repoRoot, defaults, PIN_STAGES);
+  checkLaunchMechanism(problems, packDir, repoRoot, defaultsSource(packDir));
+  checkGrillMechanism(problems, packDir);
   checkWakeMechanism(problems, packDir);
   checkHandoffRules(problems, packDir);
 
   if (!existsSync(join(packDir, "README.md"))) {
-    problems.push("skills/software-factory/README.md: missing");
+    problems.push(`${PACK_README_FILE}: missing`);
   }
 
   checkTableRow(problems, repoRoot, {
@@ -337,12 +362,12 @@ function piSpawnCommands(block) {
   return commands;
 }
 
-function isNodeStageLaunch(block) {
+function isNodeStageLaunch(block, launchStages) {
   return block
     .replace(/\\\n\s*/g, " ")
     .split("\n")
     .some(
-      (line) => /(?:^|[\s;&|])node\s/.test(line) && LAUNCH_STAGES.some((stage) => line.includes(stage))
+      (line) => /(?:^|[\s;&|])node\s/.test(line) && launchStages.some((stage) => line.includes(stage))
     );
 }
 
@@ -350,20 +375,20 @@ function isNodeStageLaunch(block) {
  * A block is a stage launch when it invokes the helper, runs a node command
  * naming a stage, or contains a `pi` command naming a stage. Any other `pi`
  * spawn is a sub-agent spawn: it passes the launch check and is subject only
- * to the explicit --model check.
+ * to the explicit --model check. The stage names come from env-defaults.mjs.
  */
-function isStageLaunch(block, spawns) {
+function isStageLaunch(block, spawns, launchStages) {
   return (
     block.includes("launch-stage.mjs") ||
-    isNodeStageLaunch(block) ||
-    spawns.some((command) => LAUNCH_STAGES.some((stage) => command.includes(stage)))
+    isNodeStageLaunch(block, launchStages) ||
+    spawns.some((command) => launchStages.some((stage) => command.includes(stage)))
   );
 }
 
-function checkLaunchSnippets(problems, label, text, skill) {
+function checkLaunchSnippets(problems, label, text, skill, launchStages) {
   for (const block of fencedCodeBlocks(text)) {
     const spawns = piSpawnCommands(block);
-    if (isStageLaunch(block, spawns) && !block.includes("launch-stage.mjs")) {
+    if (isStageLaunch(block, spawns, launchStages) && !block.includes("launch-stage.mjs")) {
       problems.push(`${label}: launch snippet does not reference ${HELPER_FILE}`);
     }
     if (spawns.length > 0 && !spawns.every((command) => command.includes("--model"))) {
@@ -428,88 +453,135 @@ function parseQuotedFields(fieldsText) {
 }
 
 /**
- * Read STAGE_PINS from the helper's source text — the verifier must not import
- * the module it verifies, because fixtures mutate the file. Contract: a plain
- * `export const STAGE_PINS` object literal of `"<stage>": { provider: "...",
- * model: "...", thinking: "..." }` entries with quoted string fields.
+ * Read `DEFAULTS` from env-defaults.mjs source text — the verifier follows the
+ * file, never importing the module it verifies. Contract: `export const
+ * DEFAULTS = { provider: "...", stages: { <STAGE>: { model: "...", effort:
+ * "...", agent: "..." } } }` with quoted string fields.
  */
-function parseStagePins(text) {
-  const declaration = text.indexOf("export const STAGE_PINS");
+function parseDefaults(text) {
+  const declaration = text.indexOf("export const DEFAULTS");
   if (declaration === -1) return null;
-  const open = text.indexOf("{", declaration);
+  const objectStart = text.indexOf("{", declaration);
+  if (objectStart === -1) return null;
+  const body = bracedBlock(text, objectStart);
+  if (body === null) return null;
+  const provider = /provider\s*:\s*"([^"]*)"/.exec(body)?.[1];
+  const stagesMatch = /stages\s*:\s*\{/.exec(body);
+  if (provider === undefined || !stagesMatch) return null;
+  const stagesBody = bracedBlock(body, body.indexOf("{", stagesMatch.index));
+  if (stagesBody === null) return null;
+
+  const stages = {};
+  const entryPattern = /"?([A-Z_]+)"?\s*:\s*\{([^}]*)\}/g;
+  let entry;
+  while ((entry = entryPattern.exec(stagesBody)) !== null) {
+    stages[entry[1]] = parseQuotedFields(entry[2]);
+  }
+  return Object.keys(stages).length > 0 ? { provider, stages } : null;
+}
+
+/**
+ * Read the DEFAULTS table from the shared defaults module; a missing or
+ * unreadable module is reported here once and returns null.
+ */
+function readDefaults(packDir, problems) {
+  const path = join(packDir, "scripts", "env-defaults.mjs");
+  if (!existsSync(path)) {
+    problems.push(`${DEFAULTS_FILE}: missing`);
+    return null;
+  }
+  const defaults = parseDefaults(readFileSync(path, "utf8"));
+  if (defaults === null) problems.push(`${DEFAULTS_FILE}: cannot read the DEFAULTS table`);
+  return defaults;
+}
+
+/** The shared defaults module's source text, or "" when it is missing. */
+function defaultsSource(packDir) {
+  const path = join(packDir, "scripts", "env-defaults.mjs");
+  return existsSync(path) ? readFileSync(path, "utf8") : "";
+}
+
+/**
+ * Read the `LAUNCH_STAGES` map's entries from env-defaults.mjs source text —
+ * same source-text approach as `parseDefaults`, so the verifier follows the
+ * file instead of pinning a second copy of the launch stage set. Both sides
+ * are captured: the kebab name the helpers take and the DEFAULTS stage key.
+ * Contract: `export const LAUNCH_STAGES = { "<kebab-stage>": "<STAGE_KEY>",
+ * ... }`, optionally wrapped in `Object.freeze(...)`.
+ */
+function parseLaunchStages(text) {
+  const declaration = text.indexOf("export const LAUNCH_STAGES");
+  if (declaration === -1) return null;
+  const objectStart = text.indexOf("{", declaration);
+  if (objectStart === -1) return null;
+  const body = bracedBlock(text, objectStart);
+  if (body === null) return null;
+  const stages = [];
+  const entryPattern = /"?([A-Za-z][\w-]*)"?\s*:\s*"([^"]*)"/g;
+  let entry;
+  while ((entry = entryPattern.exec(body)) !== null) {
+    stages.push({ stage: entry[1], key: entry[2] });
+  }
+  return stages.length > 0 ? stages : null;
+}
+
+/**
+ * Read the `{ stage, key }` launch-stage entries from the shared defaults
+ * module. A missing module is already reported by `readDefaults`; an
+ * unreadable map is reported here once. An unreadable set leaves the
+ * stage-launch detection without stage names rather than pinning a copy.
+ */
+function readLaunchStages(packDir, problems) {
+  const path = join(packDir, "scripts", "env-defaults.mjs");
+  if (!existsSync(path)) return [];
+  const stages = parseLaunchStages(readFileSync(path, "utf8"));
+  if (stages === null) problems.push(`${DEFAULTS_FILE}: cannot read the LAUNCH_STAGES map`);
+  return stages ?? [];
+}
+
+/** The brace-matched body starting at `open`, or null when it is unclosed. */
+function bracedBlock(text, open) {
   if (open === -1) return null;
   let depth = 0;
-  let close = -1;
   for (let i = open; i < text.length; i += 1) {
     if (text[i] === "{") depth += 1;
     else if (text[i] === "}") {
       depth -= 1;
-      if (depth === 0) {
-        close = i;
-        break;
-      }
+      if (depth === 0) return text.slice(open + 1, i);
     }
   }
-  if (close === -1) return null;
-
-  const pins = {};
-  const entries = text.slice(open + 1, close);
-  const entryPattern = /"([^"]+)"\s*:\s*\{([^}]*)\}/g;
-  let entry;
-  while ((entry = entryPattern.exec(entries)) !== null) {
-    pins[entry[1]] = parseQuotedFields(entry[2]);
-  }
-  return Object.keys(pins).length > 0 ? pins : null;
-}
-
-function readAdrPin(repoRoot, problems) {
-  const path = join(repoRoot, ADR_FILE);
-  if (!existsSync(path)) {
-    problems.push(`${ADR_FILE}: missing`);
-    return null;
-  }
-  const match = /-\s+implement-spec\s+[-—–]\s+`([^`]+)`\s+\(`--thinking\s+([\w-]+)`/.exec(
-    readFileSync(path, "utf8")
-  );
-  if (!match) {
-    problems.push(`${ADR_FILE}: cannot read the implement-spec pin`);
-    return null;
-  }
-  return { model: match[1], thinking: match[2] };
+  return null;
 }
 
 /**
- * Read GRILL_PIN from the grill helper's source text — same fixture-friendly
- * approach as parseStagePins (both read an entry's string fields through
- * parseQuotedFields), so the verifier never imports the module it verifies.
- * Contract: a plain `export const GRILL_PIN` object literal with quoted `model`
- * and `effort` string fields.
+ * The grill helper resolves its pin through env-defaults.mjs — same
+ * fixture-friendly source-text approach: it must import the module, carry no
+ * GRILL_PIN literal, and its grillPin resolver must read the model, the
+ * effort and the grill agent's adapterId from the shared tables. The frontmatter
+ * comparison against DEFAULTS.stages.GRILL happens in the chain-skill loop.
  */
-function parseGrillPin(text) {
-  const match = /export const GRILL_PIN\s*=\s*\{([^}]*)\}/.exec(text);
-  if (!match) return null;
-  const pin = parseQuotedFields(match[1]);
-  return Object.keys(pin).length > 0 ? pin : null;
-}
-
-function checkGrillMechanism(problems, packDir, frontmatter) {
+function checkGrillMechanism(problems, packDir) {
   const helperPath = join(packDir, "scripts", "open-grill-session.mjs");
   if (!existsSync(helperPath)) {
     problems.push(`${GRILL_HELPER_FILE}: missing`);
     return;
   }
-  const pin = parseGrillPin(readFileSync(helperPath, "utf8"));
-  if (pin === null) {
-    problems.push(`${GRILL_HELPER_FILE}: cannot read the GRILL_PIN table`);
+  const text = readFileSync(helperPath, "utf8");
+  if (!/from\s+"\.\/env-defaults\.mjs"/.test(text)) {
+    problems.push(`${GRILL_HELPER_FILE}: does not import ${DEFAULTS_FILE}`);
+  }
+  if (text.includes("GRILL_PIN")) {
+    problems.push(`${GRILL_HELPER_FILE}: still carries the GRILL_PIN literal table`);
+  }
+  const body = functionBody(text, "grillPin");
+  if (body === null) {
+    problems.push(`${GRILL_HELPER_FILE}: missing the grillPin resolver`);
     return;
   }
-  const data = frontmatter.get("grill-with-spec");
-  if (!data) return; // its SKILL.md is already reported missing
-  const label = "skills/software-factory/grill-with-spec/SKILL.md";
-  if (pin.model !== data.metadata?.model || pin.effort !== data.metadata?.thinking) {
-    problems.push(
-      `${GRILL_HELPER_FILE}: grill pin "model ${pin.model ?? ""}, effort ${pin.effort ?? ""}" does not match ${label} frontmatter "model ${data.metadata?.model ?? ""}, thinking ${data.metadata?.thinking ?? ""}"`
-    );
+  for (const source of ["resolveModel", "resolveEffort", "AGENT_COMMANDS"]) {
+    if (!body.includes(source)) {
+      problems.push(`${GRILL_HELPER_FILE}: grillPin does not resolve through ${source}`);
+    }
   }
 }
 
@@ -550,48 +622,23 @@ function checkHandoffRules(problems, packDir) {
   }
 }
 
-function checkLaunchMechanism(problems, packDir, repoRoot, frontmatter) {
+function checkLaunchMechanism(problems, packDir, repoRoot, defaultsText) {
   const helperPath = join(packDir, "scripts", "launch-stage.mjs");
   if (!existsSync(helperPath)) {
     problems.push(`${HELPER_FILE}: missing`);
     return;
   }
   const text = readFileSync(helperPath, "utf8");
-  const pins = parseStagePins(text);
-  if (pins === null) {
-    problems.push(`${HELPER_FILE}: cannot read the STAGE_PINS table`);
-    return;
+  if (!/from\s+"\.\/env-defaults\.mjs"/.test(text)) {
+    problems.push(`${HELPER_FILE}: does not import ${DEFAULTS_FILE}`);
   }
-
-  const expected = {};
-  for (const stage of OWN_PI_STAGE_SKILLS) {
-    const data = frontmatter.get(stage);
-    if (!data) continue;
-    expected[stage] = {
-      model: data.metadata?.model,
-      thinking: data.metadata?.thinking,
-      source: `skills/software-factory/${stage}/SKILL.md frontmatter`,
-    };
-  }
-  const adrPin = readAdrPin(repoRoot, problems);
-  if (adrPin) expected["implement-spec"] = { ...adrPin, source: ADR_FILE };
-
-  for (const [stage, record] of Object.entries(expected)) {
-    const pin = pins[stage];
-    if (!pin) {
-      problems.push(`${HELPER_FILE}: missing pin for stage "${stage}"`);
-      continue;
-    }
-    if (pin.model !== record.model || pin.thinking !== record.thinking) {
-      problems.push(
-        `${HELPER_FILE}: ${stage} pin "model ${pin.model ?? ""}, thinking ${pin.thinking ?? ""}" does not match ${record.source} "model ${record.model}, thinking ${record.thinking}"`
-      );
-    }
+  if (text.includes("STAGE_PINS")) {
+    problems.push(`${HELPER_FILE}: still carries the STAGE_PINS literal table`);
   }
 
   const wrapper = checkRetryWrapper(problems, text);
   checkWakeReference(problems, repoRoot, text, wrapper);
-  checkPinnedCommand(problems, text);
+  checkPinnedCommand(problems, text, defaultsText);
 }
 
 /**
@@ -618,7 +665,7 @@ function functionBody(text, name) {
 
 /**
  * (a) The launch construction wraps the pinned command: buildRetryWrapper
- * builds its inner command through buildPiCommand and runs a bounded retry
+ * builds its inner command through buildStageCommand and runs a bounded retry
  * loop. Returns the wrapper's body for the wake-reference check, or null when
  * the wrapper is missing (so that check stays quiet).
  */
@@ -628,8 +675,8 @@ function checkRetryWrapper(problems, text) {
     problems.push(`${HELPER_FILE}: missing the buildRetryWrapper retry wrapper around the pinned command`);
     return null;
   }
-  if (!body.includes("buildPiCommand")) {
-    problems.push(`${HELPER_FILE}: retry wrapper does not wrap the buildPiCommand pinned command`);
+  if (!body.includes("buildStageCommand")) {
+    problems.push(`${HELPER_FILE}: retry wrapper does not wrap the buildStageCommand pinned command`);
   }
   if (!/\b(?:while|for)\b/.test(body) || !body.includes("RETRY_ATTEMPTS")) {
     problems.push(`${HELPER_FILE}: retry wrapper does not make a bounded retry loop`);
@@ -639,12 +686,15 @@ function checkRetryWrapper(problems, text) {
 
 /**
  * Read the wake helper's filename from ADR-0006's recorded wake shape — the
- * same source-text approach as the pin checks. Contract: the wake bullet
+ * same source-text approach as the defaults checks. Contract: the wake bullet
  * records the actuation as `node "<skill-dir>/scripts/<wake-helper>.mjs"`.
  */
 function readWakeHelperName(repoRoot, problems) {
   const path = join(repoRoot, ADR_FILE);
-  if (!existsSync(path)) return null; // readAdrPin already reports the missing record
+  if (!existsSync(path)) {
+    problems.push(`${ADR_FILE}: missing`);
+    return null;
+  }
   const match = /actuated by the wrapper\s+as\s+`node\s+"[^"]*\/([\w.-]+\.mjs)"/.exec(
     readFileSync(path, "utf8")
   );
@@ -696,21 +746,204 @@ function checkWakeReference(problems, repoRoot, text, wrapper) {
 }
 
 /**
- * (c) The pinned command inside the wrapper keeps its explicit pins: the
- * buildPiCommand builder emits the provider, model and thinking flags. The
- * wrapper's use of that builder is check (a)'s contract.
+ * (c) The resolved command is built through the resolved agent's
+ * AGENT_COMMANDS row, and the `pi` row keeps its explicit pins: the provider,
+ * model and thinking flags are emitted from env-defaults.mjs's table, not from
+ * the helper. The wrapper's use of the builder is check (a)'s contract.
  */
-function checkPinnedCommand(problems, text) {
-  const body = functionBody(text, "buildPiCommand");
+function checkPinnedCommand(problems, text, defaultsText) {
+  const body = functionBody(text, "buildStageCommand");
   if (body === null) {
-    problems.push(`${HELPER_FILE}: missing the buildPiCommand pinned-command builder`);
+    problems.push(`${HELPER_FILE}: missing the buildStageCommand pinned-command builder`);
+    return;
+  }
+  if (!body.includes("buildAgentCommand")) {
+    problems.push(`${HELPER_FILE}: pinned command does not build through the AGENT_COMMANDS rows`);
+  }
+  const piRow = agentCommandRow(defaultsText, "pi");
+  if (piRow === null) {
+    problems.push(`${DEFAULTS_FILE}: cannot read the AGENT_COMMANDS pi row`);
     return;
   }
   for (const flag of ["--provider", "--model", "--thinking"]) {
-    if (!body.includes(flag)) {
-      problems.push(`${HELPER_FILE}: pinned command drops the explicit ${flag}`);
+    if (!piRow.includes(flag)) {
+      problems.push(`${DEFAULTS_FILE}: the pi row drops the explicit ${flag}`);
     }
   }
+}
+
+/** The `AGENT_COMMANDS` row's source text for `agent`, or null when unreadable. */
+function agentCommandRow(text, agent) {
+  const declaration = text.indexOf("export const AGENT_COMMANDS");
+  if (declaration === -1) return null;
+  const pattern = new RegExp(`(?:^|[\\s,{])"?${agent.replaceAll("-", "\\-")}"?\\s*:\\s*\\{`, "m");
+  const match = pattern.exec(text.slice(declaration));
+  if (!match) return null;
+  return bracedBlock(text, declaration + match.index + match[0].lastIndexOf("{"));
+}
+
+/**
+ * Read ADR-0006's documented pin rows as source text — the same source-text
+ * approach as the defaults and wake-name reads. A row records the stage's kebab
+ * name, the model in backticks and the effort in a parenthetical: the
+ * launch-stage rows carry the `--thinking` flag, the grill row says "effort
+ * <value>", and a row may append a note after the recorded effort. A row is a
+ * bullet: stage name, the model in backticks, then the effort parenthetical.
+ * Returns the rows, or null when no row can be read.
+ */
+function parseAdrPins(text) {
+  const pins = [];
+  const rowPattern = /^\s*-\s+([a-z][a-z-]*)\s+(?:—|–|--)\s+`([^`]+)`\s+\(([^)]*)\)/gm;
+  let row;
+  while ((row = rowPattern.exec(text)) !== null) {
+    const effort = /^(?:effort\s+|`?--thinking\s+)([a-z][\w.-]*)/.exec(row[3]);
+    if (effort === null) continue;
+    pins.push({ stage: row[1], model: row[2], effort: effort[1] });
+  }
+  return pins.length > 0 ? pins : null;
+}
+
+/**
+ * Cross-check parsed pin rows against the DEFAULTS table the verifier already
+ * reads from env-defaults.mjs. One loop serves both pin surfaces — ADR-0006's
+ * documented rows and the pack README's chain-map rows — because both name a
+ * stage, a model and an effort, and both must carry a row for every expected
+ * stage. A row whose pin fields are null (the chain-map parser's unreadable
+ * cells) is reported with the expected model and effort; the ADR parser never
+ * yields null fields, so that branch is inert there.
+ */
+function checkPinRows(problems, { file, label, pins, defaults, stageEntries }) {
+  // An unreadable DEFAULTS table is already reported by readDefaults.
+  if (defaults === null) return;
+  const pinsByStage = new Map(pins.map((pin) => [pin.stage, pin]));
+  for (const { stage, key } of stageEntries) {
+    const documented = defaults.stages[key];
+    if (documented === undefined) {
+      problems.push(
+        `${file}: ${stage} ${label} pin row has no ${DEFAULTS_FILE} DEFAULTS.stages.${key} entry`
+      );
+      continue;
+    }
+    const pin = pinsByStage.get(stage);
+    if (pin === undefined) {
+      problems.push(
+        `${file}: missing the ${label} ${stage} pin row for ${DEFAULTS_FILE} DEFAULTS.stages.${key}`
+      );
+      continue;
+    }
+    if (pin.model === null || pin.effort === null) {
+      problems.push(
+        `${file}: cannot read the ${label} ${stage} pin row for ${DEFAULTS_FILE} DEFAULTS.stages.${key} (expected model "${documented.model}" and effort "${documented.effort}")`
+      );
+      continue;
+    }
+    if (pin.model !== documented.model) {
+      problems.push(
+        `${file}: ${stage} ${label} model pin "${pin.model}" does not match ${DEFAULTS_FILE} DEFAULTS.stages.${key}.model "${documented.model}"`
+      );
+    }
+    if (pin.effort !== documented.effort) {
+      problems.push(
+        `${file}: ${stage} ${label} effort pin "${pin.effort}" does not match ${DEFAULTS_FILE} DEFAULTS.stages.${key}.effort "${documented.effort}"`
+      );
+    }
+  }
+}
+
+/**
+ * Cross-check ADR-0006's documented pin rows against the DEFAULTS table the
+ * verifier already reads from env-defaults.mjs. The 2026-10-16 amendment names
+ * that table as the pin list's source, while the ADR's historical text is never
+ * rewritten — so drift between the record and the file is caught here instead.
+ * The expected rows come from the launch-stage map plus the grill row; every
+ * one must parse, and extra or unknown rows are ignored. This is one of the two
+ * checks that guard the implement-spec pin.
+ */
+function checkAdrPins(problems, repoRoot, defaults, stageEntries) {
+  const path = join(repoRoot, ADR_FILE);
+  // A missing ADR is reported by the wake-record check.
+  if (!existsSync(path)) return;
+  const pins = parseAdrPins(readFileSync(path, "utf8"));
+  if (pins === null) {
+    problems.push(`${ADR_FILE}: cannot read the documented pin table rows`);
+    return;
+  }
+  checkPinRows(problems, {
+    file: ADR_FILE,
+    label: "documented",
+    pins,
+    defaults,
+    stageEntries,
+  });
+}
+
+// The chain-map table's columns, in order:
+// Stage | Skill | Harness | Model pin (default) | Effort (default).
+const CHAIN_MAP_SKILL_COLUMN = 1;
+const CHAIN_MAP_MODEL_COLUMN = 3;
+const CHAIN_MAP_EFFORT_COLUMN = 4;
+const CHAIN_MAP_COLUMN_COUNT = CHAIN_MAP_EFFORT_COLUMN + 1;
+
+/**
+ * Read the pack README's chain-map pin rows as source text. The table's Skill
+ * cell carries the stage's kebab name in backticks (`implement-spec` adds a
+ * `(referenced)` suffix), its Model pin cell carries the model in backticks,
+ * and its Effort cell carries the bare value. Header and separator rows are
+ * skipped; a row with a readable stage but unreadable pin cells is kept with
+ * null fields so the check can report it against that stage. Returns the rows,
+ * or null when the README has no `## Chain map` section.
+ */
+function parseReadmeChainMapPins(text) {
+  const lines = sectionLines(text, "Chain map");
+  if (lines === null) return null;
+  const pins = [];
+  for (const line of lines) {
+    if (!line.trimStart().startsWith("|")) continue;
+    const cells = line
+      .trim()
+      .replace(/^\|/, "")
+      .replace(/\|$/, "")
+      .split("|")
+      .map((cell) => cell.trim());
+    if (cells.length < CHAIN_MAP_COLUMN_COUNT) continue;
+    if (cells[0] === "Stage") continue;
+    if (cells.every((cell) => /^:?-{3,}:?$/.test(cell))) continue;
+    const stage = /^`([a-z][a-z-]*)`(?:\s*\(referenced\))?$/.exec(
+      cells[CHAIN_MAP_SKILL_COLUMN]
+    );
+    if (stage === null) continue;
+    pins.push({
+      stage: stage[1],
+      model: /^`([^`]+)`$/.exec(cells[CHAIN_MAP_MODEL_COLUMN])?.[1] ?? null,
+      effort: /^([a-z][\w.-]*)$/.exec(cells[CHAIN_MAP_EFFORT_COLUMN])?.[1] ?? null,
+    });
+  }
+  return pins;
+}
+
+/**
+ * Cross-check the pack README's chain-map pin rows against the DEFAULTS table
+ * the verifier already reads from env-defaults.mjs — the same guard the
+ * frontmatter (item 1) and ADR-0006 rows (item 10) carry. The expected rows
+ * come from the launch-stage map plus the grill row; every one must parse, and
+ * a missing row, a malformed row or a drift is a pack-contract problem.
+ */
+function checkReadmeChainMapPins(problems, repoRoot, defaults, stageEntries) {
+  const path = join(repoRoot, PACK_README_FILE);
+  // A missing pack README is reported by the README existence check.
+  if (!existsSync(path)) return;
+  const pins = parseReadmeChainMapPins(readFileSync(path, "utf8"));
+  if (pins === null) {
+    problems.push(`${PACK_README_FILE}: cannot read the chain-map pin table rows`);
+    return;
+  }
+  checkPinRows(problems, {
+    file: PACK_README_FILE,
+    label: "chain-map",
+    pins,
+    defaults,
+    stageEntries,
+  });
 }
 
 function sectionLines(text, heading) {

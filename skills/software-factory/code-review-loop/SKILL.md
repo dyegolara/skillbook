@@ -5,7 +5,7 @@ disable-model-invocation: true
 license: MIT
 metadata:
   model: opencode-go/mimo-v2.6-pro
-  thinking: high
+  effort: high
 ---
 
 # code-review-loop

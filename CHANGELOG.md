@@ -1,5 +1,30 @@
 # Changelog
 
+## 1.3.0
+
+- Add `skills/software-factory/scripts/env-defaults.mjs`: the single source of
+  the chain's pins and resolution rules, so every pin resolves from the
+  environment (`DEV_ENV_*`) and falls back to the current values (#161, #162).
+- Route every launch helper pin through that resolver; the verifier follows the
+  file and `.env.example` documents the provider-environment pattern (ADR-0006
+  amendment, #163).
+- API keys are provider-environment scoped: each docker sets
+  `DEV_ENV_PROVIDER` plus that provider's own key variable; a missing key is a
+  hard error naming the provider and the variable to set, and nothing is
+  injected into the launch command (#167, #169). The key preflight is the
+  CLI-launched stages' contract — the grill stage runs as an interactive
+  Kepler agent session on its own configured auth.
+- Rename the generic command builder to `buildStageCommand` and the pin field
+  to `effort`; the GRILL-rejection and shell-quoting rationale is recorded in
+  ADR-0006 (#168).
+- The fixture harness proves the key design end to end: byte-identical
+  commands, missing-key hard errors, and the `nohup` fallback carrying the
+  environment (#170).
+- Extend the fixture harness so a `DEV_ENV_` launch produces the resolved pinned
+  command end to end (#164, #165).
+- `create-pr` step 4 uses the branch's PR in whichever state it is — draft or
+  ready — and never opens a second one (#171).
+
 ## 1.2.1
 
 - `copilot-review-smart`: newer Tick observations supersede stale closure

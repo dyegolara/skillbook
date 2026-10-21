@@ -1,13 +1,16 @@
 # software-factory pack
 
 Four own chain skills that wrap the referenced Matt Pocock skill pack into one
-path from a rough idea to a ready PR. Every stage is a new session on its pinned
-agent and model; the chain pauses on the maintainer only for decision-forcing
+path from a rough idea to a ready PR. Every stage is a new session on its
+pinned agent and model — the pins are defaults, overridable per run (see
+Configuration); the chain pauses on the maintainer only for decision-forcing
 findings.
 
-Start with `grill-with-spec` and follow the map. The chain mechanism and the
-model pins are recorded in
-[`docs/adr/0006`](../../docs/adr/0006-chain-skills-cross-model-handoffs.md).
+Start with `grill-with-spec` and follow the map. The chain mechanism is
+recorded in
+[`docs/adr/0006`](../../docs/adr/0006-chain-skills-cross-model-handoffs.md);
+the pins and their defaults live in
+[`scripts/env-defaults.mjs`](scripts/env-defaults.mjs).
 
 ## Chain map
 
@@ -19,13 +22,19 @@ grill-with-spec ──► dev-flow ──► implement-spec ──► code-revie
                                                            └──► create-pr ──► ready PR
 ```
 
-| Stage | Skill | Harness | Model pin | Effort |
+| Stage | Skill | Harness | Model pin (default) | Effort (default) |
 |---|---|---|---|---|
 | Grill and spec | `grill-with-spec` | Kepler (interactive) | `opencode-go/glm-5.3` | max |
-| Tickets | `dev-flow` | pi (Kepler terminal) | `opencode-go/glm-5.3` | `--thinking max` |
-| Implement | `implement-spec` (referenced) | pi (Kepler terminal) | `opencode-go/deepseek-v4.1-flash` | `--thinking max` |
-| Review | `code-review-loop` | pi (Kepler terminal) | `opencode-go/mimo-v2.6-pro` | `--thinking high` |
-| PR | `create-pr` | pi (Kepler terminal) | `opencode-go/muse-spark-1.3-contributor` | `--thinking xhigh` |
+| Tickets | `dev-flow` | pi (Kepler terminal) | `opencode-go/glm-5.3` | max |
+| Implement | `implement-spec` (referenced) | pi (Kepler terminal) | `opencode-go/deepseek-v4.1-flash` | max |
+| Review | `code-review-loop` | pi (Kepler terminal) | `opencode-go/mimo-v2.6-pro` | high |
+| PR | `create-pr` | pi (Kepler terminal) | `opencode-go/muse-spark-1.3-contributor` | xhigh |
+
+Each `Model pin`/`Effort` above is the stage's default from
+[`scripts/env-defaults.mjs`](scripts/env-defaults.mjs) — the pins are no
+longer fixed in code. `DEV_ENV_MODEL_<STAGE>` and `DEV_ENV_EFFORT_<STAGE>`
+retune one stage per run; `DEV_ENV_AGENT_<STAGE>` switches its agent.
+The harness column documents the default agent's runtime.
 
 Routes out of `code-review-loop`:
 
@@ -34,6 +43,32 @@ Routes out of `code-review-loop`:
 | Normal — the fix is obvious and derivable from the code, task or spec | `dev-flow` (fix tickets) |
 | Clean — nothing on either review axis | `create-pr` |
 | Decision-forcing — the fix is not obvious, or the decision is not in the code, task or spec, or it would change the project's commitments instead of satisfying them | `grill-with-spec` (re-entry), which pauses the chain on the maintainer |
+
+## Configuration
+
+Every pin resolves from the environment; unset variables fall back to the
+defaults in [`scripts/env-defaults.mjs`](scripts/env-defaults.mjs), so an
+unset environment runs the chain with today's pins. Authentication is
+user-managed: log in to each provider for each agent before running the chain.
+The launch helper selects the provider/model but does not transmit API keys to
+Kepler or the launched agent. When the caller supplies the selected provider's
+key, the Kepler terminal verifies its inherited value with a one-use HMAC
+challenge before the stage runs; a mismatch closes the terminal and stops the
+launch. The detached fallback removes the known provider API-key and
+credential-like variables from the child environment. The repo root's
+[`.env.example`](../../.env.example) lists pin variables only and remains
+commented and source-safe.
+
+| Scope | Variables | Default |
+|---|---|---|
+| Per-docker provider — one provider per docker and run; the CLI-launched stages resolve their provider from it | `DEV_ENV_PROVIDER` | `opencode-go` |
+| Stage pins — retune one stage at a time | `DEV_ENV_MODEL_<STAGE>`, `DEV_ENV_EFFORT_<STAGE>`, `DEV_ENV_AGENT_<STAGE>` | the chain map above |
+
+An off-list provider, effort or agent value is a hard error naming the
+variable and listing the allowed values. The model is a free non-empty
+string, not cross-validated against the provider, so switching
+`DEV_ENV_PROVIDER` also means setting that provider's models — the shipped
+per-stage models name `opencode-go` ids.
 
 ## How context travels between stages
 
@@ -46,6 +81,9 @@ Routes out of `code-review-loop`:
 - Every stage is a new session, so no stage inherits another stage's context.
   The reviewer in particular sees only pointers, never the implementer's
   reasoning.
+- An actuated grill re-entry carries the allowlisted, non-secret run-pin
+  environment in its prompt. Its first launch applies that exact configuration;
+  later stages and resumes preserve it without carrying credentials.
 - The pi stages launch through the pack helper from the shared worktree:
   `node "<skill-dir>/scripts/launch-stage.mjs" <stage> <spec> '<pointers>'`.
   `<skill-dir>` is the absolute directory of the loaded skill, not the shared
