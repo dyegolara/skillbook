@@ -34,14 +34,13 @@ import {
   runSessionHelper,
   sentinelSeen,
   shellQuote,
-  stageKey,
   stageLabel,
   stagePin,
   stageSentinel,
   stripAnsi,
   wakeHelperPath,
 } from "./launch-stage.mjs";
-import { AGENTS, AGENT_COMMANDS, DEFAULTS, PROVIDER_KEY_VARS } from "./env-defaults.mjs";
+import { AGENTS, AGENT_COMMANDS, DEFAULTS, PROVIDER_KEY_VARS, stageKey } from "./env-defaults.mjs";
 import { grillPin } from "./open-grill-session.mjs";
 
 // The env-defaults stage key for each launch stage. Every pin value in these
@@ -88,6 +87,11 @@ test("stageKey maps every launch stage to its env-defaults key and rejects the r
   for (const [stage, key] of Object.entries(STAGE_KEY_BY_NAME)) assert.equal(stageKey(stage), key);
   assert.throws(() => stageKey("grill-with-spec"), /unknown stage/i);
   assert.throws(() => stageKey("made-up"), /unknown stage/i);
+});
+
+test("the launch helper does not re-export the stage guard", async () => {
+  const launch = await import("./launch-stage.mjs");
+  assert.equal(Object.hasOwn(launch, "stageKey"), false); // the wake helper imports the real target
 });
 
 test("the launch guard rejects the grill stage while the grill helper's grillPin still resolves it", () => {
