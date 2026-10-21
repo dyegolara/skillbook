@@ -14,7 +14,7 @@
  * number and stage taken from explicit arguments (never parsed from another
  * label), and sends the wake prompt carrying the stage, the spec and the
  * resume command verbatim. The session pins no model or effort: it is a
- * message on the task, not an agent stage — the pin-every-spawn rule governs
+ * notice on the task, not an agent stage — the pin-every-spawn rule governs
  * `pi` spawns. The repo/worktree/task ids reuse the launch helper's id anchor
  * (`GET /terminal/list`, preferring a chain-labeled terminal) or its explicit
  * `--repo-id/--worktree-id/--task-id` bootstrap flags — one mechanism, no
@@ -62,7 +62,7 @@ export function buildWakePrompt({ stage, spec, resumeCommand }) {
  * The wake's route shell: its label and prompt (the no-pin notice semantics —
  * a plain labeled session, no pre-send step), handed to the shared
  * `runSessionHelper`. `stageKey` is the stage guard, not a pin step: the wake
- * resolves no pins — it is a message on the task, not an agent stage — and
+ * resolves no pins — it is a notice on the task, not an agent stage — and
  * creates its session through the shared default (the opencode adapter).
  *
  * @param {{ stage: string, spec: number|string, resumeCommand: string, flags?: Object, deps?: Object }} options

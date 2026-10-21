@@ -5,7 +5,7 @@ disable-model-invocation: true
 license: MIT
 metadata:
   model: opencode-go/muse-spark-1.3-contributor
-  thinking: xhigh
+  effort: xhigh
 ---
 
 # create-pr
