@@ -574,7 +574,7 @@ test("rejects an ADR-0006 pin row that diverges from env-defaults", () => {
   assert.ok(
     problems.some((problem) =>
       problem.includes(
-        `docs/adr/0006-chain-skills-cross-model-handoffs.md: implement-spec model pin "${wrong}" does not match skills/software-factory/scripts/env-defaults.mjs DEFAULTS.stages.IMPLEMENT_SPEC.model "${expected}"`
+        `docs/adr/0006-chain-skills-cross-model-handoffs.md: implement-spec documented model pin "${wrong}" does not match skills/software-factory/scripts/env-defaults.mjs DEFAULTS.stages.IMPLEMENT_SPEC.model "${expected}"`
       )
     )
   );
@@ -589,7 +589,7 @@ test("rejects an ADR-0006 effort record that diverges from env-defaults", () => 
   assert.ok(
     problems.some((problem) =>
       problem.includes(
-        `docs/adr/0006-chain-skills-cross-model-handoffs.md: grill-with-spec effort pin "${wrong}" does not match skills/software-factory/scripts/env-defaults.mjs DEFAULTS.stages.GRILL.effort "${expected}"`
+        `docs/adr/0006-chain-skills-cross-model-handoffs.md: grill-with-spec documented effort pin "${wrong}" does not match skills/software-factory/scripts/env-defaults.mjs DEFAULTS.stages.GRILL.effort "${expected}"`
       )
     )
   );
@@ -651,7 +651,7 @@ test("rejects a README chain-map model pin that diverges from env-defaults", () 
   assert.ok(
     problems.some((problem) =>
       problem.includes(
-        `skills/software-factory/README.md: implement-spec model pin "${wrong}" does not match skills/software-factory/scripts/env-defaults.mjs DEFAULTS.stages.IMPLEMENT_SPEC.model "${expected}"`
+        `skills/software-factory/README.md: implement-spec chain-map model pin "${wrong}" does not match skills/software-factory/scripts/env-defaults.mjs DEFAULTS.stages.IMPLEMENT_SPEC.model "${expected}"`
       )
     )
   );
@@ -670,7 +670,7 @@ test("rejects a README chain-map effort pin that diverges from env-defaults", ()
   assert.ok(
     problems.some((problem) =>
       problem.includes(
-        `skills/software-factory/README.md: code-review-loop effort pin "${wrong}" does not match skills/software-factory/scripts/env-defaults.mjs DEFAULTS.stages.CODE_REVIEW_LOOP.effort "${expected}"`
+        `skills/software-factory/README.md: code-review-loop chain-map effort pin "${wrong}" does not match skills/software-factory/scripts/env-defaults.mjs DEFAULTS.stages.CODE_REVIEW_LOOP.effort "${expected}"`
       )
     )
   );

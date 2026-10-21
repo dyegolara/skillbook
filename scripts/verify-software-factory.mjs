@@ -839,12 +839,12 @@ function checkPinRows(problems, { file, label, pins, defaults, stageEntries }) {
     }
     if (pin.model !== documented.model) {
       problems.push(
-        `${file}: ${stage} model pin "${pin.model}" does not match ${DEFAULTS_FILE} DEFAULTS.stages.${key}.model "${documented.model}"`
+        `${file}: ${stage} ${label} model pin "${pin.model}" does not match ${DEFAULTS_FILE} DEFAULTS.stages.${key}.model "${documented.model}"`
       );
     }
     if (pin.effort !== documented.effort) {
       problems.push(
-        `${file}: ${stage} effort pin "${pin.effort}" does not match ${DEFAULTS_FILE} DEFAULTS.stages.${key}.effort "${documented.effort}"`
+        `${file}: ${stage} ${label} effort pin "${pin.effort}" does not match ${DEFAULTS_FILE} DEFAULTS.stages.${key}.effort "${documented.effort}"`
       );
     }
   }
