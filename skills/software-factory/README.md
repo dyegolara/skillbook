@@ -25,10 +25,10 @@ grill-with-spec ──► dev-flow ──► implement-spec ──► code-revie
 | Stage | Skill | Harness | Model pin (default) | Effort (default) |
 |---|---|---|---|---|
 | Grill and spec | `grill-with-spec` | Kepler (interactive) | `opencode-go/glm-5.3` | max |
-| Tickets | `dev-flow` | pi (Kepler terminal) | `opencode-go/glm-5.3` | `--thinking max` |
-| Implement | `implement-spec` (referenced) | pi (Kepler terminal) | `opencode-go/deepseek-v4.1-flash` | `--thinking max` |
-| Review | `code-review-loop` | pi (Kepler terminal) | `opencode-go/mimo-v2.6-pro` | `--thinking high` |
-| PR | `create-pr` | pi (Kepler terminal) | `opencode-go/muse-spark-1.3-contributor` | `--thinking xhigh` |
+| Tickets | `dev-flow` | pi (Kepler terminal) | `opencode-go/glm-5.3` | max |
+| Implement | `implement-spec` (referenced) | pi (Kepler terminal) | `opencode-go/deepseek-v4.1-flash` | max |
+| Review | `code-review-loop` | pi (Kepler terminal) | `opencode-go/mimo-v2.6-pro` | high |
+| PR | `create-pr` | pi (Kepler terminal) | `opencode-go/muse-spark-1.3-contributor` | xhigh |
 
 Each `Model pin`/`Effort` above is the stage's default from
 [`scripts/env-defaults.mjs`](scripts/env-defaults.mjs) — the pins are no
