@@ -216,8 +216,8 @@ export function stageDefaults(stage) {
 /**
  * The env-defaults stage key for a launch-stage name: `code-review-loop`
  * resolves `CODE_REVIEW_LOOP`. This is the launch guard — the launch helper
- * calls it before any launch path, and the wake helper calls it (through
- * `launch-stage.mjs`) before any fetch — so the launch stage set and the
+ * calls it before any launch path, and the wake helper calls it directly (from
+ * this module) before any fetch — so the launch stage set and the
  * kebab⇄SCREAMING conversion have one source. An unknown stage emits the same
  * single error shape `stageDefaults` emits, naming the launch stages.
  */

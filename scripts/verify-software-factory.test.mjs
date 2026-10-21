@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
 import { verifySoftwareFactoryPack } from "./verify-software-factory.mjs";
-import { DEFAULTS } from "../skills/software-factory/scripts/env-defaults.mjs";
+import { DEFAULTS, LAUNCH_STAGES } from "../skills/software-factory/scripts/env-defaults.mjs";
 
 // The four chain skills and the env-defaults stage key each one documents. The
 // fixture's pin values are read from the defaults module — no pin literals.
@@ -94,26 +94,28 @@ const DRIFTED_HANDOFF_RULES = HANDOFF_RULES.replace(
 
 // ADR-0006's documented pin rows, in the ADR's own spellings: the grill row
 // says "effort <value>", the launch-stage rows carry the `--thinking` flag, and
-// the last two rows carry parenthetical notes. The fixture derives every value
+// the last two rows carry parenthetical notes. The row set derives from the
+// defaults module's LAUNCH_STAGES map plus the grill stage (not a launch
+// stage); only each stage's note spelling is listed here. The pin values come
 // from the defaults module, so the matching table passes and a seeded drift is
 // one substitution away.
-const ADR_PIN_ROWS = [
-  { stage: "grill-with-spec", key: "GRILL", note: (effort) => `effort ${effort}` },
-  { stage: "dev-flow", key: "DEV_FLOW", note: (effort) => `\`--thinking ${effort}\`` },
-  { stage: "implement-spec", key: "IMPLEMENT_SPEC", note: (effort) => `\`--thinking ${effort}\`` },
-  {
-    stage: "code-review-loop",
-    key: "CODE_REVIEW_LOOP",
-    note: (effort) => `\`--thinking ${effort}\` — the model's cap: \`max\` clamps to it`,
-  },
-  { stage: "create-pr", key: "CREATE_PR", note: (effort) => `\`--thinking ${effort}\`, provider cap` },
-];
+const ADR_PIN_STAGES = { "grill-with-spec": "GRILL", ...LAUNCH_STAGES };
+
+const ADR_PIN_NOTES = {
+  "grill-with-spec": (effort) => `effort ${effort}`,
+  "dev-flow": (effort) => `\`--thinking ${effort}\``,
+  "implement-spec": (effort) => `\`--thinking ${effort}\``,
+  "code-review-loop": (effort) => `\`--thinking ${effort}\` — the model's cap: \`max\` clamps to it`,
+  "create-pr": (effort) => `\`--thinking ${effort}\`, provider cap`,
+};
 
 function adrPinRows() {
-  return ADR_PIN_ROWS.map(({ stage, key, note }) => {
-    const pin = DEFAULTS.stages[key];
-    return `  - ${stage} — \`${pin.model}\` (${note(pin.effort)})`;
-  }).join("\n");
+  return Object.entries(ADR_PIN_STAGES)
+    .map(([stage, key]) => {
+      const pin = DEFAULTS.stages[key];
+      return `  - ${stage} — \`${pin.model}\` (${ADR_PIN_NOTES[stage](pin.effort)})`;
+    })
+    .join("\n");
 }
 
 const adr = [
@@ -533,6 +535,49 @@ test("rejects an ADR-0006 effort record that diverges from env-defaults", () => 
       )
     )
   );
+});
+
+test("rejects an ADR-0006 that drops the implement-spec pin row", () => {
+  const rows = adrPinRows().split("\n");
+  const withoutImplementSpec = rows
+    .filter((row) => !row.includes(" - implement-spec "))
+    .join("\n");
+  assert.notEqual(withoutImplementSpec, adrPinRows(), "the fixture must remove the implement-spec row");
+  const problems = verify(makeRepo({ adrText: adr.replace(adrPinRows(), withoutImplementSpec) }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        "docs/adr/0006-chain-skills-cross-model-handoffs.md: missing the documented implement-spec pin row for skills/software-factory/scripts/env-defaults.mjs DEFAULTS.stages.IMPLEMENT_SPEC"
+      )
+    )
+  );
+});
+
+test("rejects an ADR-0006 whose implement-spec pin row cannot be parsed", () => {
+  const malformed = adrPinRows()
+    .split("\n")
+    .map((row) =>
+      row.includes(" - implement-spec ")
+        ? "  - implement-spec — no backticked model or effort here"
+        : row
+    )
+    .join("\n");
+  assert.notEqual(malformed, adrPinRows(), "the fixture must malform the implement-spec row");
+  const problems = verify(makeRepo({ adrText: adr.replace(adrPinRows(), malformed) }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        "docs/adr/0006-chain-skills-cross-model-handoffs.md: missing the documented implement-spec pin row for skills/software-factory/scripts/env-defaults.mjs DEFAULTS.stages.IMPLEMENT_SPEC"
+      )
+    )
+  );
+});
+
+test("ignores an ADR-0006 pin row outside the expected stage set", () => {
+  const extraRow = "  - review-spec — `opencode-go/gpt-9` (`--thinking max`)";
+  const adrText = adr.replace(adrPinRows(), `${adrPinRows()}\n${extraRow}`);
+  assert.match(adrText, /review-spec/, "the fixture must add an unexpected row");
+  assert.deepEqual(verify(makeRepo({ adrText })), []);
 });
 
 test("rejects a chain skill missing from the plugin manifest", () => {

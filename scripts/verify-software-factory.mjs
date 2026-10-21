@@ -40,12 +40,12 @@
  *      block-carrying skills: dev-flow and code-review-loop close with the
  *      same block, and a drift between them is a pack-contract problem;
  *   10. ADR-0006's documented pin rows cross-check against the DEFAULTS table:
- *      the verifier reads the ADR's five stage rows as source text (the model
- *      and the effort, in the ADR's recorded spellings) and compares them to
- *      the same table the frontmatter is checked against — the only
- *      verifier-side guard for the implement-spec pin, which has no SKILL.md
- *      frontmatter, and a drift between the record and the file is a
- *      pack-contract problem.
+ *      every expected stage (the LAUNCH_STAGES map plus the grill stage) must
+ *      have a parsed ADR row, and the verifier reads each row's model and
+ *      effort, in the ADR's recorded spellings, to compare them to the same
+ *      table the frontmatter is checked against — the only verifier-side guard
+ *      for the implement-spec pin, which has no SKILL.md frontmatter, so a
+ *      missing row, a malformed row or a drift is a pack-contract problem.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -76,17 +76,9 @@ const DEFAULTS_FILE = "skills/software-factory/scripts/env-defaults.mjs";
 // in every skill that launches a stage.
 const PACKAGED_HELPERS = ["launch-stage.mjs", "open-wake-session.mjs", "env-defaults.mjs"];
 const ADR_FILE = "docs/adr/0006-chain-skills-cross-model-handoffs.md";
-// ADR-0006's pin table documents one row per stage, keyed by the stage's kebab
-// name; this map names the env-defaults stage key each row records. The pins
-// themselves stay in env-defaults.mjs. `implement-spec` has no SKILL.md — it is
-// a referenced skill — so its row is that pin's only verifier-side guard.
-const ADR_PIN_STAGE_KEYS = {
-  "grill-with-spec": "GRILL",
-  "dev-flow": "DEV_FLOW",
-  "implement-spec": "IMPLEMENT_SPEC",
-  "code-review-loop": "CODE_REVIEW_LOOP",
-  "create-pr": "CREATE_PR",
-};
+// The grill stage is not a launch stage (LAUNCH_STAGES omits it), yet ADR-0006
+// documents its pin row; the expected ADR row set is this row plus the map.
+const GRILL_STAGE = { stage: "grill-with-spec", key: "GRILL" };
 // The skills that close with the shared `## Handoff rules` block.
 const HANDOFF_RULES_SKILLS = ["dev-flow", "code-review-loop"];
 
@@ -95,7 +87,8 @@ export function verifySoftwareFactoryPack(packDir) {
   const repoRoot = resolve(packDir, "../..");
   const registered = readRegisteredSkills(repoRoot, problems);
   const defaults = readDefaults(packDir, problems);
-  const launchStages = readLaunchStages(packDir, problems);
+  const launchStageEntries = readLaunchStages(packDir, problems);
+  const launchStages = launchStageEntries.map((entry) => entry.stage);
 
   for (const skill of CHAIN_SKILLS) {
     const label = `skills/software-factory/${skill.name}/SKILL.md`;
@@ -138,7 +131,7 @@ export function verifySoftwareFactoryPack(packDir) {
     }
   }
 
-  checkAdrPins(problems, repoRoot, defaults);
+  checkAdrPins(problems, repoRoot, defaults, [GRILL_STAGE, ...launchStageEntries]);
   checkLaunchMechanism(problems, packDir, repoRoot, defaultsSource(packDir));
   checkGrillMechanism(problems, packDir);
   checkWakeMechanism(problems, packDir);
@@ -501,11 +494,12 @@ function defaultsSource(packDir) {
 }
 
 /**
- * Read the `LAUNCH_STAGES` map's keys from env-defaults.mjs source text — same
- * source-text approach as `parseDefaults`, so the verifier follows the file
- * instead of pinning a second copy of the launch stage set. Contract: `export
- * const LAUNCH_STAGES = { "<kebab-stage>": "<STAGE_KEY>", ... }`, optionally
- * wrapped in `Object.freeze(...)`.
+ * Read the `LAUNCH_STAGES` map's entries from env-defaults.mjs source text —
+ * same source-text approach as `parseDefaults`, so the verifier follows the
+ * file instead of pinning a second copy of the launch stage set. Both sides
+ * are captured: the kebab name the helpers take and the DEFAULTS stage key.
+ * Contract: `export const LAUNCH_STAGES = { "<kebab-stage>": "<STAGE_KEY>",
+ * ... }`, optionally wrapped in `Object.freeze(...)`.
  */
 function parseLaunchStages(text) {
   const declaration = text.indexOf("export const LAUNCH_STAGES");
@@ -515,17 +509,19 @@ function parseLaunchStages(text) {
   const body = bracedBlock(text, objectStart);
   if (body === null) return null;
   const stages = [];
-  const entryPattern = /"?([A-Za-z][\w-]*)"?\s*:\s*"[^"]*"/g;
+  const entryPattern = /"?([A-Za-z][\w-]*)"?\s*:\s*"([^"]*)"/g;
   let entry;
-  while ((entry = entryPattern.exec(body)) !== null) stages.push(entry[1]);
+  while ((entry = entryPattern.exec(body)) !== null) {
+    stages.push({ stage: entry[1], key: entry[2] });
+  }
   return stages.length > 0 ? stages : null;
 }
 
 /**
- * Read the launch stage set from the shared defaults module. A missing module
- * is already reported by `readDefaults`; an unreadable map is reported here
- * once. An unreadable set leaves the stage-launch detection without stage names
- * rather than pinning a copy.
+ * Read the `{ stage, key }` launch-stage entries from the shared defaults
+ * module. A missing module is already reported by `readDefaults`; an
+ * unreadable map is reported here once. An unreadable set leaves the
+ * stage-launch detection without stage names rather than pinning a copy.
  */
 function readLaunchStages(packDir, problems) {
   const path = join(packDir, "scripts", "env-defaults.mjs");
@@ -804,9 +800,11 @@ function parseAdrPins(text) {
  * verifier already reads from env-defaults.mjs. The 2026-10-16 amendment names
  * that table as the pin list's source, while the ADR's historical text is never
  * rewritten — so drift between the record and the file is caught here instead.
- * This is the one check that guards the implement-spec pin.
+ * The expected rows come from the launch-stage map plus the grill row; every
+ * one must parse, and extra or unknown rows are ignored. This is the one check
+ * that guards the implement-spec pin.
  */
-function checkAdrPins(problems, repoRoot, defaults) {
+function checkAdrPins(problems, repoRoot, defaults, stageEntries) {
   const path = join(repoRoot, ADR_FILE);
   // A missing ADR is reported by the wake-record check.
   if (!existsSync(path)) return;
@@ -817,27 +815,30 @@ function checkAdrPins(problems, repoRoot, defaults) {
   }
   // An unreadable DEFAULTS table is already reported by readDefaults.
   if (defaults === null) return;
-  for (const pin of pins) {
-    const key = ADR_PIN_STAGE_KEYS[pin.stage];
-    if (key === undefined) {
-      problems.push(`${ADR_FILE}: ${pin.stage} pin row has no ${DEFAULTS_FILE} DEFAULTS stage`);
-      continue;
-    }
+  const pinsByStage = new Map(pins.map((pin) => [pin.stage, pin]));
+  for (const { stage, key } of stageEntries) {
     const documented = defaults.stages[key];
     if (documented === undefined) {
       problems.push(
-        `${ADR_FILE}: ${pin.stage} pin row has no ${DEFAULTS_FILE} DEFAULTS.stages.${key} entry`
+        `${ADR_FILE}: ${stage} pin row has no ${DEFAULTS_FILE} DEFAULTS.stages.${key} entry`
+      );
+      continue;
+    }
+    const pin = pinsByStage.get(stage);
+    if (pin === undefined) {
+      problems.push(
+        `${ADR_FILE}: missing the documented ${stage} pin row for ${DEFAULTS_FILE} DEFAULTS.stages.${key}`
       );
       continue;
     }
     if (pin.model !== documented.model) {
       problems.push(
-        `${ADR_FILE}: ${pin.stage} model pin "${pin.model}" does not match ${DEFAULTS_FILE} DEFAULTS.stages.${key}.model "${documented.model}"`
+        `${ADR_FILE}: ${stage} model pin "${pin.model}" does not match ${DEFAULTS_FILE} DEFAULTS.stages.${key}.model "${documented.model}"`
       );
     }
     if (pin.effort !== documented.effort) {
       problems.push(
-        `${ADR_FILE}: ${pin.stage} effort pin "${pin.effort}" does not match ${DEFAULTS_FILE} DEFAULTS.stages.${key}.effort "${documented.effort}"`
+        `${ADR_FILE}: ${stage} effort pin "${pin.effort}" does not match ${DEFAULTS_FILE} DEFAULTS.stages.${key}.effort "${documented.effort}"`
       );
     }
   }
