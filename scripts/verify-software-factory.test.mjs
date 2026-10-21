@@ -92,8 +92,37 @@ const DRIFTED_HANDOFF_RULES = HANDOFF_RULES.replace(
   "Every stage shares one worktree."
 );
 
+// ADR-0006's documented pin rows, in the ADR's own spellings: the grill row
+// says "effort <value>", the launch-stage rows carry the `--thinking` flag, and
+// the last two rows carry parenthetical notes. The fixture derives every value
+// from the defaults module, so the matching table passes and a seeded drift is
+// one substitution away.
+const ADR_PIN_ROWS = [
+  { stage: "grill-with-spec", key: "GRILL", note: (effort) => `effort ${effort}` },
+  { stage: "dev-flow", key: "DEV_FLOW", note: (effort) => `\`--thinking ${effort}\`` },
+  { stage: "implement-spec", key: "IMPLEMENT_SPEC", note: (effort) => `\`--thinking ${effort}\`` },
+  {
+    stage: "code-review-loop",
+    key: "CODE_REVIEW_LOOP",
+    note: (effort) => `\`--thinking ${effort}\` — the model's cap: \`max\` clamps to it`,
+  },
+  { stage: "create-pr", key: "CREATE_PR", note: (effort) => `\`--thinking ${effort}\`, provider cap` },
+];
+
+function adrPinRows() {
+  return ADR_PIN_ROWS.map(({ stage, key, note }) => {
+    const pin = DEFAULTS.stages[key];
+    return `  - ${stage} — \`${pin.model}\` (${note(pin.effort)})`;
+  }).join("\n");
+}
+
 const adr = [
   "# 0006 — Chain skills hand off across pinned agent/model sessions",
+  "",
+  "- Each stage's `SKILL.md` pins its model, invoked at the model's highest",
+  "  available effort/thinking (whatever the model exposes — max, xhigh or",
+  "  high):",
+  adrPinRows(),
   "",
   "- A stage that gives up actuates the wake: a new sibling helper,",
   "  `open-wake-session.mjs`, packaged beside `launch-stage.mjs`,",
@@ -473,6 +502,34 @@ test("rejects a frontmatter effort pin that diverges from env-defaults", () => {
     problems.some((problem) =>
       problem.includes(
         `skills/software-factory/create-pr/SKILL.md: effort pin "${wrong}" does not match skills/software-factory/scripts/env-defaults.mjs DEFAULTS.stages.CREATE_PR.effort "${expected}"`
+      )
+    )
+  );
+});
+
+test("rejects an ADR-0006 pin row that diverges from env-defaults", () => {
+  const expected = DEFAULTS.stages.IMPLEMENT_SPEC.model;
+  const wrong = "opencode-go/gpt-9";
+  const problems = verify(makeRepo({ adrText: adr.replace(`\`${expected}\``, `\`${wrong}\``) }));
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        `docs/adr/0006-chain-skills-cross-model-handoffs.md: implement-spec model pin "${wrong}" does not match skills/software-factory/scripts/env-defaults.mjs DEFAULTS.stages.IMPLEMENT_SPEC.model "${expected}"`
+      )
+    )
+  );
+});
+
+test("rejects an ADR-0006 effort record that diverges from env-defaults", () => {
+  const expected = DEFAULTS.stages.GRILL.effort;
+  const wrong = "high";
+  const problems = verify(
+    makeRepo({ adrText: adr.replace(`(effort ${expected})`, `(effort ${wrong})`) })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        `docs/adr/0006-chain-skills-cross-model-handoffs.md: grill-with-spec effort pin "${wrong}" does not match skills/software-factory/scripts/env-defaults.mjs DEFAULTS.stages.GRILL.effort "${expected}"`
       )
     )
   );
