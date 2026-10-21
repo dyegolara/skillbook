@@ -2,6 +2,8 @@ import { spawn } from "node:child_process";
 import { PR_MONITOR_SCRIPT, DEFAULT_TICK_TIMEOUT_MS } from "./paths.mjs";
 import { keyOf } from "./signature.mjs";
 
+const TERMINATION_GRACE_MS = 1000;
+
 export function parseTickOutput(stdout) {
   const reports = [];
   let overall = null;
@@ -89,11 +91,13 @@ export function spawnTick({
     let timedOut = false;
     let settled = false;
     let treeTermination = null;
+    let killTimer = null;
     let child;
     const finish = (result) => {
       if (settled) return;
       settled = true;
       clock.clearTimeout(timer);
+      if (killTimer !== null) clock.clearTimeout(killTimer);
       resolve(result);
     };
     try {
@@ -108,8 +112,16 @@ export function spawnTick({
     }
     const timer = clock.setTimeout(() => {
       timedOut = true;
+      killTimer = clock.setTimeout(() => {
+        if (settled) return;
+        try {
+          treeTermination = Promise.resolve(killProcessTree(child, "SIGKILL")).catch(() => {});
+        } catch {
+          treeTermination = Promise.resolve();
+        }
+      }, TERMINATION_GRACE_MS);
       try {
-        treeTermination = Promise.resolve(killProcessTree(child, "SIGKILL")).catch(() => {});
+        treeTermination = Promise.resolve(killProcessTree(child, "SIGTERM")).catch(() => {});
       } catch {
         treeTermination = Promise.resolve();
       }

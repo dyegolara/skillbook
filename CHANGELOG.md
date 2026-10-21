@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.1
+
+- `copilot-review-smart`: newer Tick observations supersede stale closure
+  evidence, and Listener Tick timeouts allow decision-command process groups
+  to clean up before forced termination.
+
 ## 1.2.0
 
 - `copilot-review-smart`: agent-native LLM decider — the three-layer decision

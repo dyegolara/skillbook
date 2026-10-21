@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { heartbeatTickInFlight, runMonitorOnce, tickInFlight } from "./pr_monitor.mjs";
 import { AGENT_ADAPTERS, cliOnPath, resolveAutoDecisionSource } from "./agents.mjs";
+import { spawnTick } from "./listener/src/tick-runner.mjs";
 
 const REPO = "dyegolara/skillbook";
 const PR_MONITOR_PATH = new URL("./pr_monitor.mjs", import.meta.url).pathname;
@@ -2163,7 +2164,7 @@ test("decision command timeout settles when its shell exits but a child retains 
   }
 });
 
-test("Listener Tick termination also terminates the decision command process group", { skip: process.platform === "win32" }, async () => {
+test("Listener Tick timeout terminates the decision command process group", { skip: process.platform === "win32" }, async () => {
   const dir = makeTempDir("pr-monitor-listener-kill-");
   const pidPath = path.join(dir, "descendant.pid");
   const childScript = path.join(dir, "descendant.mjs");
@@ -2185,11 +2186,10 @@ test("Listener Tick termination also terminates the decision command process gro
       "});",
     ].join("\n")
   );
-  let tick = null;
   try {
-    tick = spawn(process.execPath, [runnerScript], {
-      detached: true,
-      stdio: "ignore",
+    const resultPromise = spawnTick({
+      timeoutMs: 2000,
+      scriptPath: runnerScript,
       env: {
         ...process.env,
         ...NO_DECISION_ENV,
@@ -2200,18 +2200,15 @@ test("Listener Tick termination also terminates the decision command process gro
     });
     const startedAt = Date.now();
     while (!fs.existsSync(pidPath)) {
-      if (tick.exitCode !== null) throw new Error(`Tick exited early with ${tick.exitCode}`);
       if (Date.now() - startedAt > 5000) throw new Error("decision child did not start");
       await new Promise((resolve) => setTimeout(resolve, 25));
     }
     const descendantPid = Number(fs.readFileSync(pidPath, "utf8").trim());
-    process.kill(-tick.pid, "SIGTERM");
-    await new Promise((resolve) => tick.once("exit", resolve));
+    const result = await resultPromise;
+    assert.equal(result.ok, false);
+    assert.equal(result.timedOut, true);
     await waitForProcessExit(descendantPid);
   } finally {
-    if (tick?.exitCode === null) {
-      try { process.kill(-tick.pid, "SIGKILL"); } catch {}
-    }
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });

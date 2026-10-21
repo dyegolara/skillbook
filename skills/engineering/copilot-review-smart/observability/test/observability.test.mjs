@@ -370,7 +370,7 @@ test("GET /flows returns one row per watched PR in the glossary's Stage words", 
   }
 });
 
-test("closed Flow evidence clears stale schedules in list, detail and timeline routes", async () => {
+test("closure evidence clears stale schedules while later Tick observations reopen a Flow", async () => {
   const state = defaultTickState();
   state["acme/widgets#20"] = {
     last_head_sha: "sha-20",
@@ -381,6 +381,11 @@ test("closed Flow evidence clears stale schedules in list, detail and timeline r
     last_head_sha: "sha-21",
     next_check_at: new Date(NOW + HOUR).toISOString(),
     tick_history: [record(NOW - HOUR, "closed", "PR is no longer open", "done")],
+  };
+  state["acme/widgets#22"] = {
+    last_head_sha: "sha-22",
+    next_check_at: new Date(NOW + HOUR).toISOString(),
+    tick_history: [record(NOW - 10 * 60_000, "wait", "reopened PR is still open")],
   };
   const listenerState = defaultListenerState();
   listenerState.expectations["acme/widgets#20"] = {
@@ -395,6 +400,17 @@ test("closed Flow evidence clears stale schedules in list, detail and timeline r
       closed_at: new Date(NOW - 30 * 60_000).toISOString(),
       reason: "PR acme/widgets#20 closed or merged",
     },
+    "acme/widgets#22": {
+      closed_at: new Date(NOW - 30 * 60_000).toISOString(),
+      reason: "PR acme/widgets#22 closed or merged",
+    },
+  };
+  listenerState.expectations["acme/widgets#22"] = {
+    repo: "acme/widgets",
+    num: 22,
+    deadline_ms: NOW + HOUR,
+    origin: "tick_report",
+    backoff_index: 0,
   };
   const fixture = new Fixture({ state, listenerState });
   await fixture.start();
@@ -402,6 +418,7 @@ test("closed Flow evidence clears stale schedules in list, detail and timeline r
     const { body: timeline } = await fixture.get("/timeline");
     assert.ok(!timeline.scheduled.some((tick) => tick.key === "acme/widgets#20"));
     assert.ok(!timeline.scheduled.some((tick) => tick.key === "acme/widgets#21"));
+    assert.ok(timeline.scheduled.some((tick) => tick.key === "acme/widgets#22"));
 
     const { body: rows } = await fixture.get("/flows");
     for (const num of [20, 21]) {
@@ -411,6 +428,9 @@ test("closed Flow evidence clears stale schedules in list, detail and timeline r
       assert.equal(row.terminal, null);
     }
     assert.equal(rows.find((flow) => flow.key === "acme/widgets#20").reason, "PR acme/widgets#20 closed or merged");
+    const reopened = rows.find((flow) => flow.key === "acme/widgets#22");
+    assert.equal(reopened.action, "wait");
+    assert.equal(reopened.next_check_at, new Date(NOW + HOUR).toISOString());
     const { status, body: detail } = await fixture.get("/flows/acme/widgets/20");
     assert.equal(status, 200);
     assert.equal(detail.done, true);
@@ -424,6 +444,9 @@ test("closed Flow evidence clears stale schedules in list, detail and timeline r
       act: "next",
       schedule: "past",
     });
+    const { body: reopenedDetail } = await fixture.get("/flows/acme/widgets/22");
+    assert.equal(reopenedDetail.done, false);
+    assert.notEqual(reopenedDetail.expectation, null);
   } finally {
     await fixture.stop();
   }

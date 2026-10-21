@@ -290,11 +290,11 @@ export function projectFlow({ key, tickState, listenerState, nowMs }) {
   const flow = parseFlowKey(key);
   if (!flow) return null;
   const entry = tickState?.[key];
-  const closure = listenerState?.closed_flows?.[key] ?? null;
+  const closure = closedFlowEvidence(key, tickState, listenerState);
   const expectation = listenerState?.expectations?.[key] ?? null;
   const history = Array.isArray(entry?.tick_history) ? entry.tick_history : [];
   const last = history.at(-1) ?? null;
-  const closed = Boolean(closure || (last?.action === "closed" && last?.terminal === "done"));
+  const closed = Boolean(closure);
   const activeExpectation = closed ? null : expectation;
   if (!entry && !expectation && !closure) return null;
 
@@ -329,11 +329,24 @@ export function projectFlow({ key, tickState, listenerState, nowMs }) {
   };
 }
 
-function isFlowClosed(key, tickState, listenerState) {
-  if (listenerState?.closed_flows?.[key]) return true;
+function closedFlowEvidence(key, tickState, listenerState) {
+  const closure = listenerState?.closed_flows?.[key] ?? null;
   const history = tickState?.[key]?.tick_history;
   const last = Array.isArray(history) ? history.at(-1) : null;
-  return last?.action === "closed" && last?.terminal === "done";
+  const tickClosed = last?.action === "closed" && last?.terminal === "done";
+  if (closure) {
+    const closureMs = Date.parse(closure.closed_at);
+    const tickMs = Date.parse(last?.ts);
+    if (Number.isFinite(closureMs) && Number.isFinite(tickMs) && tickMs > closureMs) {
+      return tickClosed ? { reason: last.reason } : null;
+    }
+    return closure;
+  }
+  return tickClosed ? { reason: last.reason } : null;
+}
+
+function isFlowClosed(key, tickState, listenerState) {
+  return Boolean(closedFlowEvidence(key, tickState, listenerState));
 }
 
 /** `GET /flows`: summary rows with the same Stage projection as the detail

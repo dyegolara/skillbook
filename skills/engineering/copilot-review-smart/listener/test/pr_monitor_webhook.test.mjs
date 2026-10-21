@@ -496,8 +496,8 @@ test("spawnTick kills a child that exceeds PR_MONITOR_TICK_TIMEOUT and marks it 
   const result = await resultPromise;
   assert.equal(result.ok, false);
   assert.equal(result.timedOut, true);
-  assert.deepEqual(killed, ["SIGKILL"]);
-  assert.deepEqual(treeKills, [[fakeChild, "SIGKILL"]]);
+  assert.deepEqual(killed, ["SIGTERM"]);
+  assert.deepEqual(treeKills, [[fakeChild, "SIGTERM"]]);
   assert.equal(spawnOptions.detached, process.platform !== "win32");
 });
 
