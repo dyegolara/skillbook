@@ -90,9 +90,22 @@ function shellToken(value) {
   return SHELL_SAFE_TOKEN.test(text) ? text : shellQuote(text);
 }
 
-/** Join an agent argv into the shell command, always quoting the pointers. */
-function argvCommand(argv) {
-  return [...argv.slice(0, -1).map(shellToken), shellQuote(argv.at(-1))].join(" ");
+/**
+ * Join an agent argv into the shell command. The pointers are an explicit
+ * parameter, not a positional convention: `AGENT_COMMANDS` rows append them
+ * last, so the argv's trailing element must be the same `pointers`, and the
+ * pointers are always single-quoted. A call that misses them — or whose argv
+ * does not end with them — is a readable hard error instead of the quoted
+ * literal `'undefined'`.
+ */
+export function commandWithPointer(argv, pointers) {
+  const last = argv.at(-1);
+  if (pointers === undefined || last !== pointers) {
+    throw new Error(
+      `commandWithPointer: the argv must end with the pointers — got ${JSON.stringify(last)}, pointers ${JSON.stringify(pointers)}`
+    );
+  }
+  return [...argv.slice(0, -1).map(shellToken), shellQuote(pointers)].join(" ");
 }
 
 /**
@@ -125,13 +138,14 @@ export function resolveStageKey(provider, env = process.env) {
  */
 export function buildStageCommand(stage, pointers, env = process.env) {
   const pin = stagePin(stage, env);
-  return argvCommand(
+  return commandWithPointer(
     buildAgentCommand(pin.agent, {
       provider: pin.provider,
       model: pin.model,
       effort: pin.effort,
       pointers,
-    })
+    }),
+    pointers
   );
 }
 

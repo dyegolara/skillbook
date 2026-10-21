@@ -20,6 +20,7 @@ import {
   buildTerminalInput,
   chainCore,
   chainLabel,
+  commandWithPointer,
   createLabeledSession,
   failureLines,
   isConnectionError,
@@ -161,6 +162,27 @@ test("an unknown stage is a hard error before any environment is read", () => {
 });
 
 // --- the command: built through the resolved agent's AGENT_COMMANDS row ---
+
+test("commandWithPointer names the pointers: a call that misses them is a readable error, not the quoted literal 'undefined'", () => {
+  assert.throws(
+    () => commandWithPointer(["pi", "--print", "--model", "glm-4.6"]),
+    { message: 'commandWithPointer: the argv must end with the pointers — got "glm-4.6", pointers undefined' },
+    "the pointers omitted"
+  );
+  assert.throws(
+    () => commandWithPointer(["pi", "--print", undefined], "pointers"),
+    { message: 'commandWithPointer: the argv must end with the pointers — got undefined, pointers "pointers"' },
+    "the argv's last element is not the pointers (the old 'undefined' case)"
+  );
+});
+
+test("commandWithPointer quotes the explicit pointers and shell-tokenizes the rest", () => {
+  const pointers = "the maintainer's pointers";
+  assert.equal(
+    commandWithPointer(["pi", "--print", "--model", "glm-4.6", pointers], pointers),
+    "pi --print --model glm-4.6 'the maintainer'\\''s pointers'"
+  );
+});
 
 test("buildStageCommand pins provider, model, effort and quotes the pointers", () => {
   assert.equal(

@@ -106,7 +106,8 @@ context is not independent.
   cosmetics: the string is a shell command injected into a terminal, so
   command names and flag values stay unquoted while pointers and
   anything unsafe are single-quoted (`shellQuote`/`shellToken`/
-  `argvCommand`). Both are part of the helper's contract, not anomalies.
+  `commandWithPointer`, whose explicit `pointers` parameter is always
+  quoted). Both are part of the helper's contract, not anomalies.
   Recorded 2026-10-21, spec #160's fix wave (review finding 2, ticket
   #174): a third keep is the stage-key preflight seam — `resolveStageKey`
   delegates to `env-defaults.mjs`'s `resolveKey`, and its docblock carries
