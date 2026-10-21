@@ -45,6 +45,14 @@ per-stage variables with defaults in `env-defaults.mjs`, overridable per run
 fixed at the model's highest available effort.
 _Avoid_: model config, model setting.
 
+**Provider-environment pattern**:
+The chain's key rule: each docker sets `DEV_ENV_PROVIDER` plus that
+provider's own key variable (`OPENCODE_GO_API_KEY`, `OPENAI_API_KEY`, …),
+carrying its own account. The provider's variable is the only key
+mechanism — no generic key, no fallback; a missing key is a hard error
+naming the provider and the variable to set.
+_Avoid_: universal key, generic API key, opt-in pair.
+
 **Handoff doc**:
 The compacted-conversation document the `handoff` skill writes to the OS
 temp directory; the next chain stage's session reads it by pointer.

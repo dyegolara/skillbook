@@ -305,6 +305,15 @@ context is not independent.
   gone). The deleted opt-in gate's `isSet` helper died with the gate it
   served — deleted, not shared — which is the disposition of review finding
   7's `isSet`/`readEnv` duplication.
+  Recorded 2026-10-21, fix wave of spec #160 (ticket #169, open gap 3):
+  the wave's live environment still carried `DEV_ENV_API_KEY` from ticket
+  #163, which nothing reads. The wave's own environment file (`~/.dev-env`,
+  outside the repo and never committed) now exports the
+  provider-environment pattern — `DEV_ENV_PROVIDER` plus the provider's own
+  key variable, `OPENCODE_GO_API_KEY`, carrying the account — and no longer
+  exports `DEV_ENV_API_KEY`. An already-running process keeps the stale
+  variable in its inherited environment until the docker or shell restarts;
+  nothing reads it, so it has no effect.
 - `GLOSSARY.md` replaces `CONTEXT.md`, adopting the referenced pack's glossary
   convention; ADRs keep living in `docs/adr/`.
 
