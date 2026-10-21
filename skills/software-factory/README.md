@@ -51,9 +51,11 @@ defaults in [`scripts/env-defaults.mjs`](scripts/env-defaults.mjs), so an
 unset environment runs the chain with today's pins. Authentication is
 user-managed: log in to each provider for each agent before running the chain.
 The launch helper selects the provider/model but does not transmit API keys to
-Kepler or the launched agent; its detached fallback removes the known provider
-API-key and credential-like variables from the child environment. The Kepler
-terminal path uses the server's already-configured agent login. The repo root's
+Kepler or the launched agent. When the caller supplies the selected provider's
+key, the Kepler terminal verifies its inherited value with a one-use HMAC
+challenge before the stage runs; a mismatch closes the terminal and stops the
+launch. The detached fallback removes the known provider API-key and
+credential-like variables from the child environment. The repo root's
 [`.env.example`](../../.env.example) lists pin variables only and remains
 commented and source-safe.
 
@@ -79,6 +81,9 @@ per-stage models name `opencode-go` ids.
 - Every stage is a new session, so no stage inherits another stage's context.
   The reviewer in particular sees only pointers, never the implementer's
   reasoning.
+- An actuated grill re-entry carries the allowlisted, non-secret run-pin
+  environment in its prompt. Its first launch applies that exact configuration;
+  later stages and resumes preserve it without carrying credentials.
 - The pi stages launch through the pack helper from the shared worktree:
   `node "<skill-dir>/scripts/launch-stage.mjs" <stage> <spec> '<pointers>'`.
   `<skill-dir>` is the absolute directory of the loaded skill, not the shared

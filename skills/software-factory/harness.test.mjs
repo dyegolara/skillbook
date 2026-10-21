@@ -48,7 +48,7 @@ test("provider API keys are not sent to Kepler or injected into any launch stage
     assert.equal(injectedCommand(out.input), defaultCommand(stage), stage);
     assert.ok(!injectedCommand(out.input).includes("API_KEY"), `${stage}: no key variable is ever injected`);
     assert.ok(!out.input.includes(FIXTURE_KEY), `${stage}: no key value is ever injected`);
-    assert.ok(!JSON.stringify(out.calls).includes("API_KEY"), `${stage}: no key variable is sent to Kepler`);
+    assert.ok(out.input.includes("PROVIDER-CREDENTIAL-CHECK"), `${stage}: the API terminal checks its provider key`);
     assert.ok(!JSON.stringify(out.calls).includes(FIXTURE_KEY), `${stage}: no key value is sent to Kepler`);
   }
 });
@@ -85,9 +85,32 @@ test("provider switch selects its model provider without sending its API key", a
     "the provider's default-pin command shape, unchanged"
   );
   assertNoKeyInjected(command, { keyVariable, keyValue: FIXTURE_KEY });
-  assert.ok(!JSON.stringify(out.calls).includes(keyVariable));
+  assert.ok(out.input.includes(`PROVIDER-CREDENTIAL-CHECK ${keyVariable}`));
   assert.ok(!JSON.stringify(out.calls).includes(FIXTURE_KEY));
   assert.deepEqual(out.spawnCalls, [], "the nohup fallback never runs");
+});
+
+test("a mismatched API-child provider key blocks the stage without transmitting either key", async () => {
+  const callerEnv = {
+    DEV_ENV_PROVIDER: "anthropic",
+    ANTHROPIC_API_KEY: "caller-key",
+  };
+  const out = await runLaunchFixture({
+    stage: "dev-flow",
+    env: callerEnv,
+    terminalEnv: { ANTHROPIC_API_KEY: "server-key" },
+  });
+
+  assert.equal(out.error?.code, "PROVIDER_CREDENTIAL_ENV_MISMATCH");
+  assert.ok(!out.input.includes("caller-key"));
+  assert.ok(!out.input.includes("server-key"));
+  assert.ok(!JSON.stringify(out.calls).includes("caller-key"));
+  assert.ok(!JSON.stringify(out.calls).includes("server-key"));
+  assert.deepEqual(out.spawnCalls, []);
+  assert.deepEqual(
+    out.calls.filter((call) => call.method === "POST").map((call) => call.path),
+    ["/terminal/start", "/terminal/input", "/terminal/close"]
+  );
 });
 
 test("per-stage retune: the stage's model and effort change only that stage's command", async () => {
@@ -125,7 +148,7 @@ test("pin overrides survive a handoff when the server environment differs", asyn
   assert.ok(first.input.includes("DEV_ENV_AGENT_IMPLEMENT_SPEC='claude-code'"));
   assert.ok(first.input.includes("DEV_ENV_MODEL_GRILL=''"), "unset pins explicitly clear server overrides");
   assert.ok(!first.input.includes(FIXTURE_KEY));
-  assert.ok(!first.input.includes("ANTHROPIC_API_KEY"));
+  assert.ok(first.input.includes("PROVIDER-CREDENTIAL-CHECK ANTHROPIC_API_KEY"));
 
   const resumed = await runLaunchFixture({
     stage: "implement-spec",
@@ -169,7 +192,7 @@ test("provider authentication remains user-managed when API-key env vars are uns
     assert.equal(out.result.path, "api", name);
     assert.ok(out.inputs.length > 0, `${name}: stage command is injected`);
     assert.deepEqual(out.spawnCalls, [], `${name}: the nohup fallback never runs`);
-    assert.ok(!JSON.stringify(out.calls).includes(keyVariable), `${name}: key variable is not sent to Kepler`);
+    assert.ok(!JSON.stringify(out.calls).includes(keyVariable), `${name}: no credential check runs without a caller key`);
   }
 });
 

@@ -42,6 +42,7 @@
  *     [--repo-id <id> --worktree-id <id> --task-id <id>]
  */
 import { spawn } from "node:child_process";
+import { createHmac, randomBytes } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -252,11 +253,20 @@ export async function waitForSentinel({
   pollIntervalMs = VERIFY_POLL_INTERVAL_MS,
   sleepImpl = sleep,
   relaunched = false,
+  credentialMismatchMarker,
+  credentialKeyVariable,
 }) {
   const polls = Math.max(1, Math.ceil(timeoutMs / pollIntervalMs));
   for (let poll = 0; poll < polls; poll += 1) {
     if (poll > 0) await sleepImpl(pollIntervalMs);
     const buffer = await readTerminalBuffer({ apiBase, fetchImpl, terminalId });
+    if (credentialMismatchMarker && sentinelSeen(buffer, credentialMismatchMarker)) {
+      const error = new Error(
+        `Kepler terminal ${terminalId} does not have the caller's matching ${credentialKeyVariable} environment`
+      );
+      error.code = "PROVIDER_CREDENTIAL_ENV_MISMATCH";
+      throw error;
+    }
     if (sentinelSeen(buffer, sentinel)) return buffer;
   }
   throw new SentinelTimeoutError({ terminalId, sentinel, timeoutMs, relaunched });
@@ -346,8 +356,18 @@ export function buildRetryWrapper(stage, spec, pointers, worktreePath, env = pro
   );
 }
 
-export function buildTerminalInput(stage, spec, pointers, worktreePath, env = process.env) {
-  return `${buildRetryWrapper(stage, spec, pointers, worktreePath, env)}\n`;
+export function buildTerminalInput(
+  stage,
+  spec,
+  pointers,
+  worktreePath,
+  env = process.env,
+  credentialGuard = providerCredentialGuard(stage, env)
+) {
+  const guard = credentialGuard
+    ? `${credentialGuard.header}\n${credentialGuard.command}\n`
+    : "";
+  return `${guard}${buildRetryWrapper(stage, spec, pointers, worktreePath, env)}\n`;
 }
 
 /** The packaged helpers' name for the label shape; delegates to `chainLabel`. */
@@ -730,9 +750,10 @@ export async function launchInTerminal({
     return terminalId;
   };
 
-  let terminalId = await startTerminal();
   const sentinel = stageSentinel(spec, stage);
-  const input = buildTerminalInput(stage, spec, pointers, worktreePath, env);
+  const credentialGuard = providerCredentialGuard(stage, env);
+  const input = buildTerminalInput(stage, spec, pointers, worktreePath, env, credentialGuard);
+  let terminalId = await startTerminal();
   const postInput = () =>
     requestJson(fetchImpl, `${apiBase}/terminal/input`, {
       method: "POST",
@@ -745,9 +766,26 @@ export async function launchInTerminal({
     try {
       // The wrapper prints the sentinel immediately on execution, so a wait
       // that times out means the command never started.
-      await waitForSentinel({ apiBase, fetchImpl, terminalId, sentinel, sleepImpl, relaunched: relaunches > 0 });
+      await waitForSentinel({
+        apiBase,
+        fetchImpl,
+        terminalId,
+        sentinel,
+        sleepImpl,
+        relaunched: relaunches > 0,
+        credentialMismatchMarker: credentialGuard?.mismatchMarker,
+        credentialKeyVariable: credentialGuard?.keyVariable,
+      });
       return { terminalId, label };
     } catch (error) {
+      if (error?.code === "PROVIDER_CREDENTIAL_ENV_MISMATCH") {
+        await requestJson(fetchImpl, `${apiBase}/terminal/close`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ terminalId }),
+        });
+        throw error;
+      }
       // A non-wedge failure (buffer read HTTP error, connection failure,
       // malformed body) is a hard error, never a silent pass. A second
       // timeout after the relaunch is a hard error too.
@@ -792,6 +830,32 @@ export function agentEnvironment(env = process.env) {
   return Object.fromEntries(
     Object.entries(env).filter(([name]) => !providerKeyVariables.has(name) && !sensitiveVariable.test(name))
   );
+}
+
+/**
+ * Compare a caller-supplied provider key with the API terminal's inherited key
+ * using a one-use HMAC challenge. The key itself never enters the command or
+ * API request; only the nonce-scoped proof does.
+ */
+export function providerCredentialGuard(stage, env = process.env) {
+  const keyVariable = PROVIDER_KEY_VARS[stagePin(stage, env).provider];
+  const key = env?.[keyVariable];
+  if (key === undefined || key === null || String(key).trim() === "") return null;
+
+  const nonce = randomBytes(32).toString("hex");
+  const digest = createHmac("sha256", String(key)).update(nonce).digest("hex");
+  const mismatchMarker = `PROVIDER-CREDENTIAL-MISMATCH-${nonce}`;
+  const script =
+    `const c=require("node:crypto");` +
+    `const k=process.env[${JSON.stringify(keyVariable)}];` +
+    `const actual=k?c.createHmac("sha256",k).update(${JSON.stringify(nonce)}).digest("hex"):"";` +
+    `process.exit(actual===${JSON.stringify(digest)}?0:1)`;
+  return {
+    keyVariable,
+    mismatchMarker,
+    header: `# PROVIDER-CREDENTIAL-CHECK ${keyVariable} ${nonce} ${digest} ${mismatchMarker}`,
+    command: `if ! node -e ${shellQuote(script)}; then printf '%s\\n' ${shellQuote(mismatchMarker)}; exit 1; fi;`,
+  };
 }
 
 export async function launchStage({ stage, spec, pointers, flags, deps = {} }) {

@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import { chmodSync, cpSync, existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { homedir, tmpdir } from "node:os";
@@ -29,6 +30,7 @@ import {
   main,
   parseIdFlags,
   pickAnchor,
+  providerCredentialGuard,
   reachApi,
   readKeplerApiBase,
   resolveIds,
@@ -273,6 +275,28 @@ test("agentEnvironment strips provider API keys but preserves ordinary variables
     GITHUB_TOKEN: "github-token",
   };
   assert.deepEqual(agentEnvironment(env), { PATH: "/bin", DEV_ENV_PROVIDER: "anthropic" });
+});
+
+test("the provider credential guard verifies the API child's exact environment without embedding the key", () => {
+  const callerEnv = { DEV_ENV_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "caller-key" };
+  const guard = providerCredentialGuard("dev-flow", callerEnv);
+  assert.ok(!guard.command.includes("caller-key"));
+  assert.ok(!guard.header.includes("caller-key"));
+
+  const matches = spawnSync("bash", ["-c", `${guard.command} printf MATCH`], {
+    encoding: "utf8",
+    env: { ...process.env, ANTHROPIC_API_KEY: "caller-key" },
+  });
+  assert.equal(matches.status, 0, matches.stderr);
+  assert.equal(matches.stdout, "MATCH");
+
+  const differs = spawnSync("bash", ["-c", `${guard.command} printf MATCH`], {
+    encoding: "utf8",
+    env: { ...process.env, ANTHROPIC_API_KEY: "server-key" },
+  });
+  assert.equal(differs.status, 1);
+  assert.equal(differs.stdout, `${guard.mismatchMarker}\n`);
+  assert.ok(!differs.stdout.includes("server-key"));
 });
 
 test("an API launch does not require the caller's API key; authentication is user-managed by Kepler", async () => {
@@ -1045,7 +1069,7 @@ test("the spec argument builds the label — never the anchor terminal's label",
   const lines = [];
 
   const result = await main(["code-review-loop", "77", "the maintainer's pointers"], {
-    env: LAUNCH_ENV,
+    env: NO_ENV,
     apiBase: "http://api.test",
     fetchImpl,
     worktreePath,
@@ -1078,7 +1102,6 @@ test("the spec argument builds the label — never the anchor terminal's label",
 test("caller API keys never ride the API request or launched input", async () => {
   const worktreePath = "/work/tree";
   const terminals = [{ worktreePath, label: "Terminal 1", repoId: "r", worktreeId: "w", taskId: "t" }];
-  const { fetchImpl, calls } = mockKeplerApi({ terminals });
   const env = {
     DEV_ENV_PROVIDER: "anthropic",
     DEV_ENV_MODEL_DEV_FLOW: "anthropic/opus",
@@ -1086,6 +1109,7 @@ test("caller API keys never ride the API request or launched input", async () =>
     DEV_ENV_AGENT_DEV_FLOW: "claude-code",
     ANTHROPIC_API_KEY: "sk-ant",
   };
+  const { fetchImpl, calls } = mockKeplerApi({ terminals, terminalEnv: env });
 
   const result = await main(["dev-flow", "55", "pointers"], {
     env,
@@ -1101,16 +1125,48 @@ test("caller API keys never ride the API request or launched input", async () =>
     input.includes("claude -p --model anthropic/opus --effort high 'pointers'"),
     "the launched command is the resolved provider's plain command"
   );
-  assert.ok(!input.includes("ANTHROPIC_API_KEY"), "no key variable rides the launched input");
+  assert.ok(input.includes("PROVIDER-CREDENTIAL-CHECK ANTHROPIC_API_KEY"), "the API child credential is checked");
   assert.ok(!input.includes("sk-ant"), "the key value never reaches the injected command");
   const requests = JSON.stringify(calls);
-  assert.ok(!requests.includes("ANTHROPIC_API_KEY"), "the key variable is not sent to Kepler");
+  assert.ok(requests.includes("PROVIDER-CREDENTIAL-CHECK ANTHROPIC_API_KEY"));
   assert.ok(!requests.includes("sk-ant"), "the key value is not sent to Kepler");
   const resume = buildResumeCommand({ stage: "dev-flow", spec: "55", pointers: "pointers", worktreePath, env });
   assert.ok(
     input.includes(shellQuote(`FAILED: resume with: ${resume}`)),
     "the resume command re-enters the launch helper"
   );
+});
+
+test("an API terminal with a different provider key is closed before the stage executes", async () => {
+  const env = {
+    DEV_ENV_PROVIDER: "anthropic",
+    ANTHROPIC_API_KEY: "caller-key",
+  };
+  const { fetchImpl, calls, inputs, bufferText } = mockKeplerApi({
+    terminals: [VERIFY_TERMINAL],
+    terminalEnv: { ANTHROPIC_API_KEY: "server-key" },
+  });
+  const { spawnImpl, calls: spawnCalls } = spawnRecorder();
+
+  await assert.rejects(
+    main(["dev-flow", "55", "pointers"], {
+      env,
+      apiBase: "http://api.test",
+      fetchImpl,
+      worktreePath: "/work/tree",
+      spawnImpl,
+      write: () => {},
+      sleepImpl: async () => {},
+    }),
+    /matching ANTHROPIC_API_KEY environment/
+  );
+
+  assert.equal(inputs().length, 1);
+  assert.ok(!inputs()[0].input.includes("caller-key"));
+  assert.ok(!inputs()[0].input.includes("server-key"));
+  assert.ok(!sentinelSeen(bufferText(), stageSentinel("55", "dev-flow")));
+  assert.equal(calls.filter((call) => call.url.endsWith("/terminal/close")).length, 1);
+  assert.equal(spawnCalls.length, 0);
 });
 
 test("the API path prefers the chain-labeled terminal on the worktree", async () => {
@@ -1796,7 +1852,7 @@ function errorResponse(status) {
   return { ok: false, status, text: async () => "" };
 }
 
-function mockKeplerApi({ terminals, terminalId = "term-new", handlers = {} }) {
+function mockKeplerApi({ terminals, terminalId = "term-new", terminalEnv = LAUNCH_ENV, handlers = {} }) {
   const calls = [];
   const inputBodies = [];
   let buffer = "";
@@ -1818,7 +1874,20 @@ function mockKeplerApi({ terminals, terminalId = "term-new", handlers = {} }) {
     if (method === "POST" && url.endsWith("/terminal/input")) {
       inputBodies.push(call.body);
       buffer += call.body.input;
-      // A working launch executes the wrapper; its first action prints the sentinel on its own line.
+      const credentialCheck =
+        /^# PROVIDER-CREDENTIAL-CHECK (\w+) ([a-f0-9]+) ([a-f0-9]+) (\S+)$/m.exec(call.body.input);
+      if (credentialCheck) {
+        const [, keyVariable, nonce, expected, mismatchMarker] = credentialCheck;
+        const key = terminalEnv?.[keyVariable];
+        const actual = key
+          ? createHmac("sha256", String(key)).update(nonce).digest("hex")
+          : "";
+        if (actual !== expected) {
+          buffer += `\r\n${mismatchMarker}\r\n`;
+          return handlers.input ? handlers.input(call) : okResponse(null);
+        }
+      }
+      // A working launch executes the wrapper; its sentinel is a standalone line.
       const sentinel = /CHAIN-STAGE-START: chain #\d+ [\w-]+/.exec(call.body.input)?.[0];
       if (sentinel) buffer += `\r\n${sentinel}\r\n`;
       return handlers.input ? handlers.input(call) : okResponse(null);

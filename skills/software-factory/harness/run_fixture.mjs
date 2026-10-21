@@ -66,8 +66,9 @@ export async function runLaunchFixture({
   ids = FIXTURE.ids,
   worktreePath = FIXTURE.worktreePath,
   fetchImpl = fetch,
+  terminalEnv = env,
 }) {
-  const api = await startFakeKeplerApi();
+  const api = await startFakeKeplerApi({ terminalEnv });
   const spawnCalls = [];
   const spawnImpl = (...args) => {
     spawnCalls.push(args);

@@ -19,6 +19,10 @@ recipe when Kepler's build moves.
   inconsistent ids give "Worktree … does not belong to task …".
 - `POST /terminal/input` — body `{terminalId, input}` — types into the
   terminal's bash (a real PTY). Append `\n` to run the line.
+  When the caller supplies the selected provider's key, `launch-stage.mjs`
+  checks the terminal's inherited value with a random-nonce HMAC before the
+  retry wrapper runs. The input carries only the one-use proof, never the key;
+  a mismatch closes the terminal and stops the launch.
 - `GET /terminal/buffer?terminalId=…` — the scrollback, returned as a **bare
   JSON string** (not an object): `JSON.parse(body)` yields the raw text with
   ANSI escapes; strip them before grepping.

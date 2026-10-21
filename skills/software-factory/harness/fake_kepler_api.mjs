@@ -21,6 +21,7 @@
  * Plain ESM per ADR-0002, zero dependencies beyond Node.
  */
 import http from "node:http";
+import { createHmac } from "node:crypto";
 
 /** Extract the standalone sentinel line the wrapper prints from an injected input. */
 function sentinelOf(input) {
@@ -37,6 +38,7 @@ export async function startFakeKeplerApi({
   terminalId = "term-fixture",
   sessionId = "sess-fixture",
   anchor = null,
+  terminalEnv = {},
 } = {}) {
   const calls = [];
   const inputs = [];
@@ -69,6 +71,17 @@ export async function startFakeKeplerApi({
           inputs.push(body);
           const injected = String(body?.input ?? "");
           const previous = scrollback.get(body?.terminalId) ?? "";
+          const credentialCheck =
+            /^# PROVIDER-CREDENTIAL-CHECK (\w+) ([a-f0-9]+) ([a-f0-9]+) (\S+)$/m.exec(injected);
+          if (credentialCheck) {
+            const [, keyVariable, nonce, expected, mismatchMarker] = credentialCheck;
+            const key = terminalEnv?.[keyVariable];
+            const actual = key ? createHmac("sha256", String(key)).update(nonce).digest("hex") : "";
+            if (actual !== expected) {
+              scrollback.set(body?.terminalId, `${previous}${injected}\r\n${mismatchMarker}\r\n`);
+              return send(null);
+            }
+          }
           const sentinel = sentinelOf(injected);
           scrollback.set(body?.terminalId, sentinel ? `${previous}${injected}\r\n${sentinel}\r\n` : previous + injected);
           return send(null);
