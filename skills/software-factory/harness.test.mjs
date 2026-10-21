@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { DEFAULTS } from "./scripts/env-defaults.mjs";
 import {
+  DEFAULT_KEY_ENV,
   FIXTURE,
   GRILL_SCENARIOS,
   INVALID_VALUE_CASES,
@@ -17,20 +18,21 @@ import { injectedCommand, runGrillFixture, runLaunchFixture } from "./harness/ru
 // Default pin *values* come from env-defaults.mjs (ticket #162's rule); only
 // deliberately explicit scenario values are literals.
 
-test("nothing set: every launch stage injects the pre-change fixed-pin command, with no key", async () => {
+test("the provider's key variable set: every launch stage injects the pre-change fixed-pin command, with no key", async () => {
   for (const stage of LAUNCH_STAGE_NAMES) {
-    const out = await runLaunchFixture({ stage, env: {} });
+    const out = await runLaunchFixture({ stage, env: DEFAULT_KEY_ENV });
     assert.equal(out.error, null, `${stage}: ${out.error?.message}`);
     assert.equal(out.result.path, "api", stage);
     assert.deepEqual(out.spawnCalls, [], `${stage}: the nohup fallback never runs`);
     assert.equal(out.inputs.length, 1, stage);
     assert.equal(injectedCommand(out.input), defaultCommand(stage), stage);
-    assert.ok(!out.input.includes("API_KEY="), `${stage}: no key without the DEV_ENV_ opt-in`);
+    assert.ok(!injectedCommand(out.input).includes("API_KEY"), `${stage}: no key variable is ever injected`);
+    assert.ok(!out.input.includes("sk-fixture"), `${stage}: no key value is ever injected`);
   }
 });
 
 test("the fixture drives the real helper over loopback HTTP: start, input, buffer verification", async () => {
-  const out = await runLaunchFixture({ stage: "dev-flow", env: {} });
+  const out = await runLaunchFixture({ stage: "dev-flow", env: DEFAULT_KEY_ENV });
   assert.match(out.apiBase, /^http:\/\/127\.0\.0\.1:\d+$/);
   assert.deepEqual(
     out.calls.map((call) => `${call.method} ${call.path}`),
@@ -44,13 +46,13 @@ test("the fixture drives the real helper over loopback HTTP: start, input, buffe
   assert.equal(out.result.terminalId, "term-fixture");
 });
 
-test("per-docker: the generic key travels as the resolved provider's variable, paired with the provider", async () => {
+test("per-docker: the provider's own key variable is set and nothing is injected", async () => {
   const scenario = LAUNCH_SCENARIOS["per-docker"];
   const out = await runLaunchFixture(scenario);
   assert.equal(out.error, null);
   assert.equal(injectedCommand(out.input), scenario.expectedCommand);
-  assert.ok(injectedCommand(out.input).startsWith("OPENROUTER_API_KEY='sk-fixture' "));
-  assert.ok(!out.input.includes("DEV_ENV_API_KEY"));
+  assert.ok(!injectedCommand(out.input).includes("OPENROUTER_API_KEY"), "no key variable rides the command");
+  assert.ok(!injectedCommand(out.input).includes("sk-fixture"), "no key value rides the command");
 });
 
 test("per-stage retune: the stage's model and effort change only that stage's command", async () => {
@@ -129,7 +131,7 @@ test("grill route: an agent switch uses the switched agent's adapterId with the 
 });
 
 test("fully offline: every captured request hit the loopback fake API and no fallback spawn ran", async () => {
-  const launch = await runLaunchFixture({ stage: "dev-flow", env: {} });
+  const launch = await runLaunchFixture({ stage: "dev-flow", env: DEFAULT_KEY_ENV });
   const grill = await runGrillFixture({ env: {} });
 
   for (const out of [launch, grill]) {

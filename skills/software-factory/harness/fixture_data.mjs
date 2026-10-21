@@ -50,6 +50,12 @@ export function defaultPin(stage) {
 }
 
 /**
+ * The fixture env for the default provider: its own key variable, the way an
+ * environment (docker) carries its account. The key is never injected.
+ */
+export const DEFAULT_KEY_ENV = { [PROVIDER_KEY_VARS[DEFAULTS.provider]]: "sk-fixture" };
+
+/**
  * The pre-change fixed-pin `pi` command
  * (`pi --print --provider <p> --model <m> --thinking <e> '<pointers>'`), with
  * the values from the caller. This is the shape the defaults scenario asserts
@@ -66,26 +72,29 @@ export function defaultCommand(stage) {
 }
 
 /**
- * The launch scenarios: defaults, the per-docker provider+key pattern, a
- * per-stage retune (the retuned stage plus a sibling sharing the same env) and
- * an agent switch through `AGENT_COMMANDS`.
+ * The launch scenarios: defaults, the per-docker provider-environment pattern,
+ * a per-stage retune (the retuned stage plus a sibling sharing the same env)
+ * and an agent switch through `AGENT_COMMANDS`.
  */
 export const LAUNCH_SCENARIOS = {
   defaults: {
     stage: "dev-flow",
-    env: {},
+    env: { ...DEFAULT_KEY_ENV },
     expectedCommand: defaultCommand("dev-flow"),
   },
   "per-docker": {
     stage: "dev-flow",
-    env: { DEV_ENV_PROVIDER: "openrouter", DEV_ENV_API_KEY: "sk-fixture" },
-    // The generic key travels as the resolved provider's own variable.
-    expectedCommand:
-      `${PROVIDER_KEY_VARS.openrouter}='sk-fixture' ` +
-      piCommand({ ...defaultPin("dev-flow"), provider: "openrouter" }),
+    env: { DEV_ENV_PROVIDER: "openrouter", [PROVIDER_KEY_VARS.openrouter]: "sk-fixture" },
+    // The environment carries the key under the provider's own variable; the
+    // injected command is the provider's plain default-pin command.
+    expectedCommand: piCommand({ ...defaultPin("dev-flow"), provider: "openrouter" }),
   },
   "per-stage-retune": {
-    env: { DEV_ENV_MODEL_DEV_FLOW: "anthropic/claude-opus-5", DEV_ENV_EFFORT_DEV_FLOW: "high" },
+    env: {
+      ...DEFAULT_KEY_ENV,
+      DEV_ENV_MODEL_DEV_FLOW: "anthropic/claude-opus-5",
+      DEV_ENV_EFFORT_DEV_FLOW: "high",
+    },
     runs: [
       {
         stage: "dev-flow",
@@ -101,7 +110,7 @@ export const LAUNCH_SCENARIOS = {
   },
   "agent-switch": {
     stage: "dev-flow",
-    env: { DEV_ENV_AGENT_DEV_FLOW: "grok" },
+    env: { ...DEFAULT_KEY_ENV, DEV_ENV_AGENT_DEV_FLOW: "grok" },
     // Grok Build's documented headless shape: `grok -p --model <m> --effort <e>`.
     expectedCommand:
       `grok -p --model ${defaultPin("dev-flow").model} --effort ${defaultPin("dev-flow").effort} ` +
@@ -125,14 +134,14 @@ export const INVALID_VALUE_CASES = [
   {
     name: "effort",
     variable: "DEV_ENV_EFFORT_DEV_FLOW",
-    env: { DEV_ENV_EFFORT_DEV_FLOW: "turbo" },
+    env: { ...DEFAULT_KEY_ENV, DEV_ENV_EFFORT_DEV_FLOW: "turbo" },
     badValue: "turbo",
     allowed: EFFORTS,
   },
   {
     name: "agent",
     variable: "DEV_ENV_AGENT_DEV_FLOW",
-    env: { DEV_ENV_AGENT_DEV_FLOW: "gemini" },
+    env: { ...DEFAULT_KEY_ENV, DEV_ENV_AGENT_DEV_FLOW: "gemini" },
     badValue: "gemini",
     allowed: AGENTS,
   },
