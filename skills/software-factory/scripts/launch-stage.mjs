@@ -320,9 +320,9 @@ export function buildResumeCommand({ stage, spec, pointers, worktreePath }) {
  * actuates the wake by running the sibling helper; the wake's output and
  * exit status are never swallowed. The pinned command inside stays unchanged;
  * the resume command is the launch-helper invocation, so a resume re-enters
- * the retry wrapper and the helper's post-injection check.
- * every pin resolves from here plus `DEV_ENV_*`, so this command is the
- * stage's resolved pins, whatever its agent.
+ * the retry wrapper and the helper's post-injection check. The command is
+ * the stage's resolved pins, whatever its agent, because every pin resolves
+ * from `env-defaults.mjs` plus `DEV_ENV_*`.
  */
 export function buildRetryWrapper(stage, spec, pointers, worktreePath, env = process.env) {
   const command = buildStageCommand(stage, pointers, env); // the stage's pinned command, unchanged inside

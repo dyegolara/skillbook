@@ -9,10 +9,10 @@
  *
  * Every pin the chain resolves lives here: the defaults (today's pins, per
  * ticket #161 and ADR-0006), the allowed values, the provider→key-variable
- * table (`DEV_ENV_` variables per spec #160), the agent→launch table, and the
- * resolution rules. Resolution is environment-injectable: the functions take
- * an `env` object defaulting to `process.env`, so tests need no global
- * mutation.
+ * table (`PROVIDER_KEY_VARS`, each provider's own variable per spec #160),
+ * the agent→launch table, and the resolution rules. Resolution is
+ * environment-injectable: the functions take an `env` object defaulting to
+ * `process.env`, so tests need no global mutation.
  *
  * Variables (spec #160): global `DEV_ENV_PROVIDER`; per stage
  * `DEV_ENV_MODEL_<STAGE>`, `DEV_ENV_EFFORT_<STAGE>`, `DEV_ENV_AGENT_<STAGE>`

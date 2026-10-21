@@ -49,31 +49,39 @@ Routes out of `code-review-loop`:
 Every pin resolves from the environment; unset variables fall back to the
 defaults in [`scripts/env-defaults.mjs`](scripts/env-defaults.mjs), so an
 unset environment runs the chain with today's pins. The one exception is the
-provider's key: it has no default and must be set. The repo root's
-[`.env.example`](../../.env.example) lists every variable and its default
-(the provider's key is required, with no default).
+provider's key: it has no default, and the CLI-launched stages require it.
+The repo root's [`.env.example`](../../.env.example) lists every variable and
+its default (the provider's key is required by those stages, with no default).
 
 The per-docker pattern is the provider-environment pattern: each docker sets
 `DEV_ENV_PROVIDER` plus that provider's own key variable —
 `OPENCODE_GO_API_KEY` for `opencode-go`, `OPENAI_API_KEY` for `openai`, and
 so on for `openrouter`, `xai` and `anthropic` — carrying its own account for
 that provider. The provider's key variable is the pattern's only key
-mechanism: there is no generic key variable and no fallback chain. The
-resolved provider's variable must be set and non-empty after trim; a missing
-key is a hard error naming the provider and the variable to set. The key is
-never injected into the launch command — the environment carries it, so the
-launched stage inherits it already paired with the resolved provider
-(ADR-0006, amended 2026-10-21). The shipped `.env.example` keeps the account
-block commented, so sourcing it as-is sets no key.
+mechanism: there is no generic key variable and no fallback chain. For the
+CLI-launched stages — `dev-flow`, `implement-spec`, `code-review-loop` and
+`create-pr` — the resolved provider's variable must be set and non-empty
+after trim; a missing key is a hard error naming the provider and the
+variable to set. The grill stage is the exception: it runs as an interactive
+Kepler agent session on the agent's own configured auth, so it runs no key
+preflight; its model, effort and agent pins still resolve from
+`env-defaults.mjs` plus `DEV_ENV_*`. The key is never injected into the
+launch command — the environment carries it, so a launched stage inherits it
+already paired with the resolved provider (ADR-0006, amended 2026-10-21).
+The shipped `.env.example` keeps the account block commented, so sourcing it
+as-is sets no key.
 
 | Scope | Variables | Default |
 |---|---|---|
-| Per-docker provider — one provider per docker and run | `DEV_ENV_PROVIDER` | `opencode-go` |
-| Per-docker key — the provider's own variable, required; a missing key is a hard error naming the provider and the variable to set | `OPENROUTER_API_KEY`, `OPENCODE_GO_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, `ANTHROPIC_API_KEY` | unset — no fallback |
+| Per-docker provider — one provider per docker and run; the CLI-launched stages resolve their provider from it | `DEV_ENV_PROVIDER` | `opencode-go` |
+| Per-docker key — the provider's own variable, required by the CLI-launched stages; a missing key is a hard error naming the provider and the variable to set | `OPENROUTER_API_KEY`, `OPENCODE_GO_API_KEY`, `OPENAI_API_KEY`, `XAI_API_KEY`, `ANTHROPIC_API_KEY` | unset — no fallback |
 | Stage pins — retune one stage at a time | `DEV_ENV_MODEL_<STAGE>`, `DEV_ENV_EFFORT_<STAGE>`, `DEV_ENV_AGENT_<STAGE>` | the chain map above |
 
 An off-list provider, effort or agent value is a hard error naming the
-variable and listing the allowed values.
+variable and listing the allowed values. The model is a free non-empty
+string, not cross-validated against the provider, so switching
+`DEV_ENV_PROVIDER` also means setting that provider's models — the shipped
+per-stage models name `opencode-go` ids.
 
 ## How context travels between stages
 
