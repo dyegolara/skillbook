@@ -1,0 +1,5 @@
+{
+  "private": true,
+  "description": "Directory entry so `node --test test/` resolves the whole suite (observability + TUI) on Node versions that do not expand directory arguments.",
+  "main": "suite.mjs"
+}

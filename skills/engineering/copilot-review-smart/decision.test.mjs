@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { decideDeterministic, decideWithLlm } from "./decision.mjs";
+import { decideDeterministic, decideWithLlm, isGateWaitReason } from "./decision.mjs";
 
 const BASE_NOW = Date.parse("2026-09-08T00:00:00.000Z");
 
@@ -214,6 +214,12 @@ test("escalation records the escalation timestamp in state", () => {
 test("mergeability unknown waits", () => {
   const out = call({ ctx: { mergeUnknown: true } });
   assertDecision(out, "wait", /mergeability yet/i);
+});
+
+test("gate wait classifier matches only deterministic-gate reasons", () => {
+  assert.equal(isGateWaitReason("GitHub has not computed PR mergeability yet; wait for next tick."), true);
+  assert.equal(isGateWaitReason("mergeability is fine; awaiting CI"), false);
+  assert.equal(isGateWaitReason("CI could not fetch mergeability metadata"), false);
 });
 
 test("unchanged signature reuses cached decision and never calls LLM", async () => {
