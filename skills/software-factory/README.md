@@ -68,8 +68,9 @@ preflight; its model, effort and agent pins still resolve from
 `env-defaults.mjs` plus `DEV_ENV_*`. The key is never injected into the
 launch command — the environment carries it, so a launched stage inherits it
 already paired with the resolved provider (ADR-0006, amended 2026-10-21).
-The shipped `.env.example` keeps the account block commented, so sourcing it
-as-is sets no key.
+The shipped `.env.example` stays commented and source-safe: sourcing it as-is
+sets no key and no pin. Every per-stage default stays visible there as a
+commented example; uncomment the line you retune.
 
 | Scope | Variables | Default |
 |---|---|---|
