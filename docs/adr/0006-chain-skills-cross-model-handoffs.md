@@ -179,7 +179,12 @@ context is not independent.
   frontmatter documents the same default, and the verifier compares them);
   `DEV_ENV_MODEL_<STAGE>`, `DEV_ENV_EFFORT_<STAGE>` and
   `DEV_ENV_AGENT_<STAGE>` override model, effort and agent per stage, so the
-  effort is no longer fixed at the model's cap.
+  effort is no longer fixed at the model's cap. Recorded 2026-10-21, fix
+  wave of spec #160 (ticket #173): the agent table's `adapterId` deliberately
+  deviates from the spec's "same table" line — `cursor-cli` maps to Kepler's
+  `cursor` adapter, not `cursor-cli`, per the local `GET /agent/adapters`
+  registry (verified 2026-10-16 and named in the `AGENT_COMMANDS` row
+  comment); matching the spec text would break the registry contract.
 - Every spawned `pi` command — the stage launch and each sub-agent —
   carries an explicit `--provider`, `--model` and `--thinking`; never rely
   on pi's ambient default (the kimi-k3 incident: three un-pinned spawns
@@ -277,7 +282,8 @@ context is not independent.
   Amended 2026-10-21, maintainer decision at the decision-forcing pause of
   spec #160's review (findings 1–2): API keys are provider-environment
   scoped, never environment-generic. `DEV_ENV_API_KEY` is removed from the
-  design — the sentence above naming it is superseded. A key is carried by
+  design — the 2026-10-16 sentences above that carry it (the per-docker
+  pairing and the manual-override rule) are superseded. A key is carried by
   the provider's own variable (`OPENCODE_GO_API_KEY`, `OPENAI_API_KEY`,
   `XAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` — the variables
   that exist today), and its value is that environment's (docker's) account
@@ -302,9 +308,13 @@ context is not independent.
   exists. The key check is a preflight validation only: the built stage
   command carries no key and no variable prefix, so it is byte-identical
   whether the key resolves or not (the `VAR='key'` prefix mechanism is
-  gone). The deleted opt-in gate's `isSet` helper died with the gate it
-  served — deleted, not shared — which is the disposition of review finding
-  7's `isSet`/`readEnv` duplication.
+  gone). That preflight is the CLI-launched stages' contract. The grill
+  stage is an interactive Kepler agent session on its own configured auth;
+  it resolves no provider and no key, so it runs no key preflight, while
+  its model, effort and agent pins still resolve through `env-defaults.mjs`
+  and `DEV_ENV_*`. The deleted opt-in gate's `isSet` helper died with the
+  gate it served — deleted, not shared — which is the disposition of review
+  finding 7's `isSet`/`readEnv` duplication.
   Recorded 2026-10-21, fix wave of spec #160 (ticket #169, open gap 3):
   the wave's live environment still carried `DEV_ENV_API_KEY` from ticket
   #163, which nothing reads. The wave's own environment file (`~/.dev-env`,
