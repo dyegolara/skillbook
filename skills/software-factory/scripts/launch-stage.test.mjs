@@ -32,6 +32,7 @@ import {
   reachApi,
   readKeplerApiBase,
   resolveIds,
+  runPinEnvironment,
   runSessionHelper,
   sentinelSeen,
   shellQuote,
@@ -382,9 +383,51 @@ test("the pinned command sits inside the wrapper unchanged", () => {
 test("the resume command re-enters the protected launch route from the worktree", () => {
   assert.equal(launchHelperPath(), fileURLToPath(new URL("./launch-stage.mjs", import.meta.url)));
   assert.equal(
-    buildResumeCommand({ stage: "dev-flow", spec: "55", pointers: "pointers", worktreePath: WORKTREE_PATH }),
+    buildResumeCommand({
+      stage: "dev-flow",
+      spec: "55",
+      pointers: "pointers",
+      worktreePath: WORKTREE_PATH,
+      env: NO_ENV,
+    }),
     `cd '${WORKTREE_PATH}' && node '${launchHelperPath()}' dev-flow 55 'pointers'`
   );
+});
+
+test("only allowlisted non-secret pin overrides reach stage children and resume commands", () => {
+  const env = {
+    DEV_ENV_PROVIDER: "anthropic",
+    DEV_ENV_MODEL_IMPLEMENT_SPEC: "anthropic/claude-opus-5",
+    DEV_ENV_EFFORT_IMPLEMENT_SPEC: "high",
+    DEV_ENV_AGENT_IMPLEMENT_SPEC: "claude-code",
+    DEV_ENV_UNKNOWN: "ignored",
+    DEV_ENV_API_KEY: "must-not-leak",
+    ANTHROPIC_API_KEY: "also-must-not-leak",
+  };
+  const pins = runPinEnvironment(env);
+  assert.deepEqual(pins, {
+    DEV_ENV_PROVIDER: "anthropic",
+    DEV_ENV_MODEL_IMPLEMENT_SPEC: "anthropic/claude-opus-5",
+    DEV_ENV_EFFORT_IMPLEMENT_SPEC: "high",
+    DEV_ENV_AGENT_IMPLEMENT_SPEC: "claude-code",
+  });
+
+  const exported = Object.entries(pins).map(([name, value]) => `${name}=${shellQuote(value)}`).join(" ");
+  const wrapper = buildRetryWrapper("dev-flow", "55", "pointers", WORKTREE_PATH, env);
+  assert.ok(wrapper.includes(`; export ${exported}; chain_attempt=1;`));
+  assert.ok(!wrapper.includes("must-not-leak"));
+  assert.ok(!wrapper.includes("ANTHROPIC_API_KEY"));
+
+  const resume = buildResumeCommand({
+    stage: "dev-flow",
+    spec: "55",
+    pointers: "pointers",
+    worktreePath: WORKTREE_PATH,
+    env,
+  });
+  assert.ok(resume.startsWith(`cd '${WORKTREE_PATH}' && export ${exported} && node `));
+  assert.ok(!resume.includes("must-not-leak"));
+  assert.ok(!resume.includes("ANTHROPIC_API_KEY"));
 });
 
 test("the give-up marker names the spec, the stage and the launch-helper resume command on one line each", () => {
@@ -394,6 +437,7 @@ test("the give-up marker names the spec, the stage and the launch-helper resume 
     spec: "55",
     pointers: "pointers",
     worktreePath: WORKTREE_PATH,
+    env: NO_ENV,
   });
   assert.ok(wrapper.includes(shellQuote("FAILED: chain #55 code-review-loop gave up after 5 attempts")));
   assert.ok(wrapper.includes(shellQuote(`FAILED: resume with: ${resume}`)));
@@ -1021,7 +1065,7 @@ test("caller API keys never ride the API request or launched input", async () =>
   const requests = JSON.stringify(calls);
   assert.ok(!requests.includes("ANTHROPIC_API_KEY"), "the key variable is not sent to Kepler");
   assert.ok(!requests.includes("sk-ant"), "the key value is not sent to Kepler");
-  const resume = buildResumeCommand({ stage: "dev-flow", spec: "55", pointers: "pointers", worktreePath });
+  const resume = buildResumeCommand({ stage: "dev-flow", spec: "55", pointers: "pointers", worktreePath, env });
   assert.ok(
     input.includes(shellQuote(`FAILED: resume with: ${resume}`)),
     "the resume command re-enters the launch helper"

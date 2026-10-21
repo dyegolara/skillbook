@@ -168,14 +168,17 @@ async function main() {
     const out = await runLaunchFixture({ stage: "dev-flow", env: missing.env });
     console.log(`=== launch/missing-key-${missing.name}`);
     if (out.error) {
-      console.log(`hard error: ${out.error.message}`);
-      console.log(`api calls: ${out.calls.length}; spawned: ${out.spawnCalls.length}`);
-      if (out.error.message !== missing.expectedMessage) {
-        console.error(`unexpected hard error message: expected ${missing.expectedMessage}`);
-        process.exitCode = 1;
-      }
-    } else {
-      console.error("expected a hard error, got none");
+      console.error(`unexpected hard error: ${out.error.message}`);
+      process.exitCode = 1;
+      continue;
+    }
+    console.log(`path: ${out.result.path}`);
+    if (out.result.path !== "api" || out.inputs.length === 0 || out.spawnCalls.length !== 0) {
+      console.error("expected a successful API launch without credentials");
+      process.exitCode = 1;
+    }
+    if (JSON.stringify(out.calls).includes(missing.keyVariable)) {
+      console.error("provider key variable was sent to Kepler");
       process.exitCode = 1;
     }
   }

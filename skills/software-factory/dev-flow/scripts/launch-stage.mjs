@@ -48,6 +48,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   buildAgentCommand,
+  DEFAULTS,
   resolveAgent,
   resolveEffort,
   resolveModel,
@@ -271,14 +272,43 @@ export function launchHelperPath() {
   return fileURLToPath(new URL("./launch-stage.mjs", import.meta.url));
 }
 
+const RUN_PIN_ENV_NAMES = [
+  "DEV_ENV_PROVIDER",
+  ...Object.keys(DEFAULTS.stages).flatMap((stage) =>
+    ["MODEL", "EFFORT", "AGENT"].map((field) => `DEV_ENV_${field}_${stage}`)
+  ),
+];
+
+/** The allowlisted, non-secret pin overrides carried to a child stage. */
+export function runPinEnvironment(env = process.env) {
+  return Object.fromEntries(
+    RUN_PIN_ENV_NAMES.flatMap((name) => {
+      const value = env?.[name];
+      if (value === undefined || value === null || String(value).trim() === "") return [];
+      return [[name, String(value).trim()]];
+    })
+  );
+}
+
+function pinEnvironmentAssignments(env) {
+  return Object.entries(runPinEnvironment(env))
+    .map(([name, value]) => `${name}=${shellQuote(value)}`)
+    .join(" ");
+}
+
 /**
  * The resume command the give-up marker and the wake carry: re-enter this
  * protected route — the launch helper from the stage's worktree — so a resume
  * runs under the retry wrapper and the helper's post-injection check, never
  * the bare pinned command.
  */
-export function buildResumeCommand({ stage, spec, pointers, worktreePath }) {
-  return `cd ${shellQuote(worktreePath)} && node ${shellQuote(launchHelperPath())} ${stage} ${spec} ${shellQuote(pointers)}`;
+export function buildResumeCommand({ stage, spec, pointers, worktreePath, env = process.env }) {
+  const assignments = pinEnvironmentAssignments(env);
+  return (
+    `cd ${shellQuote(worktreePath)} && ` +
+    `${assignments ? `export ${assignments} && ` : ""}` +
+    `node ${shellQuote(launchHelperPath())} ${stage} ${spec} ${shellQuote(pointers)}`
+  );
 }
 
 /**
@@ -297,7 +327,8 @@ export function buildResumeCommand({ stage, spec, pointers, worktreePath }) {
 export function buildRetryWrapper(stage, spec, pointers, worktreePath, env = process.env) {
   const command = buildStageCommand(stage, pointers, env); // the stage's pinned command, unchanged inside
   const sentinel = stageSentinel(spec, stage); // the first action, before attempt 1
-  const resumeCommand = buildResumeCommand({ stage, spec, pointers, worktreePath });
+  const resumeCommand = buildResumeCommand({ stage, spec, pointers, worktreePath, env });
+  const assignments = pinEnvironmentAssignments(env);
   const marker = [
     `FAILED: ${chainCore(spec, stage)} gave up after ${RETRY_ATTEMPTS} attempts`,
     `FAILED: resume with: ${resumeCommand}`,
@@ -305,6 +336,7 @@ export function buildRetryWrapper(stage, spec, pointers, worktreePath, env = pro
   const sleepCases = RETRY_SLEEPS_SECONDS.map((seconds, index) => `${index + 1}) sleep ${seconds};;`).join(" ");
   return (
     `printf '%s\\n' ${shellQuote(sentinel)}; ` +
+    `${assignments ? `export ${assignments}; ` : ""}` +
     `chain_attempt=1; chain_status=0; while [ "$chain_attempt" -le ${RETRY_ATTEMPTS} ]; do ` +
     `${command}; chain_status=$?; [ "$chain_status" -eq 0 ] && break; ` +
     `case "$chain_attempt" in ${sleepCases} esac; ` +

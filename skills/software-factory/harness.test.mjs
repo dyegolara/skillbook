@@ -15,6 +15,7 @@ import {
   defaultPin,
   piCommand,
 } from "./harness/fixture_data.mjs";
+import { runPinEnvironment } from "./scripts/launch-stage.mjs";
 import {
   injectedCommand,
   rejectingFetch,
@@ -98,6 +99,41 @@ test("per-stage retune: the stage's model and effort change only that stage's co
   assert.equal(injectedCommand(siblingOut.input), sibling.expectedCommand);
   assert.notEqual(retuned.expectedCommand, sibling.expectedCommand);
   assert.notEqual(retunedOut.input, siblingOut.input, "only the retuned stage's command changed");
+});
+
+test("pin overrides survive a handoff when the server environment differs", async () => {
+  const callerEnv = {
+    DEV_ENV_PROVIDER: "anthropic",
+    DEV_ENV_MODEL_IMPLEMENT_SPEC: "anthropic/claude-opus-5",
+    DEV_ENV_EFFORT_IMPLEMENT_SPEC: "high",
+    DEV_ENV_AGENT_IMPLEMENT_SPEC: "claude-code",
+    ANTHROPIC_API_KEY: FIXTURE_KEY,
+  };
+  const serverEnv = {
+    DEV_ENV_PROVIDER: "openai",
+    DEV_ENV_MODEL_IMPLEMENT_SPEC: "openai/model-from-server",
+    DEV_ENV_EFFORT_IMPLEMENT_SPEC: "max",
+    DEV_ENV_AGENT_IMPLEMENT_SPEC: "pi",
+  };
+
+  const first = await runLaunchFixture({ stage: "dev-flow", env: callerEnv });
+  assert.equal(first.error, null);
+  assert.ok(first.input.includes(
+    "export DEV_ENV_PROVIDER='anthropic' DEV_ENV_MODEL_IMPLEMENT_SPEC='anthropic/claude-opus-5' " +
+      "DEV_ENV_EFFORT_IMPLEMENT_SPEC='high' DEV_ENV_AGENT_IMPLEMENT_SPEC='claude-code';"
+  ));
+  assert.ok(!first.input.includes(FIXTURE_KEY));
+  assert.ok(!first.input.includes("ANTHROPIC_API_KEY"));
+
+  const resumed = await runLaunchFixture({
+    stage: "implement-spec",
+    env: { ...serverEnv, ...runPinEnvironment(callerEnv) },
+  });
+  assert.equal(resumed.error, null);
+  assert.equal(
+    injectedCommand(resumed.input),
+    `claude -p --model anthropic/claude-opus-5 --effort high '${FIXTURE.pointers}'`
+  );
 });
 
 test("agent switch: DEV_ENV_AGENT_DEV_FLOW=grok builds grok's documented command shape", async () => {
