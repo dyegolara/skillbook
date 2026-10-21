@@ -92,14 +92,14 @@ const DRIFTED_HANDOFF_RULES = HANDOFF_RULES.replace(
   "Every stage shares one worktree."
 );
 
-// ADR-0006's documented pin rows, in the ADR's own spellings: the grill row
-// says "effort <value>", the launch-stage rows carry the `--thinking` flag, and
-// the last two rows carry parenthetical notes. The row set derives from the
-// defaults module's LAUNCH_STAGES map plus the grill stage (not a launch
-// stage); only each stage's note spelling is listed here. The pin values come
-// from the defaults module, so the matching table passes and a seeded drift is
-// one substitution away.
-const ADR_PIN_STAGES = { "grill-with-spec": "GRILL", ...LAUNCH_STAGES };
+// ADR-0006's documented pin rows and the pack README's chain-map rows share
+// one stage set: the defaults module's LAUNCH_STAGES map plus the grill stage
+// (not a launch stage). Only the row spellings differ — ADR-0006 says
+// "effort <value>" on the grill row and carries the `--thinking` flag on the
+// launch-stage rows (ADR_PIN_NOTES), while the chain map has its own labels
+// and cells (CHAIN_MAP_ROWS). The pin values come from the defaults module, so
+// the matching tables pass and a seeded drift is one substitution away.
+const PIN_STAGES = { "grill-with-spec": "GRILL", ...LAUNCH_STAGES };
 
 const ADR_PIN_NOTES = {
   "grill-with-spec": (effort) => `effort ${effort}`,
@@ -110,7 +110,7 @@ const ADR_PIN_NOTES = {
 };
 
 function adrPinRows() {
-  return Object.entries(ADR_PIN_STAGES)
+  return Object.entries(PIN_STAGES)
     .map(([stage, key]) => {
       const pin = DEFAULTS.stages[key];
       return `  - ${stage} — \`${pin.model}\` (${ADR_PIN_NOTES[stage](pin.effort)})`;
@@ -135,10 +135,9 @@ const adr = [
 // The pack README's chain-map table: the Skill cell carries the kebab stage
 // name in backticks (implement-spec adds the referenced suffix), the Model pin
 // cell carries the model in backticks, and the Effort cell carries the bare
-// value. Every pin comes from the defaults module, so the matching table passes
-// and a seeded drift is one substitution away.
-const CHAIN_MAP_STAGES = { "grill-with-spec": "GRILL", ...LAUNCH_STAGES };
-
+// value. The row set is the shared PIN_STAGES set, and every pin comes from the
+// defaults module, so the matching table passes and a seeded drift is one
+// substitution away.
 const CHAIN_MAP_ROWS = {
   "grill-with-spec": {
     label: "Grill and spec",
@@ -160,7 +159,7 @@ const CHAIN_MAP_ROWS = {
 };
 
 function chainMapRows() {
-  return Object.entries(CHAIN_MAP_STAGES)
+  return Object.entries(PIN_STAGES)
     .map(([stage, key]) => {
       const pin = DEFAULTS.stages[key];
       const { label, skill, harness } = CHAIN_MAP_ROWS[stage];
