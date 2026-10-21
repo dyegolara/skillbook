@@ -69,7 +69,6 @@ const DEFAULTS_FILE = "skills/software-factory/scripts/env-defaults.mjs";
 // in every skill that launches a stage.
 const PACKAGED_HELPERS = ["launch-stage.mjs", "open-wake-session.mjs", "env-defaults.mjs"];
 const ADR_FILE = "docs/adr/0006-chain-skills-cross-model-handoffs.md";
-const LAUNCH_STAGES = ["dev-flow", "implement-spec", "code-review-loop", "create-pr"];
 // The skills that close with the shared `## Handoff rules` block.
 const HANDOFF_RULES_SKILLS = ["dev-flow", "code-review-loop"];
 
@@ -78,6 +77,7 @@ export function verifySoftwareFactoryPack(packDir) {
   const repoRoot = resolve(packDir, "../..");
   const registered = readRegisteredSkills(repoRoot, problems);
   const defaults = readDefaults(packDir, problems);
+  const launchStages = readLaunchStages(packDir, problems);
 
   for (const skill of CHAIN_SKILLS) {
     const label = `skills/software-factory/${skill.name}/SKILL.md`;
@@ -88,7 +88,7 @@ export function verifySoftwareFactoryPack(packDir) {
     }
     const text = readFileSync(file, "utf8");
     const { data } = parseFrontmatter(text);
-    checkLaunchSnippets(problems, label, text, skill.name);
+    checkLaunchSnippets(problems, label, text, skill.name, launchStages);
     checkPackagedHelpers(problems, packDir, skill.name, text);
     if (
       skill.name === "code-review-loop" &&
@@ -342,12 +342,12 @@ function piSpawnCommands(block) {
   return commands;
 }
 
-function isNodeStageLaunch(block) {
+function isNodeStageLaunch(block, launchStages) {
   return block
     .replace(/\\\n\s*/g, " ")
     .split("\n")
     .some(
-      (line) => /(?:^|[\s;&|])node\s/.test(line) && LAUNCH_STAGES.some((stage) => line.includes(stage))
+      (line) => /(?:^|[\s;&|])node\s/.test(line) && launchStages.some((stage) => line.includes(stage))
     );
 }
 
@@ -355,20 +355,20 @@ function isNodeStageLaunch(block) {
  * A block is a stage launch when it invokes the helper, runs a node command
  * naming a stage, or contains a `pi` command naming a stage. Any other `pi`
  * spawn is a sub-agent spawn: it passes the launch check and is subject only
- * to the explicit --model check.
+ * to the explicit --model check. The stage names come from env-defaults.mjs.
  */
-function isStageLaunch(block, spawns) {
+function isStageLaunch(block, spawns, launchStages) {
   return (
     block.includes("launch-stage.mjs") ||
-    isNodeStageLaunch(block) ||
-    spawns.some((command) => LAUNCH_STAGES.some((stage) => command.includes(stage)))
+    isNodeStageLaunch(block, launchStages) ||
+    spawns.some((command) => launchStages.some((stage) => command.includes(stage)))
   );
 }
 
-function checkLaunchSnippets(problems, label, text, skill) {
+function checkLaunchSnippets(problems, label, text, skill, launchStages) {
   for (const block of fencedCodeBlocks(text)) {
     const spawns = piSpawnCommands(block);
-    if (isStageLaunch(block, spawns) && !block.includes("launch-stage.mjs")) {
+    if (isStageLaunch(block, spawns, launchStages) && !block.includes("launch-stage.mjs")) {
       problems.push(`${label}: launch snippet does not reference ${HELPER_FILE}`);
     }
     if (spawns.length > 0 && !spawns.every((command) => command.includes("--model"))) {
@@ -479,6 +479,41 @@ function readDefaults(packDir, problems) {
 function defaultsSource(packDir) {
   const path = join(packDir, "scripts", "env-defaults.mjs");
   return existsSync(path) ? readFileSync(path, "utf8") : "";
+}
+
+/**
+ * Read the `LAUNCH_STAGES` map's keys from env-defaults.mjs source text — same
+ * source-text approach as `parseDefaults`, so the verifier follows the file
+ * instead of pinning a second copy of the launch stage set. Contract: `export
+ * const LAUNCH_STAGES = { "<kebab-stage>": "<STAGE_KEY>", ... }`, optionally
+ * wrapped in `Object.freeze(...)`.
+ */
+function parseLaunchStages(text) {
+  const declaration = text.indexOf("export const LAUNCH_STAGES");
+  if (declaration === -1) return null;
+  const objectStart = text.indexOf("{", declaration);
+  if (objectStart === -1) return null;
+  const body = bracedBlock(text, objectStart);
+  if (body === null) return null;
+  const stages = [];
+  const entryPattern = /"?([A-Za-z][\w-]*)"?\s*:\s*"[^"]*"/g;
+  let entry;
+  while ((entry = entryPattern.exec(body)) !== null) stages.push(entry[1]);
+  return stages.length > 0 ? stages : null;
+}
+
+/**
+ * Read the launch stage set from the shared defaults module. A missing module
+ * is already reported by `readDefaults`; an unreadable map is reported here
+ * once. An unreadable set leaves the stage-launch detection without stage names
+ * rather than pinning a copy.
+ */
+function readLaunchStages(packDir, problems) {
+  const path = join(packDir, "scripts", "env-defaults.mjs");
+  if (!existsSync(path)) return [];
+  const stages = parseLaunchStages(readFileSync(path, "utf8"));
+  if (stages === null) problems.push(`${DEFAULTS_FILE}: cannot read the LAUNCH_STAGES map`);
+  return stages ?? [];
 }
 
 /** The brace-matched body starting at `open`, or null when it is unclosed. */

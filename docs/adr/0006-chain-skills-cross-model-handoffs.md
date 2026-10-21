@@ -107,6 +107,11 @@ context is not independent.
   command names and flag values stay unquoted while pointers and
   anything unsafe are single-quoted (`shellQuote`/`shellToken`/
   `argvCommand`). Both are part of the helper's contract, not anomalies.
+  Recorded 2026-10-21, spec #160's fix wave (review finding 2, ticket
+  #174): a third keep is the stage-key preflight seam — `resolveStageKey`
+  delegates to `env-defaults.mjs`'s `resolveKey`, and its docblock carries
+  the unconditional-before-any-fetch/spawn contract; inlining it would
+  move that contract back into the launch path.
 - A stage that fails to run or dies mid-run does not stall the chain
   silently. The injected command is a retry wrapper around the stage's
   pinned agent command — whatever the harness, `pi` is not load-bearing —
