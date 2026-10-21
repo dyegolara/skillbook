@@ -50,10 +50,22 @@ export function defaultPin(stage) {
 }
 
 /**
- * The fixture env for the default provider: its own key variable, the way an
- * environment (docker) carries its account. The key is never injected.
+ * The fixture's provider key value. It is never injected: the environment
+ * carries it under the provider's own variable.
  */
-export const DEFAULT_KEY_ENV = { [PROVIDER_KEY_VARS[DEFAULTS.provider]]: "sk-fixture" };
+export const FIXTURE_KEY = "sk-fixture";
+
+/**
+ * The environment one provider's account travels in: its own key variable,
+ * the way an environment (docker) carries it. `DEV_ENV_PROVIDER`, when the
+ * scenario sets it, pairs with this environment.
+ */
+export function providerKeyEnv(provider = DEFAULTS.provider, key = FIXTURE_KEY) {
+  return { [PROVIDER_KEY_VARS[provider]]: key };
+}
+
+/** The fixture env for the default provider: its own key variable, never injected. */
+export const DEFAULT_KEY_ENV = providerKeyEnv();
 
 /**
  * The pre-change fixed-pin `pi` command
@@ -84,7 +96,7 @@ export const LAUNCH_SCENARIOS = {
   },
   "per-docker": {
     stage: "dev-flow",
-    env: { DEV_ENV_PROVIDER: "openrouter", [PROVIDER_KEY_VARS.openrouter]: "sk-fixture" },
+    env: { DEV_ENV_PROVIDER: "openrouter", ...providerKeyEnv("openrouter") },
     // The environment carries the key under the provider's own variable; the
     // injected command is the provider's plain default-pin command.
     expectedCommand: piCommand({ ...defaultPin("dev-flow"), provider: "openrouter" }),
@@ -127,7 +139,7 @@ export const INVALID_VALUE_CASES = [
   {
     name: "provider",
     variable: "DEV_ENV_PROVIDER",
-    env: { DEV_ENV_PROVIDER: "wat" },
+    env: { ...DEFAULT_KEY_ENV, DEV_ENV_PROVIDER: "wat" },
     badValue: "wat",
     allowed: PROVIDERS,
   },
@@ -151,6 +163,48 @@ export const INVALID_VALUE_CASES = [
 export function launchRuns(scenario) {
   return scenario.runs ?? [{ stage: scenario.stage, expectedCommand: scenario.expectedCommand }];
 }
+
+/**
+ * The missing-key cases: the resolved provider's own key variable unset, and
+ * whitespace-only (which reads as unset). The launch preflight stops with
+ * `resolveKey`'s readable hard error naming the provider and the variable to
+ * set, before any fetch, injection or spawn.
+ */
+function missingKeyCase(name, env) {
+  const provider = DEFAULTS.provider;
+  const keyVariable = PROVIDER_KEY_VARS[provider];
+  return {
+    name,
+    env,
+    provider,
+    keyVariable,
+    expectedMessage: `provider "${provider}" requires a key: set ${keyVariable}`,
+  };
+}
+
+export const MISSING_KEY_CASES = [
+  missingKeyCase("unset", {}),
+  missingKeyCase("whitespace-only", { [PROVIDER_KEY_VARS[DEFAULTS.provider]]: "   " }),
+];
+
+/**
+ * The key + fallback scenario: the provider's key variable is set, and the
+ * terminal API is unreachable at the connection level. No bootstrap ids are
+ * given, so the helper reaches the API to resolve them and the rejecting
+ * fetch triggers `launchDetached`'s nohup fallback. The spawned child must
+ * inherit the environment that carries the key under the provider's own
+ * variable, and the command nohup receives must be launchable as written.
+ */
+export const FALLBACK_SCENARIO = {
+  stage: "dev-flow",
+  provider: DEFAULTS.provider,
+  keyVariable: PROVIDER_KEY_VARS[DEFAULTS.provider],
+  env: { ...DEFAULT_KEY_ENV },
+  // No bootstrap flags: the helper asks the API for an anchor terminal.
+  ids: {},
+  fetchError: "fetch failed: ECONNREFUSED",
+  expectedCommand: defaultCommand("dev-flow"),
+};
 
 /**
  * The grill route's scenarios: the default pin (model, effort, the grill

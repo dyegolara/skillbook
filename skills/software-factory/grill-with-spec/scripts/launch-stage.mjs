@@ -768,7 +768,11 @@ export async function launchInTerminal({
 
 /**
  * The fallback path: the detached `nohup pi` launch, stdout/stderr in
- * /tmp/skillbook-<stage>-pi.log.
+ * /tmp/skillbook-<stage>-pi.log. The child inherits the resolved `env` — the
+ * same environment the provider's key was resolved from — so the key travels
+ * under the provider's own variable without appearing in the command. With
+ * the default `process.env` the spawn options are identical to the default
+ * (Node already inherits `process.env`).
  */
 export function launchDetached({ stage, pointers, spawnImpl = spawn, env = process.env }) {
   const command = buildStageCommand(stage, pointers, env);
@@ -776,6 +780,7 @@ export function launchDetached({ stage, pointers, spawnImpl = spawn, env = proce
   const child = spawnImpl("sh", ["-c", `nohup ${command} > ${log} 2>&1 &`], {
     detached: true,
     stdio: "ignore",
+    env,
   });
   child.unref?.();
   return { path: "nohup", command, log };
