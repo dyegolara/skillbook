@@ -648,6 +648,17 @@ test("rejects an env-defaults module whose DEFAULTS table cannot be read", () =>
   );
 });
 
+test("rejects an env-defaults module whose LAUNCH_STAGES map cannot be read", () => {
+  const defaultsText = DEFAULTS_SOURCE.replace(
+    /export const LAUNCH_STAGES = Object\.freeze\(\{[\s\S]*?\n\}\);\n/,
+    ""
+  );
+  assert.notEqual(defaultsText, DEFAULTS_SOURCE, "the fixture must remove the LAUNCH_STAGES map");
+  assert.deepEqual(verify(makeRepo({ defaultsText })), [
+    "skills/software-factory/scripts/env-defaults.mjs: cannot read the LAUNCH_STAGES map",
+  ]);
+});
+
 test("rejects an env-defaults module whose pi AGENT_COMMANDS row cannot be read", () => {
   const problems = verify(makeRepo({ defaultsText: DEFAULTS_SOURCE.replace("pi: {", "processor: {") }));
   assert.ok(
@@ -750,6 +761,38 @@ test("rejects a launch snippet that does not reference the helper", () => {
             "",
             "```bash",
             piSpawn("DEV_FLOW", "Run implement-spec."),
+            "```",
+            "",
+          ].join("\n"),
+        },
+      },
+    })
+  );
+  assert.ok(
+    problems.some((problem) =>
+      problem.includes(
+        "skills/software-factory/dev-flow/SKILL.md: launch snippet does not reference skills/software-factory/scripts/launch-stage.mjs"
+      )
+    )
+  );
+});
+
+test("reads the launch stage set from env-defaults.mjs, not a hardcoded copy", () => {
+  const defaultsText = DEFAULTS_SOURCE.replace(
+    '"create-pr": "CREATE_PR",',
+    '"create-pr": "CREATE_PR",\n  "review-spec": "REVIEW_SPEC",'
+  );
+  assert.match(defaultsText, /"review-spec": "REVIEW_SPEC"/, "the fixture must add a stage to LAUNCH_STAGES");
+  const problems = verify(
+    makeRepo({
+      defaultsText,
+      skillOverrides: {
+        "dev-flow": {
+          body: [
+            "Launch the review stage:",
+            "",
+            "```bash",
+            "node scripts/run-stage.mjs review-spec <spec> 'Run the review-spec stage.'",
             "```",
             "",
           ].join("\n"),
