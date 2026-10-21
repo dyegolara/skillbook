@@ -145,28 +145,34 @@ test("an unknown stage is a hard error on every stage resolver", () => {
   }
 });
 
-test("resolveKey: the provider-specific variable wins and is trimmed", () => {
-  assert.equal(
-    resolveKey("openai", { OPENAI_API_KEY: "  sk-openai  ", DEV_ENV_API_KEY: "generic" }),
-    "sk-openai"
-  );
+test("resolveKey: the provider's own variable is the key, trimmed", () => {
+  assert.equal(resolveKey("openai", { OPENAI_API_KEY: "  sk-openai  " }), "sk-openai");
 });
 
-test("resolveKey: DEV_ENV_API_KEY is the fallback when the specific variable is unset or empty", () => {
-  assert.equal(resolveKey("openai", { DEV_ENV_API_KEY: " generic " }), "generic");
-  assert.equal(resolveKey("openai", { OPENAI_API_KEY: "  ", DEV_ENV_API_KEY: "generic" }), "generic");
+test("resolveKey: every allowed provider resolves from its own variable", () => {
+  for (const provider of PROVIDERS) {
+    assert.equal(resolveKey(provider, { [PROVIDER_KEY_VARS[provider]]: `key-${provider}` }), `key-${provider}`, provider);
+  }
 });
 
-test("resolveKey: neither variable set is a hard error naming the provider and both variables", () => {
-  assert.throws(
-    () => resolveKey("anthropic", {}),
-    (error) => {
-      assert.match(error.message, /anthropic/);
-      assert.match(error.message, /ANTHROPIC_API_KEY/);
-      assert.match(error.message, /DEV_ENV_API_KEY/);
-      return true;
-    }
-  );
+test("resolveKey: an unset key variable is a hard error naming the provider and the variable to set", () => {
+  for (const provider of PROVIDERS) {
+    const variable = PROVIDER_KEY_VARS[provider];
+    assert.throws(
+      () => resolveKey(provider, {}),
+      { message: `provider "${provider}" requires a key: set ${variable}` },
+      provider
+    );
+  }
+});
+
+test("resolveKey: an empty or whitespace-only key variable reads as unset — a hard error, never a fallback", () => {
+  for (const raw of ["", "   ", "\t\n "]) {
+    assert.throws(
+      () => resolveKey("anthropic", { ANTHROPIC_API_KEY: raw }),
+      { message: 'provider "anthropic" requires a key: set ANTHROPIC_API_KEY' }
+    );
+  }
 });
 
 test("OPENROUTER_API_KEY serves only openrouter — never another provider", () => {
@@ -177,7 +183,7 @@ test("OPENROUTER_API_KEY serves only openrouter — never another provider", () 
 });
 
 test("resolveKey rejects an unknown provider", () => {
-  assert.throws(() => resolveKey("deepmind", { DEV_ENV_API_KEY: "generic" }), /unknown provider/i);
+  assert.throws(() => resolveKey("deepmind", { OPENROUTER_API_KEY: "or-key" }), /unknown provider/i);
 });
 
 test("the pi row builds today's exact pinned-command shape", () => {

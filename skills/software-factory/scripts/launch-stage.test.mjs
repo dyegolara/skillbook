@@ -21,7 +21,6 @@ import {
   chainCore,
   chainLabel,
   createLabeledSession,
-  envConfiguresAccounts,
   failureLines,
   isConnectionError,
   launchHelperPath,
@@ -42,7 +41,7 @@ import {
   stripAnsi,
   wakeHelperPath,
 } from "./launch-stage.mjs";
-import { AGENTS, AGENT_COMMANDS, DEFAULTS } from "./env-defaults.mjs";
+import { AGENTS, AGENT_COMMANDS, DEFAULTS, PROVIDER_KEY_VARS } from "./env-defaults.mjs";
 import { grillPin } from "./open-grill-session.mjs";
 
 // The env-defaults stage key for each launch stage. Every pin value in these
@@ -72,6 +71,12 @@ const WORKTREE_PATH = "/work/tree";
 
 /** Tests resolve pins hermetically: an explicit `{}` env, never the ambient one. */
 const NO_ENV = {};
+
+/**
+ * A launch path's hermetic env: the resolved provider's own key variable, the
+ * way an environment (docker) carries its account. It is never injected.
+ */
+const LAUNCH_ENV = { [PROVIDER_KEY_VARS[DEFAULTS.provider]]: "sk-test" };
 
 function resumeCommand(stage, spec, pointers) {
   return buildResumeCommand({ stage, spec, pointers, worktreePath: WORKTREE_PATH });
@@ -178,7 +183,7 @@ test("a DEV_ENV_-set environment builds the command from the resolved pins throu
   };
   assert.equal(
     buildPiCommand("dev-flow", "pointers", env),
-    "ANTHROPIC_API_KEY='sk-ant' claude -p --model anthropic/claude-opus-5 --effort xhigh 'pointers'"
+    "claude -p --model anthropic/claude-opus-5 --effort xhigh 'pointers'"
   );
 });
 
@@ -212,53 +217,77 @@ test("the pointers travel as one shell-quoted argument for every agent row", () 
   }
 });
 
-// --- the key: resolved paired with the provider, injected only when opted in ---
+// --- the key: provider-environment scoped, a preflight validation — never injected ---
 
-test("no DEV_ENV_* set injects no key and raises no error — ambient provider keys included", () => {
-  assert.equal(envConfiguresAccounts({ OPENCODE_GO_API_KEY: "ambient", OPENAI_API_KEY: "ambient" }), false);
+test("the built command carries no key and no variable prefix, whatever the environment holds", () => {
+  const keyVariable = PROVIDER_KEY_VARS[DEFAULTS.provider];
+  const keyed = buildPiCommand("dev-flow", "pointers", { [keyVariable]: "sk-test" });
+  assert.equal(keyed, piCommand("dev-flow", "pointers"));
+  assert.equal(keyed, buildPiCommand("dev-flow", "pointers", NO_ENV), "the key's presence changes nothing");
+  assert.ok(!keyed.includes("API_KEY"), "no key variable rides the command");
+  assert.ok(!keyed.includes("sk-test"), "no key value rides the command");
+});
+
+test("every stage's command is byte-identical whether the provider's key resolves or not", () => {
+  const keyVariable = PROVIDER_KEY_VARS[DEFAULTS.provider];
   for (const stage of LAUNCH_STAGES) {
-    assert.equal(buildPiCommand(stage, "pointers", { OPENCODE_GO_API_KEY: "ambient" }), piCommand(stage, "pointers"));
+    assert.equal(
+      buildPiCommand(stage, "pointers", {}),
+      buildPiCommand(stage, "pointers", { [keyVariable]: "sk-test" }),
+      stage
+    );
   }
 });
 
-test("the provider-specific key wins and travels as the provider's own variable", () => {
-  const env = { DEV_ENV_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "  sk-ant  ", DEV_ENV_API_KEY: "generic" };
-  assert.ok(buildPiCommand("dev-flow", "pointers", env).startsWith("ANTHROPIC_API_KEY='sk-ant' "));
+test("resolveStageKey is unconditional: the provider's own key, or the missing-key hard error", () => {
+  assert.equal(resolveStageKey("anthropic", { ANTHROPIC_API_KEY: "  k  " }), "k");
+  assert.throws(() => resolveStageKey("anthropic", NO_ENV), {
+    message: 'provider "anthropic" requires a key: set ANTHROPIC_API_KEY',
+  });
+  assert.throws(() => resolveStageKey("anthropic", { ANTHROPIC_API_KEY: "  " }), {
+    message: 'provider "anthropic" requires a key: set ANTHROPIC_API_KEY',
+  });
 });
 
-test("DEV_ENV_API_KEY is the fallback and is injected as the resolved provider's variable", () => {
-  const env = { DEV_ENV_PROVIDER: "anthropic", DEV_ENV_API_KEY: "generic" };
-  assert.ok(buildPiCommand("dev-flow", "pointers", env).startsWith("ANTHROPIC_API_KEY='generic' "));
-});
+test("a missing key stops the launch before any fetch or spawn, naming the provider and the variable", async () => {
+  const keyVariable = PROVIDER_KEY_VARS[DEFAULTS.provider];
+  let fetched = false;
+  const { spawnImpl, calls: spawnCalls } = spawnRecorder();
 
-test("setting only DEV_ENV_API_KEY opts in and uses the default provider's variable", () => {
-  assert.ok(
-    buildPiCommand("dev-flow", "pointers", { DEV_ENV_API_KEY: "generic" }).startsWith("OPENCODE_GO_API_KEY='generic' ")
+  await assert.rejects(
+    main(["dev-flow", "55", "pointers"], {
+      env: NO_ENV,
+      apiBase: "http://api.test",
+      fetchImpl: async () => {
+        fetched = true;
+        return okResponse([]);
+      },
+      spawnImpl,
+      write: () => {},
+    }),
+    { message: `provider "${DEFAULTS.provider}" requires a key: set ${keyVariable}` }
   );
+  assert.equal(fetched, false, "the key is checked before the API is reached");
+  assert.equal(spawnCalls.length, 0, "the nohup fallback never runs without a key");
 });
 
-test("the opt-in without a resolvable key is the missing-key hard error", () => {
-  assert.throws(() => buildPiCommand("dev-flow", "pointers", { DEV_ENV_PROVIDER: "anthropic" }), /ANTHROPIC_API_KEY/);
-  assert.throws(() => buildPiCommand("dev-flow", "pointers", { DEV_ENV_PROVIDER: "anthropic" }), /DEV_ENV_API_KEY/);
-});
+test("a whitespace-only key variable stops the launch with the same hard error", async () => {
+  const keyVariable = PROVIDER_KEY_VARS[DEFAULTS.provider];
+  const { spawnImpl, calls: spawnCalls } = spawnRecorder();
 
-test("an empty or whitespace-only DEV_ENV_API_KEY does not opt in", () => {
-  for (const raw of ["", "   "]) {
-    assert.equal(envConfiguresAccounts({ DEV_ENV_API_KEY: raw }), false);
-    assert.equal(buildPiCommand("dev-flow", "pointers", { DEV_ENV_API_KEY: raw }), piCommand("dev-flow", "pointers"));
-  }
-});
-
-test("a key with a single quote is shell-quoted safely", () => {
-  const key = "it's";
-  const command = buildPiCommand("dev-flow", "pointers", { DEV_ENV_PROVIDER: "anthropic", ANTHROPIC_API_KEY: key });
-  assert.ok(command.startsWith(`ANTHROPIC_API_KEY=${shellQuote(key)} `));
-});
-
-test("resolveStageKey returns null without the opt-in and the paired key with it", () => {
-  assert.equal(resolveStageKey("anthropic", NO_ENV), null);
-  assert.equal(resolveStageKey("anthropic", { DEV_ENV_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "k" }), "k");
-  assert.throws(() => resolveStageKey("anthropic", { DEV_ENV_PROVIDER: "anthropic" }), /ANTHROPIC_API_KEY/);
+  await assert.rejects(
+    main(["dev-flow", "55", "pointers"], {
+      env: { [keyVariable]: "   " },
+      apiBase: "http://127.0.0.1:1",
+      fetchImpl: async () => {
+        throw new Error("fetch failed");
+      },
+      spawnImpl,
+      write: () => {},
+    }),
+    { message: `provider "${DEFAULTS.provider}" requires a key: set ${keyVariable}` }
+  );
+  assert.equal(spawnCalls.length, 0);
 });
 
 test("buildTerminalInput terminates the injected retry wrapper with a newline", () => {
@@ -379,7 +408,7 @@ test("each launching skill runs its helpers from an isolated installed folder", 
       const { fetchImpl, calls } = mockKeplerApi({ terminals: [] });
       await installedMain(
         ["dev-flow", "55", "pointers", "--repo-id", "r", "--worktree-id", "w", "--task-id", "t"],
-        { env: NO_ENV, apiBase: "http://api.test", fetchImpl, worktreePath: "/work/tree", write: () => {} }
+        { env: LAUNCH_ENV, apiBase: "http://api.test", fetchImpl, worktreePath: "/work/tree", write: () => {} }
       );
       assert.equal(calls[0].body.worktreePath, "/work/tree");
       const wake = await import(pathToFileURL(join(folder, "scripts/open-wake-session.mjs")));
@@ -912,7 +941,7 @@ test("the spec argument builds the label — never the anchor terminal's label",
   const lines = [];
 
   const result = await main(["code-review-loop", "77", "the maintainer's pointers"], {
-    env: NO_ENV,
+    env: LAUNCH_ENV,
     apiBase: "http://api.test",
     fetchImpl,
     worktreePath,
@@ -942,7 +971,7 @@ test("the spec argument builds the label — never the anchor terminal's label",
   });
 });
 
-test("the resolved key travels in the launched input paired with the provider — and never in the resume command", async () => {
+test("the resolved key never rides the launched input — the environment carries it, paired with the provider", async () => {
   const worktreePath = "/work/tree";
   const terminals = [{ worktreePath, label: "Terminal 1", repoId: "r", worktreeId: "w", taskId: "t" }];
   const { fetchImpl, calls } = mockKeplerApi({ terminals });
@@ -965,18 +994,15 @@ test("the resolved key travels in the launched input paired with the provider �
   assert.equal(result.path, "api");
   const input = calls.find((call) => call.url.endsWith("/terminal/input")).body.input;
   assert.ok(
-    input.includes("ANTHROPIC_API_KEY='sk-ant' claude -p --model anthropic/opus --effort high 'pointers'"),
-    "the resolved key rides the resolved provider's command"
+    input.includes("claude -p --model anthropic/opus --effort high 'pointers'"),
+    "the launched command is the resolved provider's plain command"
   );
+  assert.ok(!input.includes("ANTHROPIC_API_KEY"), "no key variable rides the launched input");
+  assert.ok(!input.includes("sk-ant"), "the key value never reaches the injected command");
   const resume = buildResumeCommand({ stage: "dev-flow", spec: "55", pointers: "pointers", worktreePath });
   assert.ok(
     input.includes(shellQuote(`FAILED: resume with: ${resume}`)),
     "the resume command re-enters the launch helper"
-  );
-  assert.equal(
-    input.split("ANTHROPIC_API_KEY='sk-ant'").length - 1,
-    1,
-    "the key appears once, on the launched command only"
   );
 });
 
@@ -1003,7 +1029,7 @@ test("the API path prefers the chain-labeled terminal on the worktree", async ()
   const lines = [];
 
   const result = await main(["create-pr", "55", "pointers"], {
-    env: NO_ENV,
+    env: LAUNCH_ENV,
     apiBase: "http://api.test",
     fetchImpl,
     worktreePath,
@@ -1030,7 +1056,7 @@ test("a reachable API with a non-chain terminal on the worktree uses it as the a
   const lines = [];
 
   const result = await main(["create-pr", "55", "pointers"], {
-    env: NO_ENV,
+    env: LAUNCH_ENV,
     apiBase: "http://api.test",
     fetchImpl,
     worktreePath: "/work/tree",
@@ -1053,7 +1079,7 @@ test("a reachable API with no anchor and no flags is a hard error — no fallbac
 
   await assert.rejects(
     main(["create-pr", "55", "pointers"], {
-      env: NO_ENV,
+      env: LAUNCH_ENV,
       apiBase: "http://api.test",
       fetchImpl,
       worktreePath: "/work/tree",
@@ -1079,7 +1105,7 @@ test("explicit id flags bootstrap a fresh run with no anchor and no list call", 
 
   const result = await main(
     ["dev-flow", "55", "pointers", "--repo-id", "r", "--worktree-id", "w", "--task-id", "t"],
-    { env: NO_ENV, apiBase: "http://api.test", fetchImpl, worktreePath: '/work/a "quoted"\\tree', write: (line) => lines.push(line) }
+    { env: LAUNCH_ENV, apiBase: "http://api.test", fetchImpl, worktreePath: '/work/a "quoted"\\tree', write: (line) => lines.push(line) }
   );
 
   assert.equal(result.path, "api");
@@ -1189,7 +1215,7 @@ test("a connection-level fetch rejection falls back to nohup and preserves error
   const lines = [];
 
   const result = await main(["dev-flow", "55", "pointers"], {
-    env: NO_ENV,
+    env: LAUNCH_ENV,
     apiBase: "http://127.0.0.1:1",
     fetchImpl: async () => {
       throw new Error("fetch failed: ECONNREFUSED");
@@ -1206,7 +1232,7 @@ test("a connection-level fetch rejection falls back to nohup and preserves error
   const [command, args, options] = spawnCalls[0];
   assert.equal(command, "sh");
   assert.equal(args[0], "-c");
-  assert.equal(args[1], `nohup ${buildPiCommand("dev-flow", "pointers", NO_ENV)} > /tmp/skillbook-dev-flow-pi.log 2>&1 &`);
+  assert.equal(args[1], `nohup ${buildPiCommand("dev-flow", "pointers", LAUNCH_ENV)} > /tmp/skillbook-dev-flow-pi.log 2>&1 &`);
   assert.equal(options.detached, true);
 });
 
@@ -1217,6 +1243,7 @@ test("a missing Kepler data dir falls back to nohup with the read error's messag
   try {
     const result = await main(["dev-flow", "55", "pointers"], {
       dataDir,
+      env: LAUNCH_ENV,
       spawnImpl,
       write: (line) => lines.push(line),
     });
@@ -1236,7 +1263,7 @@ test("an HTTP error from a reachable API is a hard error with zero spawns", asyn
 
   await assert.rejects(
     main(["dev-flow", "55", "pointers"], {
-      env: NO_ENV,
+      env: LAUNCH_ENV,
       apiBase: "http://api.test",
       fetchImpl,
       spawnImpl,
@@ -1256,7 +1283,7 @@ test("an HTTP error from terminal/start is a hard error with zero spawns", async
 
   await assert.rejects(
     main(["dev-flow", "55", "pointers"], {
-      env: NO_ENV,
+      env: LAUNCH_ENV,
       apiBase: "http://api.test",
       fetchImpl,
       spawnImpl,
@@ -1275,7 +1302,7 @@ test("a malformed terminal list response is a hard error with zero spawns", asyn
 
   await assert.rejects(
     main(["dev-flow", "55", "pointers"], {
-      env: NO_ENV,
+      env: LAUNCH_ENV,
       apiBase: "http://api.test",
       fetchImpl,
       spawnImpl,
@@ -1295,7 +1322,7 @@ test("a failure after terminal/start succeeded is a hard error with zero spawns 
 
   await assert.rejects(
     main(["dev-flow", "55", "pointers"], {
-      env: NO_ENV,
+      env: LAUNCH_ENV,
       apiBase: "http://api.test",
       fetchImpl,
       worktreePath,
@@ -1322,7 +1349,7 @@ test("a connection-level failure on terminal/input after start is still a hard e
 
   await assert.rejects(
     main(["dev-flow", "55", "pointers"], {
-      env: NO_ENV,
+      env: LAUNCH_ENV,
       apiBase: "http://api.test",
       fetchImpl,
       worktreePath,
@@ -1341,7 +1368,7 @@ const VERIFY_TERMINAL = { worktreePath: "/work/tree", label: "Terminal 1", repoI
 /** The `main` deps for the helper's post-injection check tests: instant polls, no real waiting. */
 function verifyDeps({ fetchImpl, spawnImpl } = {}) {
   return {
-    env: NO_ENV,
+    env: LAUNCH_ENV,
     apiBase: "http://api.test",
     fetchImpl,
     worktreePath: "/work/tree",

@@ -260,6 +260,37 @@ context is not independent.
   override only. The helpers and the verifier resolve against the one file,
   never against literals, and the operator docs are the repo root's
   `.env.example` plus the pack README.
+  Amended 2026-10-21, maintainer decision at the decision-forcing pause of
+  spec #160's review (findings 1–2): API keys are provider-environment
+  scoped, never environment-generic. `DEV_ENV_API_KEY` is removed from the
+  design — the sentence above naming it is superseded. A key is carried by
+  the provider's own variable (`OPENCODE_GO_API_KEY`, `OPENAI_API_KEY`,
+  `XAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` — the variables
+  that exist today), and its value is that environment's (docker's) account
+  for that provider. Resolution is that one variable: set and non-empty
+  after trim wins, and a missing key is a hard error naming the provider and
+  the variable to set — no fallback chain, no opt-in gate. Zero exposure:
+  no API key value ever lands in `env-defaults.mjs`, `.env.example` or any
+  git-tracked file; the defaults file carries non-secret values only
+  (provider, models, efforts, agents). Because the key lives in the
+  environment under the provider's own variable, it reaches the launched
+  stage already paired with the provider — the built command stays
+  byte-identical to the fixed-pins era (ticket #162's tracer bullet). The
+  per-docker pattern is `DEV_ENV_PROVIDER` plus the provider's key variable.
+  Two open gaps the pause left are filled here. Key transport is
+  environment-inherent, not a per-agent mechanism: the environment carries
+  the key under the provider's own variable, so the API-path terminal and
+  the `nohup`-fallback child both inherit it already paired with the
+  resolved provider; an agent that reads a different variable name is an
+  implementation detail, not a design change. "The provider requires a key"
+  stays hardcoded for v1 — all five allowed providers require one; a
+  per-provider requires-key table is deferred until a keyless provider
+  exists. The key check is a preflight validation only: the built stage
+  command carries no key and no variable prefix, so it is byte-identical
+  whether the key resolves or not (the `VAR='key'` prefix mechanism is
+  gone). The deleted opt-in gate's `isSet` helper died with the gate it
+  served — deleted, not shared — which is the disposition of review finding
+  7's `isSet`/`readEnv` duplication.
 - `GLOSSARY.md` replaces `CONTEXT.md`, adopting the referenced pack's glossary
   convention; ADRs keep living in `docs/adr/`.
 

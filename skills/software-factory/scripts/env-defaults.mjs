@@ -14,9 +14,11 @@
  * an `env` object defaulting to `process.env`, so tests need no global
  * mutation.
  *
- * Variables (spec #160): global `DEV_ENV_PROVIDER` and `DEV_ENV_API_KEY`; per
- * stage `DEV_ENV_MODEL_<STAGE>`, `DEV_ENV_EFFORT_<STAGE>`, `DEV_ENV_AGENT_<STAGE>`
- * for GRILL, DEV_FLOW, IMPLEMENT_SPEC, CODE_REVIEW_LOOP and CREATE_PR.
+ * Variables (spec #160): global `DEV_ENV_PROVIDER`; per stage
+ * `DEV_ENV_MODEL_<STAGE>`, `DEV_ENV_EFFORT_<STAGE>`, `DEV_ENV_AGENT_<STAGE>`
+ * for GRILL, DEV_FLOW, IMPLEMENT_SPEC, CODE_REVIEW_LOOP and CREATE_PR. API
+ * keys are provider-environment scoped (amended 2026-10-21): each provider's
+ * key lives in its own variable — the environment (docker) carries it.
  */
 
 /** Allowed providers for `DEV_ENV_PROVIDER`, in one list. */
@@ -45,9 +47,10 @@ export const DEFAULTS = {
 };
 
 /**
- * The provider→key-variable table (spec #160): the provider's specific
- * variable is tried first, `DEV_ENV_API_KEY` is the only fallback, and
- * `OPENROUTER_API_KEY` serves only `openrouter` — never another provider.
+ * The provider→key-variable table: each provider's API key lives in its own
+ * environment variable, carried by the environment (docker) for that
+ * provider's account. There is no universal fallback, and `OPENROUTER_API_KEY`
+ * serves only `openrouter`.
  */
 export const PROVIDER_KEY_VARS = {
   openrouter: "OPENROUTER_API_KEY",
@@ -227,22 +230,21 @@ export function resolveAgent(stage, env = process.env) {
 }
 
 /**
- * The provider's key (spec #160), with no universal fallback: the provider's
- * own variable first (set and non-empty after trim), then `DEV_ENV_API_KEY`,
- * then a hard error naming the provider and both variables. Every allowed
- * provider requires a key in v1; `OPENROUTER_API_KEY` is looked up only for
- * `openrouter`.
+ * The provider's key: the provider's own variable, set and non-empty after
+ * trim, is the key. Nothing else is consulted — no fallback chain, no
+ * universal fallback — so a missing key is a hard error naming the provider
+ * and the variable to set. Every allowed provider requires a key in v1; a
+ * per-provider requires-key table is deferred until a keyless provider
+ * exists (ADR-0006, amended 2026-10-21).
  */
 export function resolveKey(provider, env = process.env) {
   if (!Object.hasOwn(PROVIDER_KEY_VARS, provider)) {
     throw new Error(`unknown provider "${provider}" — expected one of ${PROVIDERS.join(", ")}`);
   }
-  const specificVar = PROVIDER_KEY_VARS[provider];
-  const specific = readEnv(env, specificVar);
-  if (specific !== null) return specific;
-  const generic = readEnv(env, "DEV_ENV_API_KEY");
-  if (generic !== null) return generic;
-  throw new Error(`provider "${provider}" requires a key: set ${specificVar} or DEV_ENV_API_KEY`);
+  const variable = PROVIDER_KEY_VARS[provider];
+  const key = readEnv(env, variable);
+  if (key !== null) return key;
+  throw new Error(`provider "${provider}" requires a key: set ${variable}`);
 }
 
 /**

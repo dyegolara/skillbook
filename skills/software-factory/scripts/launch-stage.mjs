@@ -47,7 +47,6 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  PROVIDER_KEY_VARS,
   buildAgentCommand,
   resolveAgent,
   resolveEffort,
@@ -122,32 +121,16 @@ function argvCommand(argv) {
   return [...argv.slice(0, -1).map(shellToken), shellQuote(argv.at(-1))].join(" ");
 }
 
-/** Whether `DEV_ENV_<name>` is set and non-empty after trim. */
-function isSet(env, name) {
-  const raw = env?.[name];
-  return raw !== undefined && raw !== null && String(raw).trim() !== "";
-}
-
 /**
- * The condition under which `resolveKey`'s missing-key hard error fires: the
- * environment opted into env-configured accounts by setting `DEV_ENV_PROVIDER`
- * or `DEV_ENV_API_KEY` (non-empty after trim). Provider-specific variables are
- * consulted only after that opt-in, so a bare environment — even one carrying
- * ambient provider keys — keeps today's ambient-auth path: no key injected and
- * no hard error. When the opt-in is present the provider's key must resolve or
- * the launch fails with `resolveKey`'s readable error.
- */
-export function envConfiguresAccounts(env = process.env) {
-  return isSet(env, "DEV_ENV_PROVIDER") || isSet(env, "DEV_ENV_API_KEY");
-}
-
-/**
- * The stage's provider key, paired with the resolved provider: `null` when the
- * environment did not opt into env-configured accounts, otherwise the key
- * `resolveKey` resolves or its hard error.
+ * The stage's provider key, resolved as the launch preflight: the provider's
+ * own variable, set and non-empty after trim, is the key; a missing key is
+ * `resolveKey`'s hard error naming the provider and the variable to set. The
+ * check is unconditional — no opt-in gate — and happens before any fetch or
+ * spawn. Nothing is injected: the environment carries the key under the
+ * provider's own variable, so the launched stage inherits it already paired
+ * with the resolved provider (ADR-0006, amended 2026-10-21).
  */
 export function resolveStageKey(provider, env = process.env) {
-  if (!envConfiguresAccounts(env)) return null;
   return resolveKey(provider, env);
 }
 
@@ -155,15 +138,14 @@ export function resolveStageKey(provider, env = process.env) {
  * The stage's pinned command, built through the resolved agent's
  * `AGENT_COMMANDS` row (`buildAgentCommand`) and shell-quoted for injection.
  * With no `DEV_ENV_*` set the resolved pins are today's defaults, so the
- * string is byte-identical to the old fixed-pin command. When the environment
- * opted into env-configured accounts the resolved key travels as the
- * provider's own variable, paired with the resolved provider, in front of the
- * command — it travels only when it resolves; the git-tracked files never see
- * it.
+ * string is byte-identical to the old fixed-pin command. The command never
+ * carries a key or a variable prefix: whether the provider's key resolves or
+ * not, the string is the same — the key check is `resolveStageKey`'s preflight
+ * and the environment passes the key to the launched stage.
  */
 export function buildPiCommand(stage, pointers, env = process.env) {
   const pin = stagePin(stage, env);
-  const command = argvCommand(
+  return argvCommand(
     buildAgentCommand(pin.agent, {
       provider: pin.provider,
       model: pin.model,
@@ -171,8 +153,6 @@ export function buildPiCommand(stage, pointers, env = process.env) {
       pointers,
     })
   );
-  const key = resolveStageKey(pin.provider, env);
-  return key === null ? command : `${PROVIDER_KEY_VARS[pin.provider]}=${shellQuote(key)} ${command}`;
 }
 
 /**
@@ -805,6 +785,11 @@ export async function launchStage({ stage, spec, pointers, flags, deps = {} }) {
   const { fetchImpl = fetch, spawnImpl = spawn, worktreePath = process.cwd(), env = process.env } = deps;
   stageKey(stage); // unknown stage is a hard error, before any launch path
   const label = stageLabel(spec, stage); // spec comes from the argument, never a label
+  // The key preflight is unconditional and runs before either launch path:
+  // the environment must carry the resolved provider's own key variable. The
+  // built command never carries it — the terminal child and the nohup child
+  // both inherit the environment.
+  resolveStageKey(resolveProvider(env), env);
 
   const fallback = (error) => ({ ...launchDetached({ stage, pointers, spawnImpl, env }), reason: error.message });
 
