@@ -111,6 +111,7 @@ export async function createGrillSession({
  * @param {{ spec: number|string, prompt: string, flags?: Object, deps?: Object }} options
  */
 export async function openGrillSession({ spec, prompt, flags, deps = {} }) {
+  grillPin(deps.env);
   return runSessionHelper({
     label: stageLabel(spec, "grill-with-spec"), // a bad spec is a hard error before any fetch
     prompt,

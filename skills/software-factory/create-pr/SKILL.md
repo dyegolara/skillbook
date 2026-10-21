@@ -40,21 +40,22 @@ helper flags apply on this path.
 
 4. Finish the PR: use the branch's PR in whichever state it is — a branch
    that already has one never gets a second. Read it first:
-   `gh pr view <branch> --json number,isDraft`.
+   `gh pr list --head <branch> --state open --json number,isDraft --limit 1`.
+   An empty result means there is no open PR for the branch; otherwise the
+   single returned row supplies its `number` and `isDraft`.
 
-   - **Draft** — implement-spec opens it after the first merge. Mark it
-     ready: `gh pr ready <number>`.
-   - **Ready** — implement-spec's completion marks the draft ready, so a
-     ready PR mid-chain is expected (PR #165, accepted that way). Use it: if
-     step 3 wrote a body, apply it to that PR with
-     `gh pr edit <number> --body-file <path>`, and never create a second one.
-   - **No PR** — create a ready one against `main`:
+   - **Draft** — the open result is a draft. Mark it ready:
+     `gh pr ready <number>`.
+   - **Ready** — the open result is ready. If step 3 wrote a body, apply it to
+     that PR with `gh pr edit <number> --body-file <path>`, and never create a
+     second one.
+   - **No PR** — the open-only lookup returned an empty result. Create a ready
+     one against `main`:
      `gh pr create --base main --head <branch> --title <title> --body-file <path>`.
      Never open a draft.
 
-   The maintainer's 2026-10-21 decision relaxed the draft-until-`create-pr`
-   expectation: a ready PR mid-chain is accepted, which is why finishing the
-   existing PR is the contract rather than a fallback.
+   Closed and merged PRs are not reused; when no open PR exists, create a new
+   ready PR for the branch.
 
 5. Close the spec and its tickets through the body's closing keywords — one
    `Closes #<n>` line per issue, the spec and every ticket — or set the same

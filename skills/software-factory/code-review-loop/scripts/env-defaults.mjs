@@ -8,17 +8,15 @@
  * `STAGE_PINS`/`GRILL_PIN` tables are gone (ticket #162).
  *
  * Every pin the chain resolves lives here: the defaults (today's pins, per
- * ticket #161 and ADR-0006), the allowed values, the provider→key-variable
- * table (`PROVIDER_KEY_VARS`, each provider's own variable per spec #160),
+ * ticket #161 and ADR-0006), the allowed values, the provider key-variable
+ * names (`PROVIDER_KEY_VARS`, used to prevent keys from reaching child agents),
  * the agent→launch table, and the resolution rules. Resolution is
  * environment-injectable: the functions take an `env` object defaulting to
  * `process.env`, so tests need no global mutation.
  *
  * Variables (spec #160): global `DEV_ENV_PROVIDER`; per stage
  * `DEV_ENV_MODEL_<STAGE>`, `DEV_ENV_EFFORT_<STAGE>`, `DEV_ENV_AGENT_<STAGE>`
- * for GRILL, DEV_FLOW, IMPLEMENT_SPEC, CODE_REVIEW_LOOP and CREATE_PR. API
- * keys are provider-environment scoped (amended 2026-10-21): each provider's
- * key lives in its own variable — the environment (docker) carries it.
+ * for GRILL, DEV_FLOW, IMPLEMENT_SPEC, CODE_REVIEW_LOOP and CREATE_PR.
  */
 
 /** Allowed providers for `DEV_ENV_PROVIDER`, in one list. */
@@ -61,12 +59,7 @@ export const LAUNCH_STAGES = Object.freeze({
   "create-pr": "CREATE_PR",
 });
 
-/**
- * The provider→key-variable table: each provider's API key lives in its own
- * environment variable, carried by the environment (docker) for that
- * provider's account. There is no universal fallback, and `OPENROUTER_API_KEY`
- * serves only `openrouter`.
- */
+/** Provider API-key environment names that launch helpers must not forward. */
 export const PROVIDER_KEY_VARS = {
   openrouter: "OPENROUTER_API_KEY",
   "opencode-go": "OPENCODE_GO_API_KEY",
@@ -274,24 +267,6 @@ export function resolveEffort(stage, env = process.env) {
 /** The stage's agent: `DEV_ENV_AGENT_<STAGE>`, checked against `AGENTS`. */
 export function resolveAgent(stage, env = process.env) {
   return resolveStageField("agent", stage, env);
-}
-
-/**
- * The provider's key: the provider's own variable, set and non-empty after
- * trim, is the key. Nothing else is consulted — no fallback chain, no
- * universal fallback — so a missing key is a hard error naming the provider
- * and the variable to set. Every allowed provider requires a key in v1; a
- * per-provider requires-key table is deferred until a keyless provider
- * exists (ADR-0006, amended 2026-10-21).
- */
-export function resolveKey(provider, env = process.env) {
-  if (!Object.hasOwn(PROVIDER_KEY_VARS, provider)) {
-    throw new Error(`unknown provider "${provider}" — expected one of ${PROVIDERS.join(", ")}`);
-  }
-  const variable = PROVIDER_KEY_VARS[provider];
-  const key = readEnv(env, variable);
-  if (key !== null) return key;
-  throw new Error(`provider "${provider}" requires a key: set ${variable}`);
 }
 
 /**

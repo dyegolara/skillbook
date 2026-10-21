@@ -50,9 +50,9 @@ import {
   buildAgentCommand,
   resolveAgent,
   resolveEffort,
-  resolveKey,
   resolveModel,
   resolveProvider,
+  PROVIDER_KEY_VARS,
   stageKey,
 } from "./env-defaults.mjs";
 
@@ -109,25 +109,6 @@ export function commandWithPointer(argv, pointers) {
 }
 
 /**
- * The stage's provider key, resolved as the launch preflight: the provider's
- * own variable, set and non-empty after trim, is the key; a missing key is
- * `resolveKey`'s hard error naming the provider and the variable to set. The
- * check is unconditional — no opt-in gate — and happens before any fetch or
- * spawn. Nothing is injected: the environment carries the key under the
- * provider's own variable, so the launched stage inherits it already paired
- * with the resolved provider (ADR-0006, amended 2026-10-21).
- *
- * The named seam is kept deliberately, not as an accidental delegate: the
- * stage-level preflight reads as "resolve the stage's key", and this docblock
- * is the one place the unconditional-before-any-fetch/spawn contract lives.
- * `resolveKey` is the provider-key primitive; inlining it would move that
- * contract back into the launch path.
- */
-export function resolveStageKey(provider, env = process.env) {
-  return resolveKey(provider, env);
-}
-
-/**
  * The stage's pinned command, built through the resolved agent's
  * `AGENT_COMMANDS` row (`buildAgentCommand`) and shell-quoted for injection.
  * One pin object is born here — `stagePin`'s resolved provider, model, effort
@@ -136,9 +117,8 @@ export function resolveStageKey(provider, env = process.env) {
  * ignore a field they do not name (`agent`). With no `DEV_ENV_*` set the
  * resolved pins are today's defaults, so the string is byte-identical to the
  * old fixed-pin command. The command never carries a key or a variable
- * prefix: whether the provider's key resolves or not, the string is the same
- * — the key check is `resolveStageKey`'s preflight and the environment passes
- * the key to the launched stage.
+ * prefix. Provider authentication is configured by the user for the agent
+ * runtime.
  */
 export function buildStageCommand(stage, pointers, env = process.env) {
   const pin = { ...stagePin(stage, env), pointers };
@@ -758,11 +738,9 @@ export async function launchInTerminal({
 
 /**
  * The fallback path: the detached `nohup pi` launch, stdout/stderr in
- * /tmp/skillbook-<stage>-pi.log. The child inherits the resolved `env` — the
- * same environment the provider's key was resolved from — so the key travels
- * under the provider's own variable without appearing in the command. With
- * the default `process.env` the spawn options are identical to the default
- * (Node already inherits `process.env`).
+ * /tmp/skillbook-<stage>-pi.log. Provider authentication is user-managed; the
+ * child inherits the resolved pins and ordinary environment but not
+ * credential-like environment variables.
  */
 export function launchDetached({ stage, pointers, spawnImpl = spawn, env = process.env }) {
   const command = buildStageCommand(stage, pointers, env);
@@ -770,21 +748,28 @@ export function launchDetached({ stage, pointers, spawnImpl = spawn, env = proce
   const child = spawnImpl("sh", ["-c", `nohup ${command} > ${log} 2>&1 &`], {
     detached: true,
     stdio: "ignore",
-    env,
+    env: agentEnvironment(env),
   });
   child.unref?.();
   return { path: "nohup", command, log };
 }
 
+/** Remove credential-like variables from the environment inherited by agents. */
+export function agentEnvironment(env = process.env) {
+  const providerKeyVariables = new Set(Object.values(PROVIDER_KEY_VARS));
+  const sensitiveVariable = /API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL/i;
+  return Object.fromEntries(
+    Object.entries(env).filter(([name]) => !providerKeyVariables.has(name) && !sensitiveVariable.test(name))
+  );
+}
+
 export async function launchStage({ stage, spec, pointers, flags, deps = {} }) {
   const { fetchImpl = fetch, spawnImpl = spawn, worktreePath = process.cwd(), env = process.env } = deps;
   stageKey(stage); // unknown stage is a hard error, before any launch path
+  buildStageCommand(stage, pointers, env); // validate the complete pin before reaching either launch path
   const label = stageLabel(spec, stage); // spec comes from the argument, never a label
-  // The key preflight is unconditional and runs before either launch path:
-  // the environment must carry the resolved provider's own key variable. The
-  // built command never carries it — the terminal child and the nohup child
-  // both inherit the environment.
-  resolveStageKey(resolveProvider(env), env);
+  // API-launched terminals use the server's user-configured agent login. This
+  // helper never sends provider credentials to the server or the agent.
 
   const fallback = (error) => ({ ...launchDetached({ stage, pointers, spawnImpl, env }), reason: error.message });
 

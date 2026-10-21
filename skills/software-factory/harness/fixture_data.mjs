@@ -42,22 +42,18 @@ export function defaultPin(stage) {
   return { provider: DEFAULTS.provider, model: pin.model, effort: pin.effort };
 }
 
-/**
- * The fixture's provider key value. It is never injected: the environment
- * carries it under the provider's own variable.
- */
-export const FIXTURE_KEY = "sk-fixture";
+/** Fake secret used only to prove launch helpers do not forward it. */
+export const FIXTURE_KEY = "fixture-secret-value-123";
 
 /**
- * The environment one provider's account travels in: its own key variable,
- * the way an environment (docker) carries it. `DEV_ENV_PROVIDER`, when the
- * scenario sets it, pairs with this environment.
+ * A caller environment with a fake provider key. The helper must not forward
+ * it to Kepler or a launched agent.
  */
 export function providerKeyEnv(provider = DEFAULTS.provider, key = FIXTURE_KEY) {
   return { [PROVIDER_KEY_VARS[provider]]: key };
 }
 
-/** The fixture env for the default provider: its own key variable, never injected. */
+/** The default-provider fixture environment with a fake key to strip. */
 export const DEFAULT_KEY_ENV = providerKeyEnv();
 
 /**
@@ -77,7 +73,7 @@ export function defaultCommand(stage) {
 }
 
 /**
- * The launch scenarios: defaults, the per-docker provider-environment pattern,
+ * The launch scenarios: defaults, provider selection,
  * a per-stage retune (the retuned stage plus a sibling sharing the same env)
  * and an agent switch through `AGENT_COMMANDS`.
  */
@@ -87,7 +83,7 @@ export const LAUNCH_SCENARIOS = {
     env: { ...DEFAULT_KEY_ENV },
     expectedCommand: defaultCommand("dev-flow"),
   },
-  "per-docker": {
+  "provider-switch": {
     stage: "dev-flow",
     env: { DEV_ENV_PROVIDER: "openrouter", ...providerKeyEnv("openrouter") },
     // The environment carries the key under the provider's own variable; the
@@ -157,22 +153,11 @@ export function launchRuns(scenario) {
   return scenario.runs ?? [{ stage: scenario.stage, expectedCommand: scenario.expectedCommand }];
 }
 
-/**
- * The missing-key cases: the resolved provider's own key variable unset, and
- * whitespace-only (which reads as unset). The launch preflight stops with
- * `resolveKey`'s readable hard error naming the provider and the variable to
- * set, before any fetch, injection or spawn.
- */
+/** User-managed auth cases: the provider API-key variable is unset or blank. */
 function missingKeyCase(name, env) {
   const provider = DEFAULTS.provider;
   const keyVariable = PROVIDER_KEY_VARS[provider];
-  return {
-    name,
-    env,
-    provider,
-    keyVariable,
-    expectedMessage: `provider "${provider}" requires a key: set ${keyVariable}`,
-  };
+  return { name, env, keyVariable };
 }
 
 export const MISSING_KEY_CASES = [
@@ -181,12 +166,8 @@ export const MISSING_KEY_CASES = [
 ];
 
 /**
- * The key + fallback scenario: the provider's key variable is set, and the
- * terminal API is unreachable at the connection level. No bootstrap ids are
- * given, so the helper reaches the API to resolve them and the rejecting
- * fetch triggers `launchDetached`'s nohup fallback. The spawned child must
- * inherit the environment that carries the key under the provider's own
- * variable, and the command nohup receives must be launchable as written.
+ * The provider key is present only to verify that the no-API fallback strips
+ * it before starting an agent; the user's saved CLI login supplies auth.
  */
 export const FALLBACK_SCENARIO = {
   stage: "dev-flow",

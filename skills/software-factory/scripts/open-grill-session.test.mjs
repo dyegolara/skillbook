@@ -231,6 +231,23 @@ test("an invalid spec argument is a hard error before any fetch", async () => {
   assert.equal(fetched, false);
 });
 
+test("an invalid grill pin fails before API discovery or the offline pause fallback", async () => {
+  let fetched = false;
+  await assert.rejects(
+    main(["55", RE_ENTRY_PROMPT], {
+      env: { DEV_ENV_EFFORT_GRILL: "turbo" },
+      apiBase: "http://127.0.0.1:1",
+      fetchImpl: async () => {
+        fetched = true;
+        throw new Error("fetch failed");
+      },
+      write: () => {},
+    }),
+    /DEV_ENV_EFFORT_GRILL/
+  );
+  assert.equal(fetched, false);
+});
+
 test("missing positional arguments are a hard usage error", async () => {
   await assert.rejects(main(["55"]), /usage/i);
   await assert.rejects(main([]), /usage/i);

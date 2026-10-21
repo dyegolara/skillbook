@@ -10,7 +10,6 @@ import {
   buildAgentCommand,
   resolveAgent,
   resolveEffort,
-  resolveKey,
   resolveModel,
   resolveProvider,
   resolveValue,
@@ -143,47 +142,6 @@ test("an unknown stage is a hard error on every stage resolver", () => {
   for (const resolver of [resolveModel, resolveEffort, resolveAgent]) {
     assert.throws(() => resolver("GRILL_WITH_SPEC", {}), /unknown stage/i);
   }
-});
-
-test("resolveKey: the provider's own variable is the key, trimmed", () => {
-  assert.equal(resolveKey("openai", { OPENAI_API_KEY: "  sk-openai  " }), "sk-openai");
-});
-
-test("resolveKey: every allowed provider resolves from its own variable", () => {
-  for (const provider of PROVIDERS) {
-    assert.equal(resolveKey(provider, { [PROVIDER_KEY_VARS[provider]]: `key-${provider}` }), `key-${provider}`, provider);
-  }
-});
-
-test("resolveKey: an unset key variable is a hard error naming the provider and the variable to set", () => {
-  for (const provider of PROVIDERS) {
-    const variable = PROVIDER_KEY_VARS[provider];
-    assert.throws(
-      () => resolveKey(provider, {}),
-      { message: `provider "${provider}" requires a key: set ${variable}` },
-      provider
-    );
-  }
-});
-
-test("resolveKey: an empty or whitespace-only key variable reads as unset — a hard error, never a fallback", () => {
-  for (const raw of ["", "   ", "\t\n "]) {
-    assert.throws(
-      () => resolveKey("anthropic", { ANTHROPIC_API_KEY: raw }),
-      { message: 'provider "anthropic" requires a key: set ANTHROPIC_API_KEY' }
-    );
-  }
-});
-
-test("OPENROUTER_API_KEY serves only openrouter — never another provider", () => {
-  assert.equal(resolveKey("openrouter", { OPENROUTER_API_KEY: "or-key" }), "or-key");
-  for (const provider of PROVIDERS.filter((name) => name !== "openrouter")) {
-    assert.throws(() => resolveKey(provider, { OPENROUTER_API_KEY: "or-key" }), new RegExp(PROVIDER_KEY_VARS[provider]));
-  }
-});
-
-test("resolveKey rejects an unknown provider", () => {
-  assert.throws(() => resolveKey("deepmind", { OPENROUTER_API_KEY: "or-key" }), /unknown provider/i);
 });
 
 test("the pi row builds today's exact pinned-command shape", () => {

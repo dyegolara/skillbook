@@ -36,7 +36,7 @@ function assertNoKeyInjected(command, { keyVariable, keyValue }) {
   assert.doesNotMatch(command, /^\w+=/, "no VAR='key' prefix");
 }
 
-test("the provider's key variable set: every launch stage injects the pre-change fixed-pin command, with no key", async () => {
+test("provider API keys are not sent to Kepler or injected into any launch stage", async () => {
   for (const stage of LAUNCH_STAGE_NAMES) {
     const out = await runLaunchFixture({ stage, env: DEFAULT_KEY_ENV });
     assert.equal(out.error, null, `${stage}: ${out.error?.message}`);
@@ -46,6 +46,8 @@ test("the provider's key variable set: every launch stage injects the pre-change
     assert.equal(injectedCommand(out.input), defaultCommand(stage), stage);
     assert.ok(!injectedCommand(out.input).includes("API_KEY"), `${stage}: no key variable is ever injected`);
     assert.ok(!out.input.includes(FIXTURE_KEY), `${stage}: no key value is ever injected`);
+    assert.ok(!JSON.stringify(out.calls).includes("API_KEY"), `${stage}: no key variable is sent to Kepler`);
+    assert.ok(!JSON.stringify(out.calls).includes(FIXTURE_KEY), `${stage}: no key value is sent to Kepler`);
   }
 });
 
@@ -64,8 +66,8 @@ test("the fixture drives the real helper over loopback HTTP: start, input, buffe
   assert.equal(out.result.terminalId, "term-fixture");
 });
 
-test("per-docker: provider plus its own key variable — the command is byte-identical and nothing is injected", async () => {
-  const scenario = LAUNCH_SCENARIOS["per-docker"];
+test("provider switch selects its model provider without sending its API key", async () => {
+  const scenario = LAUNCH_SCENARIOS["provider-switch"];
   const provider = scenario.env.DEV_ENV_PROVIDER;
   const keyVariable = PROVIDER_KEY_VARS[provider];
   assert.equal(scenario.env[keyVariable], FIXTURE_KEY, "the fixture env carries the provider's own key variable");
@@ -81,6 +83,8 @@ test("per-docker: provider plus its own key variable — the command is byte-ide
     "the provider's default-pin command shape, unchanged"
   );
   assertNoKeyInjected(command, { keyVariable, keyValue: FIXTURE_KEY });
+  assert.ok(!JSON.stringify(out.calls).includes(keyVariable));
+  assert.ok(!JSON.stringify(out.calls).includes(FIXTURE_KEY));
   assert.deepEqual(out.spawnCalls, [], "the nohup fallback never runs");
 });
 
@@ -120,24 +124,18 @@ test("invalid value: a readable hard error names the variable and lists the allo
   }
 });
 
-test("missing key: an unset or whitespace-only key variable stops the launch with the readable hard error", async () => {
-  for (const { name, env, provider, keyVariable, expectedMessage } of MISSING_KEY_CASES) {
+test("provider authentication remains user-managed when API-key env vars are unset or blank", async () => {
+  for (const { name, env, keyVariable } of MISSING_KEY_CASES) {
     const out = await runLaunchFixture({ stage: "dev-flow", env });
-    assert.ok(out.error instanceof Error, `${name}: expected a hard error`);
-    assert.equal(out.error.message, expectedMessage, name);
-    assert.equal(
-      out.error.message,
-      `provider "${provider}" requires a key: set ${keyVariable}`,
-      `${name}: the error names the provider and the variable to set`
-    );
-    assert.equal(out.result, null, `${name}: nothing launched`);
-    assert.deepEqual(out.calls, [], `${name}: the API is never reached`);
-    assert.deepEqual(out.inputs, [], `${name}: nothing is injected`);
-    assert.deepEqual(out.spawnCalls, [], `${name}: the nohup fallback never fires`);
+    assert.equal(out.error, null, name);
+    assert.equal(out.result.path, "api", name);
+    assert.ok(out.inputs.length > 0, `${name}: stage command is injected`);
+    assert.deepEqual(out.spawnCalls, [], `${name}: the nohup fallback never runs`);
+    assert.ok(!JSON.stringify(out.calls).includes(keyVariable), `${name}: key variable is not sent to Kepler`);
   }
 });
 
-test("key + fallback: the nohup path carries a launchable command and the environment with the provider key", async () => {
+test("fallback launches without forwarding the provider API key to the agent", async () => {
   const scenario = FALLBACK_SCENARIO;
   const keyVariable = scenario.keyVariable;
   const keyValue = scenario.env[keyVariable];
@@ -172,8 +170,8 @@ test("key + fallback: the nohup path carries a launchable command and the enviro
   assertNoKeyInjected(args[1], { keyVariable, keyValue });
   assert.equal(options.detached, true);
   assert.equal(options.stdio, "ignore");
-  assert.equal(options.env, scenario.env, "the child inherits the environment the key was resolved from");
-  assert.equal(options.env[keyVariable], keyValue, "the key travels under the provider's own variable");
+  assert.equal(options.env[keyVariable], undefined, "the child does not inherit the provider API key");
+  assert.ok(!Object.values(options.env).includes(keyValue), "the child environment does not contain the key value");
 });
 
 test("grill route: the fake agent API receives the resolved model/effort options and the grill adapterId", async () => {

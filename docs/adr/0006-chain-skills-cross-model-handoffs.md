@@ -330,6 +330,13 @@ context is not independent.
   exports `DEV_ENV_API_KEY`. An already-running process keeps the stale
   variable in its inherited environment until the docker or shell restarts;
   nothing reads it, so it has no effect.
+  Amended 2026-10-21, maintainer instruction: provider authentication is
+  configured manually for each agent and is never provisioned by the chain.
+  The helper selects provider/model pins but does not transmit API keys to
+  Kepler or agent commands; its detached fallback removes provider API-key
+  and credential-like variables from the child environment. The API path
+  uses the Kepler server's user-configured agent login, not a key from the
+  helper's invocation environment.
 - `GLOSSARY.md` replaces `CONTEXT.md`, adopting the referenced pack's glossary
   convention; ADRs keep living in `docs/adr/`.
 

@@ -14,6 +14,7 @@ import {
   VERIFY_MAX_RELAUNCHES,
   VERIFY_POLL_INTERVAL_MS,
   VERIFY_TIMEOUT_MS,
+  agentEnvironment,
   buildResumeCommand,
   buildRetryWrapper,
   buildStageCommand,
@@ -31,7 +32,6 @@ import {
   reachApi,
   readKeplerApiBase,
   resolveIds,
-  resolveStageKey,
   runSessionHelper,
   sentinelSeen,
   shellQuote,
@@ -72,10 +72,7 @@ const WORKTREE_PATH = "/work/tree";
 /** Tests resolve pins hermetically: an explicit `{}` env, never the ambient one. */
 const NO_ENV = {};
 
-/**
- * A launch path's hermetic env: the resolved provider's own key variable, the
- * way an environment (docker) carries its account. It is never injected.
- */
+/** A hostile caller env used to prove API keys are not forwarded to agents. */
 const LAUNCH_ENV = { [PROVIDER_KEY_VARS[DEFAULTS.provider]]: "sk-test" };
 
 function resumeCommand(stage, spec, pointers) {
@@ -243,7 +240,7 @@ test("the pointers travel as one shell-quoted argument for every agent row", () 
   }
 });
 
-// --- the key: provider-environment scoped, a preflight validation — never injected ---
+// --- provider authentication remains user-managed ---
 
 test("the built command carries no key and no variable prefix, whatever the environment holds", () => {
   const keyVariable = PROVIDER_KEY_VARS[DEFAULTS.provider];
@@ -265,55 +262,51 @@ test("every stage's command is byte-identical whether the provider's key resolve
   }
 });
 
-test("resolveStageKey is unconditional: the provider's own key, or the missing-key hard error", () => {
-  assert.equal(resolveStageKey("anthropic", { ANTHROPIC_API_KEY: "  k  " }), "k");
-  assert.throws(() => resolveStageKey("anthropic", NO_ENV), {
-    message: 'provider "anthropic" requires a key: set ANTHROPIC_API_KEY',
-  });
-  assert.throws(() => resolveStageKey("anthropic", { ANTHROPIC_API_KEY: "  " }), {
-    message: 'provider "anthropic" requires a key: set ANTHROPIC_API_KEY',
-  });
+test("agentEnvironment strips provider API keys but preserves ordinary variables", () => {
+  const env = {
+    PATH: "/bin",
+    DEV_ENV_PROVIDER: "anthropic",
+    ANTHROPIC_API_KEY: "sk-ant",
+    OPENAI_API_KEY: "sk-openai",
+    DEV_ENV_API_KEY: "legacy-key",
+    GITHUB_TOKEN: "github-token",
+  };
+  assert.deepEqual(agentEnvironment(env), { PATH: "/bin", DEV_ENV_PROVIDER: "anthropic" });
 });
 
-test("a missing key stops the launch before any fetch or spawn, naming the provider and the variable", async () => {
-  const keyVariable = PROVIDER_KEY_VARS[DEFAULTS.provider];
-  let fetched = false;
+test("an API launch does not require the caller's API key; authentication is user-managed by Kepler", async () => {
+  const { fetchImpl } = mockKeplerApi({ terminalId: "term-auth" });
   const { spawnImpl, calls: spawnCalls } = spawnRecorder();
-
-  await assert.rejects(
-    main(["dev-flow", "55", "pointers"], {
+  const result = await main(
+    ["dev-flow", "55", "pointers", "--repo-id", "r", "--worktree-id", "w", "--task-id", "t"],
+    {
       env: NO_ENV,
       apiBase: "http://api.test",
-      fetchImpl: async () => {
-        fetched = true;
-        return okResponse([]);
-      },
+      fetchImpl,
       spawnImpl,
       write: () => {},
-    }),
-    { message: `provider "${DEFAULTS.provider}" requires a key: set ${keyVariable}` }
+    }
   );
-  assert.equal(fetched, false, "the key is checked before the API is reached");
-  assert.equal(spawnCalls.length, 0, "the nohup fallback never runs without a key");
+  assert.equal(result.path, "api");
+  assert.equal(result.terminalId, "term-auth");
+  assert.equal(spawnCalls.length, 0);
 });
 
-test("a whitespace-only key variable stops the launch with the same hard error", async () => {
+test("a whitespace-only provider API key does not block the user-managed offline fallback", async () => {
   const keyVariable = PROVIDER_KEY_VARS[DEFAULTS.provider];
   const { spawnImpl, calls: spawnCalls } = spawnRecorder();
-
-  await assert.rejects(
-    main(["dev-flow", "55", "pointers"], {
-      env: { [keyVariable]: "   " },
-      apiBase: "http://127.0.0.1:1",
-      fetchImpl: async () => {
-        throw new Error("fetch failed");
-      },
-      spawnImpl,
-      write: () => {},
-    }),
-    { message: `provider "${DEFAULTS.provider}" requires a key: set ${keyVariable}` }
-  );
-  assert.equal(spawnCalls.length, 0);
+  const result = await main(["dev-flow", "55", "pointers"], {
+    env: { [keyVariable]: "   " },
+    apiBase: "http://127.0.0.1:1",
+    fetchImpl: async () => {
+      throw new Error("fetch failed");
+    },
+    spawnImpl,
+    write: () => {},
+  });
+  assert.equal(result.path, "nohup");
+  assert.equal(spawnCalls.length, 1);
+  assert.equal(spawnCalls[0][2].env[keyVariable], undefined);
 });
 
 test("buildTerminalInput terminates the injected retry wrapper with a newline", () => {
@@ -997,7 +990,7 @@ test("the spec argument builds the label — never the anchor terminal's label",
   });
 });
 
-test("the resolved key never rides the launched input — the environment carries it, paired with the provider", async () => {
+test("caller API keys never ride the API request or launched input", async () => {
   const worktreePath = "/work/tree";
   const terminals = [{ worktreePath, label: "Terminal 1", repoId: "r", worktreeId: "w", taskId: "t" }];
   const { fetchImpl, calls } = mockKeplerApi({ terminals });
@@ -1025,6 +1018,9 @@ test("the resolved key never rides the launched input — the environment carrie
   );
   assert.ok(!input.includes("ANTHROPIC_API_KEY"), "no key variable rides the launched input");
   assert.ok(!input.includes("sk-ant"), "the key value never reaches the injected command");
+  const requests = JSON.stringify(calls);
+  assert.ok(!requests.includes("ANTHROPIC_API_KEY"), "the key variable is not sent to Kepler");
+  assert.ok(!requests.includes("sk-ant"), "the key value is not sent to Kepler");
   const resume = buildResumeCommand({ stage: "dev-flow", spec: "55", pointers: "pointers", worktreePath });
   assert.ok(
     input.includes(shellQuote(`FAILED: resume with: ${resume}`)),
@@ -1189,6 +1185,31 @@ test("an unknown stage fails hard before any launch path is taken", async () => 
   assert.equal(spawnCalls.length, 0);
 });
 
+test("invalid stage pins fail before any API request or spawn", async () => {
+  for (const env of [
+    { ...LAUNCH_ENV, DEV_ENV_EFFORT_DEV_FLOW: "turbo" },
+    { ...LAUNCH_ENV, DEV_ENV_AGENT_DEV_FLOW: "gemini" },
+  ]) {
+    let fetched = false;
+    const { spawnImpl, calls: spawnCalls } = spawnRecorder();
+    await assert.rejects(
+      main(["dev-flow", "55", "pointers"], {
+        env,
+        apiBase: "http://api.test",
+        fetchImpl: async () => {
+          fetched = true;
+          return okResponse([]);
+        },
+        spawnImpl,
+        write: () => {},
+      }),
+      /DEV_ENV_(EFFORT|AGENT)_DEV_FLOW/
+    );
+    assert.equal(fetched, false);
+    assert.equal(spawnCalls.length, 0);
+  }
+});
+
 test("the grill stage is not a launch stage and fails hard before any launch path is taken", async () => {
   let fetched = false;
   const { spawnImpl, calls: spawnCalls } = spawnRecorder();
@@ -1260,6 +1281,7 @@ test("a connection-level fetch rejection falls back to nohup and preserves error
   assert.equal(args[0], "-c");
   assert.equal(args[1], `nohup ${buildStageCommand("dev-flow", "pointers", LAUNCH_ENV)} > /tmp/skillbook-dev-flow-pi.log 2>&1 &`);
   assert.equal(options.detached, true);
+  assert.equal(options.env[PROVIDER_KEY_VARS[DEFAULTS.provider]], undefined);
 });
 
 test("a missing Kepler data dir falls back to nohup with the read error's message", async () => {
