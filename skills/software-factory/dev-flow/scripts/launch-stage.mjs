@@ -96,7 +96,7 @@ export function stagePin(stage, env = process.env) {
   return {
     provider: resolveProvider(env),
     model: resolveModel(key, env),
-    thinking: resolveEffort(key, env),
+    effort: resolveEffort(key, env),
     agent: resolveAgent(key, env),
   };
 }
@@ -143,13 +143,13 @@ export function resolveStageKey(provider, env = process.env) {
  * not, the string is the same — the key check is `resolveStageKey`'s preflight
  * and the environment passes the key to the launched stage.
  */
-export function buildPiCommand(stage, pointers, env = process.env) {
+export function buildStageCommand(stage, pointers, env = process.env) {
   const pin = stagePin(stage, env);
   return argvCommand(
     buildAgentCommand(pin.agent, {
       provider: pin.provider,
       model: pin.model,
-      effort: pin.thinking,
+      effort: pin.effort,
       pointers,
     })
   );
@@ -325,7 +325,7 @@ export function buildResumeCommand({ stage, spec, pointers, worktreePath }) {
  * stage's resolved pins, whatever its agent.
  */
 export function buildRetryWrapper(stage, spec, pointers, worktreePath, env = process.env) {
-  const command = buildPiCommand(stage, pointers, env); // the stage's pinned command, unchanged inside
+  const command = buildStageCommand(stage, pointers, env); // the stage's pinned command, unchanged inside
   const sentinel = stageSentinel(spec, stage); // the first action, before attempt 1
   const resumeCommand = buildResumeCommand({ stage, spec, pointers, worktreePath });
   const marker = [
@@ -771,7 +771,7 @@ export async function launchInTerminal({
  * /tmp/skillbook-<stage>-pi.log.
  */
 export function launchDetached({ stage, pointers, spawnImpl = spawn, env = process.env }) {
-  const command = buildPiCommand(stage, pointers, env);
+  const command = buildStageCommand(stage, pointers, env);
   const log = `/tmp/skillbook-${stage}-pi.log`;
   const child = spawnImpl("sh", ["-c", `nohup ${command} > ${log} 2>&1 &`], {
     detached: true,

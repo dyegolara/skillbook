@@ -73,7 +73,7 @@ export const PROVIDER_KEY_VARS = {
  */
 export const AGENT_COMMANDS = {
   // Today's exact pinned shape: `pi --print --provider <p> --model <m>
-  // --thinking <e>` (launch-stage.mjs `buildPiCommand` / ADR-0006). Flags
+  // --thinking <e>` (launch-stage.mjs `buildStageCommand` / ADR-0006). Flags
   // verified against `pi --help` (pi 1.3.0, 2026-10-16): `--print`,
   // `--provider`, `--model`, `--thinking`.
   pi: {

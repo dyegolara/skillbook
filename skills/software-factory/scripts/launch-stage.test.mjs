@@ -14,9 +14,9 @@ import {
   VERIFY_MAX_RELAUNCHES,
   VERIFY_POLL_INTERVAL_MS,
   VERIFY_TIMEOUT_MS,
-  buildPiCommand,
   buildResumeCommand,
   buildRetryWrapper,
+  buildStageCommand,
   buildTerminalInput,
   chainCore,
   chainLabel,
@@ -57,13 +57,13 @@ const LAUNCH_STAGES = Object.keys(STAGE_KEY_BY_NAME);
 /** The stage's default pins in `stagePin`'s shape, read from the defaults module. */
 function defaultPin(stage) {
   const pin = DEFAULTS.stages[STAGE_KEY_BY_NAME[stage]];
-  return { provider: DEFAULTS.provider, model: pin.model, thinking: pin.effort, agent: pin.agent };
+  return { provider: DEFAULTS.provider, model: pin.model, effort: pin.effort, agent: pin.agent };
 }
 
 /** Today's exact `pi` command shape, expressed from the defaults module's values. */
 function piCommand(stage, pointers) {
   const pin = defaultPin(stage);
-  return `pi --print --provider ${pin.provider} --model ${pin.model} --thinking ${pin.thinking} ${shellQuote(pointers)}`;
+  return `pi --print --provider ${pin.provider} --model ${pin.model} --thinking ${pin.effort} ${shellQuote(pointers)}`;
 }
 
 // The worktree the wrapper tests resume from; the resume command cds into it.
@@ -100,7 +100,7 @@ test("the launch guard rejects the grill stage while the grill helper's grillPin
   );
   assert.throws(() => stageKey("GRILL"), /unknown stage/i);
   assert.throws(() => stagePin("grill", NO_ENV), /unknown stage/i);
-  assert.throws(() => buildPiCommand("grill", "pointers", NO_ENV), /unknown stage/i);
+  assert.throws(() => buildStageCommand("grill", "pointers", NO_ENV), /unknown stage/i);
 
   // The split guard: the grill helper resolves GRILL through the same
   // env-defaults tables, including the stage's model, effort and adapterId.
@@ -123,7 +123,7 @@ test("a set DEV_ENV_ wins for provider, model, effort and agent", () => {
       DEV_ENV_EFFORT_DEV_FLOW: "high",
       DEV_ENV_AGENT_DEV_FLOW: "claude-code",
     }),
-    { provider: "anthropic", model: "anthropic/claude-opus-5", thinking: "high", agent: "claude-code" }
+    { provider: "anthropic", model: "anthropic/claude-opus-5", effort: "high", agent: "claude-code" }
   );
 });
 
@@ -140,27 +140,27 @@ test("whitespace-only DEV_ENV_ values read as unset and the defaults apply", () 
 });
 
 test("an off-list provider, effort or agent is a hard error naming the variable", () => {
-  assert.throws(() => buildPiCommand("dev-flow", "pointers", { DEV_ENV_PROVIDER: "wat" }), /DEV_ENV_PROVIDER/);
+  assert.throws(() => buildStageCommand("dev-flow", "pointers", { DEV_ENV_PROVIDER: "wat" }), /DEV_ENV_PROVIDER/);
   assert.throws(
-    () => buildPiCommand("dev-flow", "pointers", { DEV_ENV_EFFORT_DEV_FLOW: "turbo" }),
+    () => buildStageCommand("dev-flow", "pointers", { DEV_ENV_EFFORT_DEV_FLOW: "turbo" }),
     /DEV_ENV_EFFORT_DEV_FLOW/
   );
   assert.throws(
-    () => buildPiCommand("dev-flow", "pointers", { DEV_ENV_AGENT_DEV_FLOW: "gemini" }),
+    () => buildStageCommand("dev-flow", "pointers", { DEV_ENV_AGENT_DEV_FLOW: "gemini" }),
     /DEV_ENV_AGENT_DEV_FLOW/
   );
 });
 
 test("an unknown stage is a hard error before any environment is read", () => {
   assert.throws(() => stagePin("grill-with-spec", { DEV_ENV_PROVIDER: "wat" }), /unknown stage/i);
-  assert.throws(() => buildPiCommand("made-up", "pointers", NO_ENV), /unknown stage/i);
+  assert.throws(() => buildStageCommand("made-up", "pointers", NO_ENV), /unknown stage/i);
 });
 
 // --- the command: built through the resolved agent's AGENT_COMMANDS row ---
 
-test("buildPiCommand pins provider, model, thinking and quotes the pointers", () => {
+test("buildStageCommand pins provider, model, effort and quotes the pointers", () => {
   assert.equal(
-    buildPiCommand("code-review-loop", "the maintainer's pointers", NO_ENV),
+    buildStageCommand("code-review-loop", "the maintainer's pointers", NO_ENV),
     piCommand("code-review-loop", "the maintainer's pointers")
   );
 });
@@ -168,7 +168,7 @@ test("buildPiCommand pins provider, model, thinking and quotes the pointers", ()
 test("pointers with an embedded single quote are shell-quoted safely", () => {
   assert.equal(shellQuote("it's #55"), "'it'\\''s #55'");
   assert.equal(
-    buildPiCommand("create-pr", "the maintainer's pointers", NO_ENV),
+    buildStageCommand("create-pr", "the maintainer's pointers", NO_ENV),
     piCommand("create-pr", "the maintainer's pointers")
   );
 });
@@ -182,7 +182,7 @@ test("a DEV_ENV_-set environment builds the command from the resolved pins throu
     ANTHROPIC_API_KEY: "sk-ant",
   };
   assert.equal(
-    buildPiCommand("dev-flow", "pointers", env),
+    buildStageCommand("dev-flow", "pointers", env),
     "claude -p --model anthropic/claude-opus-5 --effort xhigh 'pointers'"
   );
 });
@@ -195,12 +195,12 @@ test("every AGENT_COMMANDS row builds the stage command from its binary and args
       ...AGENT_COMMANDS[agent].args({
         provider: pin.provider,
         model: pin.model,
-        effort: pin.thinking,
+        effort: pin.effort,
         pointers: "pointers",
       }),
     ];
     assert.equal(
-      buildPiCommand("dev-flow", "pointers", { DEV_ENV_AGENT_DEV_FLOW: agent }),
+      buildStageCommand("dev-flow", "pointers", { DEV_ENV_AGENT_DEV_FLOW: agent }),
       `${argv.slice(0, -1).join(" ")} 'pointers'`,
       agent
     );
@@ -211,7 +211,7 @@ test("the pointers travel as one shell-quoted argument for every agent row", () 
   const pointers = "read the report at /tmp/review report's path.md";
   for (const agent of AGENTS) {
     assert.ok(
-      buildPiCommand("dev-flow", pointers, { DEV_ENV_AGENT_DEV_FLOW: agent }).endsWith(shellQuote(pointers)),
+      buildStageCommand("dev-flow", pointers, { DEV_ENV_AGENT_DEV_FLOW: agent }).endsWith(shellQuote(pointers)),
       agent
     );
   }
@@ -221,9 +221,9 @@ test("the pointers travel as one shell-quoted argument for every agent row", () 
 
 test("the built command carries no key and no variable prefix, whatever the environment holds", () => {
   const keyVariable = PROVIDER_KEY_VARS[DEFAULTS.provider];
-  const keyed = buildPiCommand("dev-flow", "pointers", { [keyVariable]: "sk-test" });
+  const keyed = buildStageCommand("dev-flow", "pointers", { [keyVariable]: "sk-test" });
   assert.equal(keyed, piCommand("dev-flow", "pointers"));
-  assert.equal(keyed, buildPiCommand("dev-flow", "pointers", NO_ENV), "the key's presence changes nothing");
+  assert.equal(keyed, buildStageCommand("dev-flow", "pointers", NO_ENV), "the key's presence changes nothing");
   assert.ok(!keyed.includes("API_KEY"), "no key variable rides the command");
   assert.ok(!keyed.includes("sk-test"), "no key value rides the command");
 });
@@ -232,8 +232,8 @@ test("every stage's command is byte-identical whether the provider's key resolve
   const keyVariable = PROVIDER_KEY_VARS[DEFAULTS.provider];
   for (const stage of LAUNCH_STAGES) {
     assert.equal(
-      buildPiCommand(stage, "pointers", {}),
-      buildPiCommand(stage, "pointers", { [keyVariable]: "sk-test" }),
+      buildStageCommand(stage, "pointers", {}),
+      buildStageCommand(stage, "pointers", { [keyVariable]: "sk-test" }),
       stage
     );
   }
@@ -357,7 +357,7 @@ test("the retry wrapper attempts the command 5 times with doubling sleeps over a
 
 test("the pinned command sits inside the wrapper unchanged", () => {
   const wrapper = buildRetryWrapper("dev-flow", "55", "pointers", WORKTREE_PATH, NO_ENV);
-  assert.ok(wrapper.includes(`do ${buildPiCommand("dev-flow", "pointers", NO_ENV)}; chain_status=$?;`));
+  assert.ok(wrapper.includes(`do ${buildStageCommand("dev-flow", "pointers", NO_ENV)}; chain_status=$?;`));
 });
 
 test("the resume command re-enters the protected launch route from the worktree", () => {
@@ -395,7 +395,7 @@ test("the wrapper actuates the wake through the sibling helper's absolute path a
   assert.ok(
     wrapper.includes(`node ${shellQuote(wakePath)} dev-flow 55 ${shellQuote(resumeCommand("dev-flow", "55", "pointers"))};`)
   );
-  assert.ok(!wrapper.includes(`node ${shellQuote(wakePath)} dev-flow 55 ${shellQuote(buildPiCommand("dev-flow", "pointers", NO_ENV))};`));
+  assert.ok(!wrapper.includes(`node ${shellQuote(wakePath)} dev-flow 55 ${shellQuote(buildStageCommand("dev-flow", "pointers", NO_ENV))};`));
 });
 
 test("each launching skill runs its helpers from an isolated installed folder", async () => {
@@ -1232,7 +1232,7 @@ test("a connection-level fetch rejection falls back to nohup and preserves error
   const [command, args, options] = spawnCalls[0];
   assert.equal(command, "sh");
   assert.equal(args[0], "-c");
-  assert.equal(args[1], `nohup ${buildPiCommand("dev-flow", "pointers", LAUNCH_ENV)} > /tmp/skillbook-dev-flow-pi.log 2>&1 &`);
+  assert.equal(args[1], `nohup ${buildStageCommand("dev-flow", "pointers", LAUNCH_ENV)} > /tmp/skillbook-dev-flow-pi.log 2>&1 &`);
   assert.equal(options.detached, true);
 });
 

@@ -31,7 +31,7 @@
  *      separately from the launch check, so a pinned sub-agent spawn is not
  *      mistaken for a stage launch;
  *   8. the error route holds: the launch helper injects a bounded retry
- *      wrapper (buildRetryWrapper) around the resolved command (buildPiCommand),
+ *      wrapper (buildRetryWrapper) around the resolved command (buildStageCommand),
  *      the wrapper's give-up path carries the FAILED marker and references the
  *      wake helper ADR-0006 names, the command builder goes through the
  *      resolved agent's AGENT_COMMANDS row, and the pi row still emits the
@@ -607,7 +607,7 @@ function functionBody(text, name) {
 
 /**
  * (a) The launch construction wraps the pinned command: buildRetryWrapper
- * builds its inner command through buildPiCommand and runs a bounded retry
+ * builds its inner command through buildStageCommand and runs a bounded retry
  * loop. Returns the wrapper's body for the wake-reference check, or null when
  * the wrapper is missing (so that check stays quiet).
  */
@@ -617,8 +617,8 @@ function checkRetryWrapper(problems, text) {
     problems.push(`${HELPER_FILE}: missing the buildRetryWrapper retry wrapper around the pinned command`);
     return null;
   }
-  if (!body.includes("buildPiCommand")) {
-    problems.push(`${HELPER_FILE}: retry wrapper does not wrap the buildPiCommand pinned command`);
+  if (!body.includes("buildStageCommand")) {
+    problems.push(`${HELPER_FILE}: retry wrapper does not wrap the buildStageCommand pinned command`);
   }
   if (!/\b(?:while|for)\b/.test(body) || !body.includes("RETRY_ATTEMPTS")) {
     problems.push(`${HELPER_FILE}: retry wrapper does not make a bounded retry loop`);
@@ -694,9 +694,9 @@ function checkWakeReference(problems, repoRoot, text, wrapper) {
  * the helper. The wrapper's use of the builder is check (a)'s contract.
  */
 function checkPinnedCommand(problems, text, defaultsText) {
-  const body = functionBody(text, "buildPiCommand");
+  const body = functionBody(text, "buildStageCommand");
   if (body === null) {
-    problems.push(`${HELPER_FILE}: missing the buildPiCommand pinned-command builder`);
+    problems.push(`${HELPER_FILE}: missing the buildStageCommand pinned-command builder`);
     return;
   }
   if (!body.includes("buildAgentCommand")) {
