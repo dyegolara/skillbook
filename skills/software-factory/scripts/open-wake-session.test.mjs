@@ -41,8 +41,10 @@ test("the wake-session helper delegates to the shared runSessionHelper and pins 
   assert.match(source, /\bcreateLabeledSession\b/); // the route's create step
   assert.match(source, /\bbuildWakePrompt\b/);
   assert.match(source, /\bbuildWakeFallbackLines\b/);
-  assert.match(source, /\bstageKey\b/); // the stage guard, not a pin step
-  assert.doesNotMatch(source, /\benv-defaults\b/); // the wake resolves no pins at all
+  assert.match(source, /import\s*{[^}]*\bstageKey\b[^}]*}\s*from\s*"\.\/env-defaults\.mjs"/); // the stage guard, from its real target
+  assert.match(source, /import\s*{[^}]*\brunSessionHelper\b[^}]*}\s*from\s*"\.\/launch-stage\.mjs"/); // the shared route shell stays shared
+  assert.doesNotMatch(source, /import\s*{[^}]*\bstageKey\b[^}]*}\s*from\s*"\.\/launch-stage\.mjs"/); // no pass-through route
+  assert.doesNotMatch(source, /\bresolve(?:Provider|Model|Effort|Agent|Key)\b/); // the wake resolves no pins at all
   assert.doesNotMatch(source, /\bsession-config-option\b/); // the wake pins nothing, by decision
   assert.doesNotMatch(source, /\breachApi\b/); // the shared shell owns the reach step now
   assert.doesNotMatch(source, /\bisConnectionError\b/); // and the never-fallback guard

@@ -38,9 +38,9 @@ import {
   parseIdFlags,
   runSessionCli,
   runSessionHelper,
-  stageKey,
   stageLabel,
 } from "./launch-stage.mjs";
+import { stageKey } from "./env-defaults.mjs";
 
 /** The session label: the chain spec plus the failed stage, not another stage's name. */
 export function wakeLabel(spec, stage) {

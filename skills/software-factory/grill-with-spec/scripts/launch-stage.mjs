@@ -56,11 +56,6 @@ import {
   stageKey,
 } from "./env-defaults.mjs";
 
-// The launch guard is env-defaults.mjs's `stageKey`: the launch stage set and
-// the kebab⇄SCREAMING conversion live there. It is re-exported here because
-// the wake helper imports its guard from the launch helper.
-export { stageKey };
-
 export const KEPLER_DATA_DIR = join(homedir(), ".kepler-server", "data");
 
 /**
