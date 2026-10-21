@@ -130,23 +130,19 @@ export function resolveStageKey(provider, env = process.env) {
 /**
  * The stage's pinned command, built through the resolved agent's
  * `AGENT_COMMANDS` row (`buildAgentCommand`) and shell-quoted for injection.
- * With no `DEV_ENV_*` set the resolved pins are today's defaults, so the
- * string is byte-identical to the old fixed-pin command. The command never
- * carries a key or a variable prefix: whether the provider's key resolves or
- * not, the string is the same — the key check is `resolveStageKey`'s preflight
- * and the environment passes the key to the launched stage.
+ * One pin object is born here — `stagePin`'s resolved provider, model, effort
+ * and agent plus the pointers — and travels whole to `buildAgentCommand`: the
+ * rows destructure the fields they build with (`pointers` above all) and
+ * ignore a field they do not name (`agent`). With no `DEV_ENV_*` set the
+ * resolved pins are today's defaults, so the string is byte-identical to the
+ * old fixed-pin command. The command never carries a key or a variable
+ * prefix: whether the provider's key resolves or not, the string is the same
+ * — the key check is `resolveStageKey`'s preflight and the environment passes
+ * the key to the launched stage.
  */
 export function buildStageCommand(stage, pointers, env = process.env) {
-  const pin = stagePin(stage, env);
-  return commandWithPointer(
-    buildAgentCommand(pin.agent, {
-      provider: pin.provider,
-      model: pin.model,
-      effort: pin.effort,
-      pointers,
-    }),
-    pointers
-  );
+  const pin = { ...stagePin(stage, env), pointers };
+  return commandWithPointer(buildAgentCommand(pin.agent, pin), pointers);
 }
 
 /**

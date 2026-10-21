@@ -233,32 +233,47 @@ export function resolveProvider(env = process.env) {
 }
 
 /**
- * The stage's model: `DEV_ENV_MODEL_<STAGE>`, defaulting to today's pin. A
- * free non-empty string — v1 does not cross-validate it against the provider
- * (the operator switching provider also sets that provider's models).
+ * The three per-stage pin fields in one table: each row is keyed by the field
+ * it resolves in `DEFAULTS.stages[<STAGE>]` (the same name `stagePin` returns)
+ * and carries that field's `DEV_ENV_<SUFFIX>_<STAGE>` variable suffix and the
+ * `allowed` list. A null list means a free non-empty string — the model's
+ * rule; v1 does not cross-validate the model against the provider (the
+ * operator switching provider also sets that provider's models).
  */
+const STAGE_FIELDS = {
+  model: { suffix: "MODEL", allowed: null },
+  effort: { suffix: "EFFORT", allowed: EFFORTS },
+  agent: { suffix: "AGENT", allowed: AGENTS },
+};
+
+/**
+ * The one stage-field resolver: the row's `DEV_ENV_<SUFFIX>_<STAGE>` variable
+ * over the same `resolveValue` rule, the stage's `DEFAULTS` field as the
+ * fallback. An unknown stage is a hard error before any variable is read.
+ */
+function resolveStageField(field, stage, env = process.env) {
+  const { suffix, allowed } = STAGE_FIELDS[field];
+  return resolveValue({
+    name: `DEV_ENV_${suffix}_${stage}`,
+    env,
+    fallback: stageDefaults(stage)[field],
+    allowed,
+  });
+}
+
+/** The stage's model: `DEV_ENV_MODEL_<STAGE>`, defaulting to today's pin. */
 export function resolveModel(stage, env = process.env) {
-  return resolveValue({ name: `DEV_ENV_MODEL_${stage}`, env, fallback: stageDefaults(stage).model });
+  return resolveStageField("model", stage, env);
 }
 
 /** The stage's effort: `DEV_ENV_EFFORT_<STAGE>`, checked against `EFFORTS`. */
 export function resolveEffort(stage, env = process.env) {
-  return resolveValue({
-    name: `DEV_ENV_EFFORT_${stage}`,
-    env,
-    fallback: stageDefaults(stage).effort,
-    allowed: EFFORTS,
-  });
+  return resolveStageField("effort", stage, env);
 }
 
 /** The stage's agent: `DEV_ENV_AGENT_<STAGE>`, checked against `AGENTS`. */
 export function resolveAgent(stage, env = process.env) {
-  return resolveValue({
-    name: `DEV_ENV_AGENT_${stage}`,
-    env,
-    fallback: stageDefaults(stage).agent,
-    allowed: AGENTS,
-  });
+  return resolveStageField("agent", stage, env);
 }
 
 /**
