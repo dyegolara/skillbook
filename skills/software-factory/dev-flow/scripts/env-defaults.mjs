@@ -119,7 +119,7 @@ export const AGENT_COMMANDS = {
   },
   // `codex exec` is the documented non-interactive command; `--model`
   // overrides the model and `-c key=value` overrides config inline; the
-  // effort level is the `model_reasoning_effort` config key with levels
+  // effort is codex's `model_reasoning_effort` config key with levels
   // low/medium/high/xhigh/max/ultra. Docs (2026-10-16):
   // https://developers.openai.com/codex/cli/reference (`codex exec` options)
   // and https://developers.openai.com/codex/config-reference.
