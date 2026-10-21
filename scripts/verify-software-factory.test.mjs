@@ -17,15 +17,15 @@ const CHAIN_SKILLS = [
   { name: "create-pr", stage: "CREATE_PR" },
 ];
 
-/** The stage's default model/thinking, read from the defaults module. */
+/** The stage's default model/effort, read from the defaults module. */
 function defaultPin(stage) {
-  return { model: DEFAULTS.stages[stage].model, thinking: DEFAULTS.stages[stage].effort };
+  return { model: DEFAULTS.stages[stage].model, effort: DEFAULTS.stages[stage].effort };
 }
 
 /** The `pi` spawn shape with the stage's default pins — a fixture snippet. */
 function piSpawn(stage, pointers) {
   const pin = defaultPin(stage);
-  return `pi --print --provider ${DEFAULTS.provider} --model ${pin.model} --thinking ${pin.thinking} '${pointers}'`;
+  return `pi --print --provider ${DEFAULTS.provider} --model ${pin.model} --thinking ${pin.effort} '${pointers}'`;
 }
 
 const RETRY_ATTEMPTS = 5;
@@ -174,7 +174,7 @@ function skillFrontmatter(name, overrides = {}) {
     name,
     description: `Chain skill ${name}.`,
     model: pin.model,
-    thinking: pin.thinking,
+    effort: pin.effort,
     ...overrides,
   };
   return [
@@ -185,7 +185,7 @@ function skillFrontmatter(name, overrides = {}) {
     "license: MIT",
     "metadata:",
     `  model: ${fields.model}`,
-    `  thinking: ${fields.thinking}`,
+    `  effort: ${fields.effort}`,
     "---",
     "",
     `# ${name}`,
@@ -465,14 +465,14 @@ test("rejects a frontmatter model pin that diverges from env-defaults", () => {
   );
 });
 
-test("rejects a frontmatter thinking pin that diverges from env-defaults", () => {
+test("rejects a frontmatter effort pin that diverges from env-defaults", () => {
   const wrong = "low";
-  const expected = defaultPin("CREATE_PR").thinking;
-  const problems = verify(makeRepo({ skillOverrides: { "create-pr": { thinking: wrong } } }));
+  const expected = defaultPin("CREATE_PR").effort;
+  const problems = verify(makeRepo({ skillOverrides: { "create-pr": { effort: wrong } } }));
   assert.ok(
     problems.some((problem) =>
       problem.includes(
-        `skills/software-factory/create-pr/SKILL.md: thinking pin "${wrong}" does not match skills/software-factory/scripts/env-defaults.mjs DEFAULTS.stages.CREATE_PR.effort "${expected}"`
+        `skills/software-factory/create-pr/SKILL.md: effort pin "${wrong}" does not match skills/software-factory/scripts/env-defaults.mjs DEFAULTS.stages.CREATE_PR.effort "${expected}"`
       )
     )
   );

@@ -5,7 +5,7 @@
  * Checks over skills/software-factory as an artifact, fully offline:
  *   1. the four chain skills exist with spec-conformant frontmatter (name
  *      matches folder, description present and <=1024 characters) and carry
- *      the model and thinking defaults recorded in env-defaults.mjs
+ *      the model and effort defaults recorded in env-defaults.mjs
  *      (DEFAULTS.stages.<STAGE>) — the verifier follows the file, never pins;
  *   2. every chain skill is registered in the plugin manifest;
  *   3. the pack README exists and the book's tables carry the pack's rows
@@ -110,9 +110,9 @@ export function verifySoftwareFactoryPack(packDir) {
         `${label}: model pin "${data.metadata?.model ?? ""}" does not match ${DEFAULTS_FILE} DEFAULTS.stages.${skill.stage}.model "${defaultsForStage.model}"`
       );
     }
-    if (defaultsForStage && data.metadata?.thinking !== defaultsForStage.effort) {
+    if (defaultsForStage && data.metadata?.effort !== defaultsForStage.effort) {
       problems.push(
-        `${label}: thinking pin "${data.metadata?.thinking ?? ""}" does not match ${DEFAULTS_FILE} DEFAULTS.stages.${skill.stage}.effort "${defaultsForStage.effort}"`
+        `${label}: effort pin "${data.metadata?.effort ?? ""}" does not match ${DEFAULTS_FILE} DEFAULTS.stages.${skill.stage}.effort "${defaultsForStage.effort}"`
       );
     }
     if (!registered.has(`skills/software-factory/${skill.name}`)) {
