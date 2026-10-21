@@ -37,8 +37,10 @@ import {
   createLabeledSession,
   parseIdFlags,
   requestJson,
+  runPinEnvironment,
   runSessionCli,
   runSessionHelper,
+  shellQuote,
   stageLabel,
 } from "./launch-stage.mjs";
 import { AGENT_COMMANDS, resolveAgent, resolveEffort, resolveModel } from "./env-defaults.mjs";
@@ -59,6 +61,22 @@ export function grillPin(env = process.env) {
     effort: resolveEffort("GRILL", env),
     adapterId: AGENT_COMMANDS[agent].adapterId,
   };
+}
+
+/** Add only the allowlisted, non-secret run pins to a grill re-entry prompt. */
+export function withRunPinContext(prompt, env = process.env) {
+  const pins = runPinEnvironment(env);
+  const assignments = Object.entries(pins)
+    .map(([name, value]) => `${name}=${shellQuote(value)}`)
+    .join(" ");
+  return (
+    `${prompt}\n\n` +
+    "Run pin configuration for this chain (empty values intentionally select shared defaults):\n" +
+    `\`\`\`json\n${JSON.stringify(pins, null, 2)}\n\`\`\`\n` +
+    `Prefix the first launch-helper command with \`env ${assignments}\`. ` +
+    "Keep this prefix unchanged; launch-stage propagates it to later handoffs and resumes. " +
+    "This context contains pin settings only, never provider credentials."
+  );
 }
 
 /**
@@ -112,15 +130,16 @@ export async function createGrillSession({
  */
 export async function openGrillSession({ spec, prompt, flags, deps = {} }) {
   grillPin(deps.env);
+  const reEntryPrompt = withRunPinContext(prompt, deps.env);
   return runSessionHelper({
     label: stageLabel(spec, "grill-with-spec"), // a bad spec is a hard error before any fetch
-    prompt,
+    prompt: reEntryPrompt,
     flags,
     deps,
     fallbackPath: "pause",
     create: (context) => createGrillSession({ ...context, env: deps.env }),
     successLine: (result) => `open-grill-session: opened ${result.label} as Kepler session ${result.sessionId}`,
-    fallbackLines: (result) => buildPauseLines({ label: result.label, prompt, reason: result.reason }),
+    fallbackLines: (result) => buildPauseLines({ label: result.label, prompt: reEntryPrompt, reason: result.reason }),
   });
 }
 

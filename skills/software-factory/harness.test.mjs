@@ -16,6 +16,7 @@ import {
   piCommand,
 } from "./harness/fixture_data.mjs";
 import { runPinEnvironment } from "./scripts/launch-stage.mjs";
+import { withRunPinContext } from "./scripts/open-grill-session.mjs";
 import {
   injectedCommand,
   rejectingFetch,
@@ -118,10 +119,11 @@ test("pin overrides survive a handoff when the server environment differs", asyn
 
   const first = await runLaunchFixture({ stage: "dev-flow", env: callerEnv });
   assert.equal(first.error, null);
-  assert.ok(first.input.includes(
-    "export DEV_ENV_PROVIDER='anthropic' DEV_ENV_MODEL_IMPLEMENT_SPEC='anthropic/claude-opus-5' " +
-      "DEV_ENV_EFFORT_IMPLEMENT_SPEC='high' DEV_ENV_AGENT_IMPLEMENT_SPEC='claude-code';"
-  ));
+  assert.ok(first.input.includes("DEV_ENV_PROVIDER='anthropic'"));
+  assert.ok(first.input.includes("DEV_ENV_MODEL_IMPLEMENT_SPEC='anthropic/claude-opus-5'"));
+  assert.ok(first.input.includes("DEV_ENV_EFFORT_IMPLEMENT_SPEC='high'"));
+  assert.ok(first.input.includes("DEV_ENV_AGENT_IMPLEMENT_SPEC='claude-code'"));
+  assert.ok(first.input.includes("DEV_ENV_MODEL_GRILL=''"), "unset pins explicitly clear server overrides");
   assert.ok(!first.input.includes(FIXTURE_KEY));
   assert.ok(!first.input.includes("ANTHROPIC_API_KEY"));
 
@@ -230,7 +232,41 @@ test("grill route: the fake agent API receives the resolved model/effort options
     { sessionId: "sess-fixture", configId: "model", value: scenario.expected.model },
     { sessionId: "sess-fixture", configId: "effort", value: scenario.expected.effort },
   ]);
-  assert.deepEqual(prompt.body, { sessionId: "sess-fixture", prompt: FIXTURE.reEntryPrompt });
+  assert.deepEqual(prompt.body, {
+    sessionId: "sess-fixture",
+    prompt: withRunPinContext(FIXTURE.reEntryPrompt, scenario.env),
+  });
+});
+
+test("review → grill → dev-flow carries caller pins across conflicting server environments", async () => {
+  const callerEnv = {
+    DEV_ENV_PROVIDER: "anthropic",
+    DEV_ENV_MODEL_DEV_FLOW: "anthropic/claude-opus-5",
+    DEV_ENV_EFFORT_DEV_FLOW: "high",
+    DEV_ENV_AGENT_DEV_FLOW: "claude-code",
+    ANTHROPIC_API_KEY: FIXTURE_KEY,
+  };
+  const serverEnv = {
+    DEV_ENV_PROVIDER: "openai",
+    DEV_ENV_MODEL_DEV_FLOW: "openai/server-model",
+    DEV_ENV_EFFORT_DEV_FLOW: "max",
+    DEV_ENV_AGENT_DEV_FLOW: "codex",
+  };
+
+  const grill = await runGrillFixture({ env: callerEnv });
+  const prompt = grill.calls.find((call) => call.path === "/agent/send-prompt").body.prompt;
+  const context = /Run pin configuration for this chain[\s\S]*?```json\n([\s\S]*?)\n```/.exec(prompt);
+  assert.ok(context, "the grill session receives the serialized run pins");
+  const resumedEnv = { ...serverEnv, ...JSON.parse(context[1]) };
+  const resumed = await runLaunchFixture({ stage: "dev-flow", env: resumedEnv });
+
+  assert.equal(resumed.error, null);
+  assert.equal(
+    injectedCommand(resumed.input),
+    "claude -p --model anthropic/claude-opus-5 --effort high '" + FIXTURE.pointers + "'"
+  );
+  assert.ok(!prompt.includes(FIXTURE_KEY));
+  assert.ok(!prompt.includes("ANTHROPIC_API_KEY"));
 });
 
 test("grill route: an agent switch uses the switched agent's adapterId with the resolved pins", async () => {

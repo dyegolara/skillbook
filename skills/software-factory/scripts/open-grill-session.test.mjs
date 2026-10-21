@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AGENT_COMMANDS, DEFAULTS } from "./env-defaults.mjs";
-import { buildPauseLines, grillPin, main } from "./open-grill-session.mjs";
+import { buildPauseLines, grillPin, main, withRunPinContext } from "./open-grill-session.mjs";
 import { failureLines } from "./launch-stage.mjs";
 
 // The grill's default pin, read from the defaults module — no pin literals.
@@ -18,6 +18,7 @@ const RECORDED_GRILL_PIN = {
 const NO_ENV = {};
 const RE_ENTRY_PROMPT =
   "Re-enter the grill for spec #55: read skills/software-factory/grill-with-spec/SKILL.md and the review report at /r/review.md.";
+const RE_ENTRY_PROMPT_WITH_RUN_PINS = withRunPinContext(RE_ENTRY_PROMPT, NO_ENV);
 
 test("grillPin resolves the recorded default with no DEV_ENV_* set", () => {
   assert.deepEqual(grillPin(NO_ENV), RECORDED_GRILL_PIN);
@@ -43,6 +44,20 @@ test("grillPin rejects an off-list effort or agent with the variable's name", ()
   assert.throws(() => grillPin({ DEV_ENV_AGENT_GRILL: "gemini" }), /DEV_ENV_AGENT_GRILL/);
 });
 
+test("grill re-entry carries all allowlisted non-secret run pins and no credentials", () => {
+  const prompt = withRunPinContext(RE_ENTRY_PROMPT, {
+    DEV_ENV_PROVIDER: "anthropic",
+    DEV_ENV_MODEL_DEV_FLOW: "anthropic/claude-opus-5",
+    ANTHROPIC_API_KEY: "must-not-appear",
+  });
+  assert.ok(prompt.includes("env DEV_ENV_PROVIDER='anthropic'"));
+  assert.ok(prompt.includes("DEV_ENV_MODEL_DEV_FLOW='anthropic/claude-opus-5'"));
+  assert.ok(prompt.includes("DEV_ENV_EFFORT_DEV_FLOW=''"), "absent pins explicitly select defaults");
+  assert.ok(prompt.includes("DEV_ENV_AGENT_CREATE_PR=''"), "the full chain configuration is carried");
+  assert.ok(!prompt.includes("ANTHROPIC_API_KEY"));
+  assert.ok(!prompt.includes("must-not-appear"));
+});
+
 test("the grill-session helper delegates to the shared runSessionHelper and resolves its pins from env-defaults", () => {
   const source = readFileSync(new URL("./open-grill-session.mjs", import.meta.url), "utf8");
   assert.match(source, /from\s+"\.\/launch-stage\.mjs"/);
@@ -61,7 +76,7 @@ test("the grill-session helper delegates to the shared runSessionHelper and reso
   assert.doesNotMatch(source, /\breadKeplerApiBase\b/);
 });
 
-test("the full flow creates, renames, pins model and effort, and sends the prompt verbatim", async () => {
+test("the full flow creates, renames, pins model and effort, and sends the prompt with run context", async () => {
   const { fetchImpl, calls } = mockAgentApi({ sessionId: "sess-new" });
   const lines = [];
 
@@ -105,7 +120,7 @@ test("the full flow creates, renames, pins model and effort, and sends the promp
     {
       url: "http://api.test/agent/send-prompt",
       method: "POST",
-      body: { sessionId: "sess-new", prompt: RE_ENTRY_PROMPT },
+      body: { sessionId: "sess-new", prompt: RE_ENTRY_PROMPT_WITH_RUN_PINS },
     },
   ]);
 });
@@ -286,12 +301,12 @@ test("a connection-level failure resolving ids falls back to the pause and prese
   assert.equal(result.reason, "fetch failed: ECONNREFUSED");
   assert.deepEqual(
     lines,
-    buildPauseLines({ label: "chain #55: grill-with-spec", prompt: RE_ENTRY_PROMPT, reason: "fetch failed: ECONNREFUSED" })
+    buildPauseLines({ label: "chain #55: grill-with-spec", prompt: RE_ENTRY_PROMPT_WITH_RUN_PINS, reason: "fetch failed: ECONNREFUSED" })
   );
   assert.deepEqual(lines, [
     "open-grill-session: fetch failed: ECONNREFUSED — grill session not opened",
     "open-grill-session: chain #55: grill-with-spec paused. Re-enter with /grill-with-spec and this re-entry prompt:",
-    RE_ENTRY_PROMPT,
+    RE_ENTRY_PROMPT_WITH_RUN_PINS,
   ]);
   assert.equal(calls.filter((call) => call.url.endsWith("/agent/sessions")).length, 0);
 });
@@ -318,7 +333,7 @@ test("a connection-level failure creating the session falls back to the pause wi
   assert.deepEqual(lines, [
     "open-grill-session: fetch failed: socket hang up — grill session not opened",
     "open-grill-session: chain #55: grill-with-spec paused. Re-enter with /grill-with-spec and this re-entry prompt:",
-    RE_ENTRY_PROMPT,
+    RE_ENTRY_PROMPT_WITH_RUN_PINS,
   ]);
 });
 
@@ -335,7 +350,7 @@ test("a missing Kepler data dir falls back to the pause with the read error's me
     assert.match(result.reason, /ENOENT/);
     assert.match(lines[0], /ENOENT/);
     assert.match(lines[1], /paused\. Re-enter with \/grill-with-spec/);
-    assert.equal(lines[2], RE_ENTRY_PROMPT);
+    assert.equal(lines[2], RE_ENTRY_PROMPT_WITH_RUN_PINS);
   } finally {
     rmSync(dataDir, { recursive: true, force: true });
   }
