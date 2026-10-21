@@ -7,7 +7,9 @@
  * an explicit `deps.env` (never the ambient environment), the fake API's
  * `apiBase` and a recording `spawnImpl` — so the terminal command's pins are
  * observed in the fake's captured `/terminal/input` body, and a silent
- * `nohup` fallback (which would run a real CLI) cannot hide. `runGrillFixture`
+ * `nohup` fallback (which would run a real CLI) cannot hide. An injectable
+ * `fetchImpl` lets a scenario reject at the connection level without touching
+ * the network, so the detached fallback path is driven too. `runGrillFixture`
  * does the same for `openGrillSession`, observing the fake's captured agent
  * calls. The real helpers use global `fetch`; only `127.0.0.1` is contacted.
  *
@@ -21,10 +23,12 @@ import { openGrillSession } from "../scripts/open-grill-session.mjs";
 import { launchStage } from "../scripts/launch-stage.mjs";
 import { startFakeKeplerApi } from "./fake_kepler_api.mjs";
 import {
+  FALLBACK_SCENARIO,
   FIXTURE,
   GRILL_SCENARIOS,
   INVALID_VALUE_CASES,
   LAUNCH_SCENARIOS,
+  MISSING_KEY_CASES,
   launchRuns,
 } from "./fixture_data.mjs";
 
@@ -38,9 +42,20 @@ export function injectedCommand(input) {
 }
 
 /**
+ * A fetch that rejects at the connection level without touching the network.
+ * The helper classifies the rejection as a connection failure — the only
+ * path to the detached `nohup` fallback.
+ */
+export function rejectingFetch(message) {
+  return async () => {
+    throw new Error(message);
+  };
+}
+
+/**
  * Run one real stage launch against the fake API.
  *
- * @param {{ stage: string, env: Object, spec?: string, pointers?: string, ids?: Object, worktreePath?: string }} options
+ * @param {{ stage: string, env: Object, spec?: string, pointers?: string, ids?: Object, worktreePath?: string, fetchImpl?: typeof fetch }} options
  * @returns {Promise<{ apiBase: string, calls: Array<Object>, inputs: Array<Object>, input: string|null, spawnCalls: Array<Array<unknown>>, result: Object|null, error: Error|null }>}
  */
 export async function runLaunchFixture({
@@ -50,6 +65,7 @@ export async function runLaunchFixture({
   pointers = FIXTURE.pointers,
   ids = FIXTURE.ids,
   worktreePath = FIXTURE.worktreePath,
+  fetchImpl = fetch,
 }) {
   const api = await startFakeKeplerApi();
   const spawnCalls = [];
@@ -71,6 +87,7 @@ export async function runLaunchFixture({
           env,
           worktreePath,
           spawnImpl,
+          fetchImpl,
           // The fake executes the wrapper immediately; a no-op sleep keeps a
           // broken sentinel from stalling the fixture on real poll waits.
           sleepImpl: async () => {},
@@ -144,6 +161,47 @@ async function main() {
     } else {
       console.error("expected a hard error, got none");
       process.exitCode = 1;
+    }
+  }
+
+  for (const missing of MISSING_KEY_CASES) {
+    const out = await runLaunchFixture({ stage: "dev-flow", env: missing.env });
+    console.log(`=== launch/missing-key-${missing.name}`);
+    if (out.error) {
+      console.log(`hard error: ${out.error.message}`);
+      console.log(`api calls: ${out.calls.length}; spawned: ${out.spawnCalls.length}`);
+      if (out.error.message !== missing.expectedMessage) {
+        console.error(`unexpected hard error message: expected ${missing.expectedMessage}`);
+        process.exitCode = 1;
+      }
+    } else {
+      console.error("expected a hard error, got none");
+      process.exitCode = 1;
+    }
+  }
+
+  {
+    const out = await runLaunchFixture({
+      stage: FALLBACK_SCENARIO.stage,
+      env: FALLBACK_SCENARIO.env,
+      ids: FALLBACK_SCENARIO.ids,
+      fetchImpl: rejectingFetch(FALLBACK_SCENARIO.fetchError),
+    });
+    console.log(`=== launch/key-fallback (${FALLBACK_SCENARIO.stage})`);
+    if (out.error) {
+      console.error(`unexpected hard error: ${out.error.message}`);
+      process.exitCode = 1;
+    } else {
+      const [, args, options] = out.spawnCalls[0] ?? [];
+      const keyVariable = FALLBACK_SCENARIO.keyVariable;
+      console.log(`path: ${out.result.path}`);
+      console.log(`reason: ${out.result.reason}`);
+      console.log(`spawned command: ${args?.[1] ?? "(none)"}`);
+      console.log(`child env: ${keyVariable}=${options?.env?.[keyVariable] ? "<set>" : "<missing>"}`);
+      if (out.result.path !== "nohup" || out.spawnCalls.length !== 1) {
+        console.error("expected exactly one nohup spawn");
+        process.exitCode = 1;
+      }
     }
   }
 
