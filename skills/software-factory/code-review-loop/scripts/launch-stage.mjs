@@ -282,10 +282,9 @@ const RUN_PIN_ENV_NAMES = [
 /** The allowlisted, non-secret pin overrides carried to a child stage. */
 export function runPinEnvironment(env = process.env) {
   return Object.fromEntries(
-    RUN_PIN_ENV_NAMES.flatMap((name) => {
+    RUN_PIN_ENV_NAMES.map((name) => {
       const value = env?.[name];
-      if (value === undefined || value === null || String(value).trim() === "") return [];
-      return [[name, String(value).trim()]];
+      return [name, value === undefined || value === null ? "" : String(value).trim()];
     })
   );
 }

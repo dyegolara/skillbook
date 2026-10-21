@@ -345,7 +345,14 @@ test("stageSentinel is the documented CHAIN-STAGE-START line and guards the spec
 
 test("the wrapper prints the sentinel as its first action, before attempt 1", () => {
   const wrapper = buildRetryWrapper("dev-flow", "55", "pointers", WORKTREE_PATH, NO_ENV);
-  assert.ok(wrapper.startsWith(`printf '%s\\n' ${shellQuote(stageSentinel("55", "dev-flow"))}; chain_attempt=1;`));
+  const assignments = Object.entries(runPinEnvironment(NO_ENV))
+    .map(([name, value]) => `${name}=${shellQuote(value)}`)
+    .join(" ");
+  assert.ok(
+    wrapper.startsWith(
+      `printf '%s\\n' ${shellQuote(stageSentinel("55", "dev-flow"))}; export ${assignments}; chain_attempt=1;`
+    )
+  );
 });
 
 test("sentinelSeen counts only a standalone sentinel line, never the echoed injection", () => {
@@ -382,6 +389,9 @@ test("the pinned command sits inside the wrapper unchanged", () => {
 
 test("the resume command re-enters the protected launch route from the worktree", () => {
   assert.equal(launchHelperPath(), fileURLToPath(new URL("./launch-stage.mjs", import.meta.url)));
+  const assignments = Object.entries(runPinEnvironment(NO_ENV))
+    .map(([name, value]) => `${name}=${shellQuote(value)}`)
+    .join(" ");
   assert.equal(
     buildResumeCommand({
       stage: "dev-flow",
@@ -390,7 +400,7 @@ test("the resume command re-enters the protected launch route from the worktree"
       worktreePath: WORKTREE_PATH,
       env: NO_ENV,
     }),
-    `cd '${WORKTREE_PATH}' && node '${launchHelperPath()}' dev-flow 55 'pointers'`
+    `cd '${WORKTREE_PATH}' && export ${assignments} && node '${launchHelperPath()}' dev-flow 55 'pointers'`
   );
 });
 
@@ -405,12 +415,16 @@ test("only allowlisted non-secret pin overrides reach stage children and resume 
     ANTHROPIC_API_KEY: "also-must-not-leak",
   };
   const pins = runPinEnvironment(env);
-  assert.deepEqual(pins, {
-    DEV_ENV_PROVIDER: "anthropic",
-    DEV_ENV_MODEL_IMPLEMENT_SPEC: "anthropic/claude-opus-5",
-    DEV_ENV_EFFORT_IMPLEMENT_SPEC: "high",
-    DEV_ENV_AGENT_IMPLEMENT_SPEC: "claude-code",
-  });
+  const pinNames = [
+    "DEV_ENV_PROVIDER",
+    ...Object.keys(DEFAULTS.stages).flatMap((stage) =>
+      ["MODEL", "EFFORT", "AGENT"].map((field) => `DEV_ENV_${field}_${stage}`)
+    ),
+  ];
+  assert.deepEqual(
+    pins,
+    Object.fromEntries(pinNames.map((name) => [name, env[name] === undefined ? "" : env[name].trim()]))
+  );
 
   const exported = Object.entries(pins).map(([name, value]) => `${name}=${shellQuote(value)}`).join(" ");
   const wrapper = buildRetryWrapper("dev-flow", "55", "pointers", WORKTREE_PATH, env);
@@ -428,6 +442,33 @@ test("only allowlisted non-secret pin overrides reach stage children and resume 
   assert.ok(resume.startsWith(`cd '${WORKTREE_PATH}' && export ${exported} && node `));
   assert.ok(!resume.includes("must-not-leak"));
   assert.ok(!resume.includes("ANTHROPIC_API_KEY"));
+});
+
+test("empty caller pins clear conflicting server overrides in child and resume environments", () => {
+  const serverEnv = {
+    DEV_ENV_PROVIDER: "openai",
+    DEV_ENV_MODEL_DEV_FLOW: "openai/server-model",
+    DEV_ENV_EFFORT_DEV_FLOW: "high",
+    DEV_ENV_AGENT_DEV_FLOW: "codex",
+  };
+  const callerPins = runPinEnvironment({
+    DEV_ENV_PROVIDER: " ",
+    DEV_ENV_MODEL_DEV_FLOW: "",
+    DEV_ENV_EFFORT_DEV_FLOW: "\t",
+    DEV_ENV_AGENT_DEV_FLOW: undefined,
+  });
+  const childEnv = { ...serverEnv, ...callerPins };
+
+  assert.equal(buildStageCommand("dev-flow", "pointers", childEnv), buildStageCommand("dev-flow", "pointers", NO_ENV));
+  const resume = buildResumeCommand({
+    stage: "dev-flow",
+    spec: "55",
+    pointers: "pointers",
+    worktreePath: WORKTREE_PATH,
+    env: { DEV_ENV_PROVIDER: " ", DEV_ENV_AGENT_DEV_FLOW: "" },
+  });
+  assert.ok(resume.includes("DEV_ENV_PROVIDER=''"));
+  assert.ok(resume.includes("DEV_ENV_AGENT_DEV_FLOW=''"));
 });
 
 test("the give-up marker names the spec, the stage and the launch-helper resume command on one line each", () => {
@@ -1737,9 +1778,9 @@ test("a failed wake leaves the marker printed and the helper's failure visible",
     assert.equal(result.status, 7);
     assert.ok(result.stdout.startsWith(`${stageSentinel("55", "dev-flow")}\n`));
     assert.match(result.stdout, /FAILED: chain #55 dev-flow gave up after 5 attempts\n/);
-    assert.match(result.stdout, /FAILED: resume with: cd '\/work\/tree' && node '.*launch-stage\.mjs' dev-flow 55 /);
+    assert.match(result.stdout, /FAILED: resume with: cd '\/work\/tree' && export DEV_ENV_PROVIDER='' .* && node '.*launch-stage\.mjs' dev-flow 55 /);
     assert.match(result.stderr, /wake-stub/);
-    assert.match(readFileSync(log, "utf8"), /wake .*open-wake-session\.mjs dev-flow 55 cd '\/work\/tree' && node '.*launch-stage\.mjs'/);
+    assert.match(readFileSync(log, "utf8"), /wake .*open-wake-session\.mjs dev-flow 55 cd '\/work\/tree' && export DEV_ENV_PROVIDER='' .* && node '.*launch-stage\.mjs'/);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
