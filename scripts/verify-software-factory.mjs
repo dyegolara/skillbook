@@ -38,7 +38,14 @@
  *      explicit --provider/--model/--thinking flags;
  *   9. the shared `## Handoff rules` block is byte-identical between the two
  *      block-carrying skills: dev-flow and code-review-loop close with the
- *      same block, and a drift between them is a pack-contract problem.
+ *      same block, and a drift between them is a pack-contract problem;
+ *   10. ADR-0006's documented pin rows cross-check against the DEFAULTS table:
+ *      the verifier reads the ADR's five stage rows as source text (the model
+ *      and the effort, in the ADR's recorded spellings) and compares them to
+ *      the same table the frontmatter is checked against — the only
+ *      verifier-side guard for the implement-spec pin, which has no SKILL.md
+ *      frontmatter, and a drift between the record and the file is a
+ *      pack-contract problem.
  */
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -69,6 +76,17 @@ const DEFAULTS_FILE = "skills/software-factory/scripts/env-defaults.mjs";
 // in every skill that launches a stage.
 const PACKAGED_HELPERS = ["launch-stage.mjs", "open-wake-session.mjs", "env-defaults.mjs"];
 const ADR_FILE = "docs/adr/0006-chain-skills-cross-model-handoffs.md";
+// ADR-0006's pin table documents one row per stage, keyed by the stage's kebab
+// name; this map names the env-defaults stage key each row records. The pins
+// themselves stay in env-defaults.mjs. `implement-spec` has no SKILL.md — it is
+// a referenced skill — so its row is that pin's only verifier-side guard.
+const ADR_PIN_STAGE_KEYS = {
+  "grill-with-spec": "GRILL",
+  "dev-flow": "DEV_FLOW",
+  "implement-spec": "IMPLEMENT_SPEC",
+  "code-review-loop": "CODE_REVIEW_LOOP",
+  "create-pr": "CREATE_PR",
+};
 // The skills that close with the shared `## Handoff rules` block.
 const HANDOFF_RULES_SKILLS = ["dev-flow", "code-review-loop"];
 
@@ -120,6 +138,7 @@ export function verifySoftwareFactoryPack(packDir) {
     }
   }
 
+  checkAdrPins(problems, repoRoot, defaults);
   checkLaunchMechanism(problems, packDir, repoRoot, defaultsSource(packDir));
   checkGrillMechanism(problems, packDir);
   checkWakeMechanism(problems, packDir);
@@ -757,6 +776,71 @@ function agentCommandRow(text, agent) {
   const match = pattern.exec(text.slice(declaration));
   if (!match) return null;
   return bracedBlock(text, declaration + match.index + match[0].lastIndexOf("{"));
+}
+
+/**
+ * Read ADR-0006's documented pin rows as source text — the same source-text
+ * approach as the defaults and wake-name reads. A row records the stage's kebab
+ * name, the model in backticks and the effort in a parenthetical: the
+ * launch-stage rows carry the `--thinking` flag, the grill row says "effort
+ * <value>", and a row may append a note after the recorded effort. A row is a
+ * bullet: stage name, the model in backticks, then the effort parenthetical.
+ * Returns the rows, or null when no row can be read.
+ */
+function parseAdrPins(text) {
+  const pins = [];
+  const rowPattern = /^\s*-\s+([a-z][a-z-]*)\s+(?:—|–|--)\s+`([^`]+)`\s+\(([^)]*)\)/gm;
+  let row;
+  while ((row = rowPattern.exec(text)) !== null) {
+    const effort = /^(?:effort\s+|`?--thinking\s+)([a-z][\w.-]*)/.exec(row[3]);
+    if (effort === null) continue;
+    pins.push({ stage: row[1], model: row[2], effort: effort[1] });
+  }
+  return pins.length > 0 ? pins : null;
+}
+
+/**
+ * Cross-check ADR-0006's documented pin rows against the DEFAULTS table the
+ * verifier already reads from env-defaults.mjs. The 2026-10-16 amendment names
+ * that table as the pin list's source, while the ADR's historical text is never
+ * rewritten — so drift between the record and the file is caught here instead.
+ * This is the one check that guards the implement-spec pin.
+ */
+function checkAdrPins(problems, repoRoot, defaults) {
+  const path = join(repoRoot, ADR_FILE);
+  // A missing ADR is reported by the wake-record check.
+  if (!existsSync(path)) return;
+  const pins = parseAdrPins(readFileSync(path, "utf8"));
+  if (pins === null) {
+    problems.push(`${ADR_FILE}: cannot read the documented pin table rows`);
+    return;
+  }
+  // An unreadable DEFAULTS table is already reported by readDefaults.
+  if (defaults === null) return;
+  for (const pin of pins) {
+    const key = ADR_PIN_STAGE_KEYS[pin.stage];
+    if (key === undefined) {
+      problems.push(`${ADR_FILE}: ${pin.stage} pin row has no ${DEFAULTS_FILE} DEFAULTS stage`);
+      continue;
+    }
+    const documented = defaults.stages[key];
+    if (documented === undefined) {
+      problems.push(
+        `${ADR_FILE}: ${pin.stage} pin row has no ${DEFAULTS_FILE} DEFAULTS.stages.${key} entry`
+      );
+      continue;
+    }
+    if (pin.model !== documented.model) {
+      problems.push(
+        `${ADR_FILE}: ${pin.stage} model pin "${pin.model}" does not match ${DEFAULTS_FILE} DEFAULTS.stages.${key}.model "${documented.model}"`
+      );
+    }
+    if (pin.effort !== documented.effort) {
+      problems.push(
+        `${ADR_FILE}: ${pin.stage} effort pin "${pin.effort}" does not match ${DEFAULTS_FILE} DEFAULTS.stages.${key}.effort "${documented.effort}"`
+      );
+    }
+  }
 }
 
 function sectionLines(text, heading) {

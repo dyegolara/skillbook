@@ -38,6 +38,14 @@ new session on its pinned agent and model. The user enters at the first
 skill only.
 _Avoid_: pipeline, workflow.
 
+**Effort**:
+A per-stage variable of the model pin — its reasoning effort:
+`DEV_ENV_EFFORT_<STAGE>`, with defaults in `env-defaults.mjs`, overridable
+per run, allowed values `max`, `xhigh` and `high`. Renamed from `thinking`
+(spec #160, ticket #168); only the pi command's `--thinking` flag keeps the
+flag's own name. Not fixed at the model's highest available effort.
+_Avoid_: thinking level, effort level.
+
 **Model pin**:
 The model a chain stage is invoked with, plus the stage's effort; both are
 per-stage variables with defaults in `env-defaults.mjs`, overridable per run
