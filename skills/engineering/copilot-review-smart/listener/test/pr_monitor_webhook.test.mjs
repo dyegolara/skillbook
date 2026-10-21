@@ -496,8 +496,8 @@ test("spawnTick kills a child that exceeds PR_MONITOR_TICK_TIMEOUT and marks it 
   const result = await resultPromise;
   assert.equal(result.ok, false);
   assert.equal(result.timedOut, true);
-  assert.deepEqual(killed, ["SIGKILL"]);
-  assert.deepEqual(treeKills, [[fakeChild, "SIGKILL"]]);
+  assert.deepEqual(killed, ["SIGTERM"]);
+  assert.deepEqual(treeKills, [[fakeChild, "SIGTERM"]]);
   assert.equal(spawnOptions.detached, process.platform !== "win32");
 });
 
@@ -1091,6 +1091,7 @@ test("drafts stay tracked and quiescent; ready_for_review wakes them", async (t)
 test("a PR closed Delivery closes its Flow without a Tick, and later Deliveries are ignored", async (t) => {
   const clock = makeClock();
   const futureIso = () => new Date(clock.now() + 3_600_000).toISOString();
+  const state = emptyListenerState();
   const tickRunner = makeTickRunner([
     () => ({ ok: true, reports: [prReport(7, { next_check_at: futureIso() })], overall: {} }),
   ]);
@@ -1100,6 +1101,8 @@ test("a PR closed Delivery closes its Flow without a Tick, and later Deliveries 
     now: clock.now,
     clock,
     tickRunner,
+    state,
+    persistState: (next) => Object.assign(state, next),
     onExit: () => exits.push("exit"),
   });
   await listener.start();
@@ -1116,6 +1119,8 @@ test("a PR closed Delivery closes its Flow without a Tick, and later Deliveries 
   await listener.drain();
   assert.equal(tickRunner.calls.length, 1, "closing a PR must not tick");
   assert.deepEqual(listener.trackedFlows(), []);
+  assert.equal(state.closed_flows[`${REPO}#7`].closed_at, new Date(clock.now() - 30_000).toISOString());
+  assert.match(state.closed_flows[`${REPO}#7`].reason, /closed or merged/);
   assert.equal(exits.length, 1);
 
   await postDelivery(listener.port, "test-secret", prOpenedPayload(7), { deliveryId: "open-2" });
@@ -1666,6 +1671,22 @@ test("Hook ids persist across a restart through the listener state file", async 
   const removed = await teardownHooks({ repos: [REPO], gh, state: loaded });
   assert.deepEqual(removed, [{ repo: REPO, id: 77 }]);
   assert.ok(gh.calls.some((args) => /hooks\/77$/.test(args[0]) && args.includes("DELETE")));
+});
+
+test("closed Flow evidence persists across Listener state reloads", () => {
+  const dir = makeRuntimeDir();
+  const statePath = path.join(dir, "listener-state.json");
+  const state = emptyListenerState();
+  state.closed_flows[`${REPO}#7`] = {
+    closed_at: "2026-09-08T00:00:00.000Z",
+    reason: "PR closed or merged",
+  };
+  try {
+    saveListenerState(state, statePath);
+    assert.deepEqual(loadListenerState(statePath).closed_flows[`${REPO}#7`], state.closed_flows[`${REPO}#7`]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("listener state is written atomically and never shares the Tick state file", () => {

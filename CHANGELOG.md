@@ -1,7 +1,25 @@
 # Changelog
 
+## 1.2.1
+
+- `copilot-review-smart`: newer Tick observations supersede stale closure
+  evidence, and Listener Tick timeouts allow decision-command process groups
+  to clean up before forced termination.
+
 ## 1.2.0
 
+- `copilot-review-smart`: agent-native LLM decider — the three-layer decision
+  source (explicit decision command, model + credential pair, auto-discovery
+  of the invoking agent session, or the handled none case) records
+  `decision_source` on every decision and treats a missing decider as a
+  configuration gap instead of burning the failure budget or escalating
+  (ADR-0007).
+- `copilot-review-smart`: read-only observability surface — a separate
+  loopback REST API (`/health`, `/timeline`, `/flows`,
+  `/flows/:owner/:repo/:num`) that projects the persisted Tick and Listener
+  state, plus a coloured TUI client of the same contract (ADR-0009).
+  `next_check_at` and the per-PR Tick history are persisted so the Stage
+  sequence and the schedule survive the process.
 - Add the software-factory pack: grill-with-spec, dev-flow, code-review-loop,
   and create-pr, four chain skills that wrap the referenced Matt Pocock pack
   into one path from a rough idea to a ready PR. Each stage is a new session on

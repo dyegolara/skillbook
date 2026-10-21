@@ -32,6 +32,7 @@ export function createListener({
   state = emptyListenerState(),
 } = {}) {
   const repos = [...(config.repos || [])];
+  state.closed_flows ||= {};
   if (!config.secret) {
     throw new Error("PR_MONITOR_WEBHOOK_SECRET is required: refusing to serve an unauthenticated webhook.");
   }
@@ -162,12 +163,22 @@ export function createListener({
     return true;
   }
 
-  function closeFlow(key, reason) {
+  function clearClosedFlow(key) {
+    if (!state.closed_flows[key]) return;
+    delete state.closed_flows[key];
+    persist();
+  }
+
+  function closeFlow(key, reason, { prClosed = false } = {}) {
     flows.delete(key);
     closedFlows.add(key);
     tickFailures.delete(key);
     disarmExpectation(key, reason);
     cancelTimer(debounces, key);
+    if (prClosed) {
+      state.closed_flows[key] = { closed_at: new Date(now()).toISOString(), reason };
+      persist();
+    }
     logger({ event: "flow_closed", key, reason });
     maybeExit();
   }
@@ -271,8 +282,9 @@ export function createListener({
   /** Apply one Tick report to the Flow: close, quiesce, arm or disarm. */
   function applyPrReport(key, report) {
     tickFailures.delete(key);
+    if (report.action !== "closed") clearClosedFlow(key);
     if (report.terminal === "done") {
-      closeFlow(key, "flow completed (Notify-ready or PR closed)");
+      closeFlow(key, "flow completed (Notify-ready or PR closed)", { prClosed: report.action === "closed" });
       return;
     }
     if (report.skipped) {
@@ -338,8 +350,12 @@ export function createListener({
     });
 
     if (info.closesFlow) {
-      closeFlow(key, `PR ${info.repo}#${info.num} closed or merged`);
+      closeFlow(key, `PR ${info.repo}#${info.num} closed or merged`, { prClosed: true });
       return { status: 202, accepted: true, key, closesFlow: true };
+    }
+    if (info.reopensFlow) {
+      closedFlows.delete(key);
+      clearClosedFlow(key);
     }
     if (closedFlows.has(key)) {
       logger({ event: "delivery_ignored", delivery_id: deliveryId, key, reason: "Flow is closed for this run" });
@@ -441,6 +457,7 @@ export function createListener({
         if (!report.repo || !report.pr) continue;
         const key = keyOf(report.repo, report.pr);
         if (closedFlows.has(key)) continue;
+        if (report.action !== "closed") clearClosedFlow(key);
         touched.add(key);
         if (report.fetch_failed) {
           trackFlow(key);
@@ -454,7 +471,7 @@ export function createListener({
           title: report.title,
         });
         if (report.terminal === "done") {
-          closeFlow(key, "flow completed at startup");
+          closeFlow(key, "flow completed at startup", { prClosed: report.action === "closed" });
         } else if (report.skipped) {
           trackFlow(key);
           disarmExpectation(key, "draft/WIP is quiescent");
@@ -492,8 +509,12 @@ export function createListener({
       if (touched.has(key) || closedFlows.has(key)) continue;
       const { repo, num } = parseKey(key);
       if (!repos.includes(repo)) continue;
+      if (state.closed_flows[key]) {
+        disarmExpectation(key, "PR was already recorded as closed");
+        continue;
+      }
       if (authoritative) {
-        closeFlow(key, "PR is no longer open (reconciled by the Startup tick)");
+        closeFlow(key, "PR is no longer open (reconciled by the Startup tick)", { prClosed: true });
         continue;
       }
       const deadlineMs = Number(entry?.deadline_ms);
