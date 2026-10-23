@@ -29,6 +29,23 @@ export const EFFORTS = ["max", "xhigh", "high"];
 export const AGENTS = ["pi", "opencode", "codex", "claude-code", "grok", "cursor-cli"];
 
 /**
+ * The model-id emission formats, keyed by the name each `AGENT_COMMANDS` row
+ * declares in `modelIdFormat` (ADR-0011). `provider/model` passes the
+ * canonical id through unchanged; `bare` strips the first `provider/`
+ * segment — only the first, so a nested id keeps its remainder
+ * (`openrouter/anthropic/claude-x` becomes `anthropic/claude-x`) and an id
+ * without `/` passes through unchanged. This is emission, not validation:
+ * `DEV_ENV_MODEL_<STAGE>` keeps its canonical form.
+ */
+const MODEL_ID_FORMATS = Object.freeze({
+  "provider/model": (model) => model,
+  bare: (model) => {
+    const slash = model.indexOf("/");
+    return slash === -1 ? model : model.slice(slash + 1);
+  },
+});
+
+/**
  * Today's pins per ticket #161 / ADR-0006: the global provider and each
  * stage's model, effort and agent. Unset `DEV_ENV_` variables resolve to
  * these, so a bare environment behaves exactly as the chain does today.
@@ -75,14 +92,19 @@ export const PROVIDER_KEY_ALIASES = {
 
 /**
  * The agent→launch table: each row names the CLI binary, Kepler's adapter id,
- * the doc that verifies its flags, and builds the argv after the binary from
- * the stage pins (`provider`, `model`, `effort`, `pointers`). `buildAgentCommand`
- * prepends the binary. Binaries verified 2026-10-16 (ticket #161): `pi→pi`,
- * `opencode→opencode` (v2), `codex→codex`, `claude-code→claude`, `grok→grok`,
- * `cursor-cli→agent` (legacy alias `cursor-agent` accepted). Kepler adapterIds
- * verified against the local `GET /agent/adapters` registry (2026-10-16):
- * pi, opencode, codex, claude-code, grok, cursor — `cursor-cli` maps to
- * Kepler's `cursor` adapter.
+ * the doc that verifies its flags, its model-id emission format (ADR-0011)
+ * and builds the argv after the binary from the stage pins (`provider`,
+ * `model`, `effort`, `pointers`). `modelIdFormat` is one of
+ * `MODEL_ID_FORMATS`'s keys: `provider/model` for the agents whose `--model`
+ * flag takes the canonical id, `bare` for those that take a bare model id.
+ * `buildAgentCommand` applies the row's rule before `args` sees the model, so
+ * a new agent extends this table with its format instead of adding a second
+ * model representation. `buildAgentCommand` prepends the binary. Binaries
+ * verified 2026-10-16 (ticket #161): `pi→pi`, `opencode→opencode` (v2),
+ * `codex→codex`, `claude-code→claude`, `grok→grok`, `cursor-cli→agent`
+ * (legacy alias `cursor-agent` accepted). Kepler adapterIds verified against
+ * the local `GET /agent/adapters` registry (2026-10-16): pi, opencode, codex,
+ * claude-code, grok, cursor — `cursor-cli` maps to Kepler's `cursor` adapter.
  */
 export const AGENT_COMMANDS = {
   // Today's exact pinned shape: `pi --print --provider <p> --model <m>
@@ -93,6 +115,8 @@ export const AGENT_COMMANDS = {
     binary: "pi",
     adapterId: "pi",
     docs: ["pi --help (pi 1.3.0)"],
+    // ADR-0011: pi emits the canonical provider/model id.
+    modelIdFormat: "provider/model",
     args: ({ provider, model, effort, pointers }) => [
       "--print",
       "--provider",
@@ -113,6 +137,8 @@ export const AGENT_COMMANDS = {
     binary: "opencode",
     adapterId: "opencode",
     docs: ["https://opencode.ai/docs/cli/", "https://opencode.ai/docs/models/"],
+    // ADR-0011: the model flag takes the `provider/model` id (see above).
+    modelIdFormat: "provider/model",
     args: ({ model, effort, pointers }) => ["run", "--model", model, "--variant", effort, pointers],
   },
   // `codex exec` is the documented non-interactive command; `--model`
@@ -128,6 +154,8 @@ export const AGENT_COMMANDS = {
       "https://developers.openai.com/codex/cli/reference",
       "https://developers.openai.com/codex/config-reference",
     ],
+    // ADR-0011: codex takes a bare model id or alias.
+    modelIdFormat: "bare",
     args: ({ model, effort, pointers }) => [
       "exec",
       "--model",
@@ -144,6 +172,8 @@ export const AGENT_COMMANDS = {
     binary: "claude",
     adapterId: "claude-code",
     docs: ["https://docs.claude.com/en/docs/claude-code/cli-reference"],
+    // ADR-0011: the model flag takes a bare model id or alias.
+    modelIdFormat: "bare",
     args: ({ model, effort, pointers }) => ["-p", "--model", model, "--effort", effort, pointers],
   },
   // `grok -p` sends one prompt headlessly; `-m/--model` picks the model and
@@ -154,6 +184,8 @@ export const AGENT_COMMANDS = {
     binary: "grok",
     adapterId: "grok",
     docs: ["https://docs.x.ai/build/cli/headless-scripting", "https://docs.x.ai/build/cli/reference"],
+    // ADR-0011: the model flag takes a bare model id or alias.
+    modelIdFormat: "bare",
     args: ({ model, effort, pointers }) => ["-p", "--model", model, "--effort", effort, pointers],
   },
   // `agent -p` prints non-interactively and `--model` picks the model. The
@@ -168,6 +200,8 @@ export const AGENT_COMMANDS = {
     // (2026-10-16), not a CLI-doc fact.
     adapterId: "cursor",
     docs: ["https://cursor.com/docs/cli/reference/parameters", "https://cursor.com/docs/cli/headless"],
+    // ADR-0011: the model flag takes a bare model id or alias.
+    modelIdFormat: "bare",
     args: ({ model, pointers }) => ["-p", "--model", model, pointers],
   },
 };
@@ -307,12 +341,21 @@ export function resolveAgent(stage, env = process.env) {
 
 /**
  * Build an agent's launch argv from a stage's pins. The command construction
- * goes through `AGENT_COMMANDS`; an unknown agent is a hard error.
+ * goes through `AGENT_COMMANDS`, and the row's `modelIdFormat` (ADR-0011) is
+ * applied here — the one emission point: the pins keep the canonical
+ * `provider/model` id, while the row's agent receives the shape its `--model`
+ * flag documents. An unknown agent or table format is a hard error.
  */
 export function buildAgentCommand(agent, pin) {
   const row = AGENT_COMMANDS[agent];
   if (!row) {
     throw new Error(`unknown agent "${agent}" — expected one of ${AGENTS.join(", ")}`);
   }
-  return [row.binary, ...row.args(pin)];
+  const format = MODEL_ID_FORMATS[row.modelIdFormat];
+  if (!format) {
+    throw new Error(
+      `unknown model-id format "${row.modelIdFormat}" for agent "${agent}" — expected one of ${Object.keys(MODEL_ID_FORMATS).join(", ")}`
+    );
+  }
+  return [row.binary, ...row.args({ ...pin, model: format(pin.model) })];
 }

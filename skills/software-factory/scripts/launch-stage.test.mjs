@@ -44,7 +44,7 @@ import {
   stripAnsi,
   wakeHelperPath,
 } from "./launch-stage.mjs";
-import { AGENTS, AGENT_COMMANDS, DEFAULTS, PROVIDER_KEY_VARS, stageKey } from "./env-defaults.mjs";
+import { AGENTS, AGENT_COMMANDS, DEFAULTS, PROVIDER_KEY_VARS, buildAgentCommand, stageKey } from "./env-defaults.mjs";
 import { grillPin } from "./open-grill-session.mjs";
 
 // The env-defaults stage key for each launch stage. Every pin value in these
@@ -212,25 +212,22 @@ test("a DEV_ENV_-set environment builds the command from the resolved pins throu
   };
   assert.equal(
     buildStageCommand("dev-flow", "pointers", env),
-    "claude -p --model anthropic/claude-opus-5 --effort xhigh 'pointers'"
+    "claude -p --model claude-opus-5 --effort xhigh 'pointers'"
   );
 });
 
 test("every AGENT_COMMANDS row builds the stage command from its binary and args", () => {
   for (const agent of AGENTS) {
     const pin = defaultPin("dev-flow");
-    const argv = [
-      AGENT_COMMANDS[agent].binary,
-      ...AGENT_COMMANDS[agent].args({
-        provider: pin.provider,
-        model: pin.model,
-        effort: pin.effort,
-        pointers: "pointers",
-      }),
-    ];
+    const argv = buildAgentCommand(agent, {
+      provider: pin.provider,
+      model: pin.model,
+      effort: pin.effort,
+      pointers: "pointers",
+    });
     assert.equal(
       buildStageCommand("dev-flow", "pointers", { DEV_ENV_AGENT_DEV_FLOW: agent }),
-      `${argv.slice(0, -1).join(" ")} 'pointers'`,
+      commandWithPointer(argv, "pointers"),
       agent
     );
   }
@@ -1164,8 +1161,8 @@ test("caller API keys never ride the API request or launched input", async () =>
   assert.equal(result.path, "api");
   const input = calls.find((call) => call.url.endsWith("/terminal/input")).body.input;
   assert.ok(
-    input.includes("claude -p --model anthropic/opus --effort high 'pointers'"),
-    "the launched command is the resolved provider's plain command"
+    input.includes("claude -p --model opus --effort high 'pointers'"),
+    "the launched command carries the resolved provider's bare model id"
   );
   assert.ok(input.includes("PROVIDER-CREDENTIAL-CHECK ANTHROPIC_API_KEY"), "the API child credential is checked");
   assert.ok(!input.includes("sk-ant"), "the key value never reaches the injected command");
