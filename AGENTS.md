@@ -43,6 +43,7 @@ playbooks and the standalone skills (23 principles plus 23 standalone skills,
 | Command | What it checks |
 |---|---|
 | `npm run verify` | All of the below, in order. |
+| `npm run verify:contract` | The `DEV_ENV` contract artifact: `contracts/dev-env.contract.json` must be the generator's output for the source commit it records. `scripts/emit-dev-env-contract.mjs` imports `env-defaults.mjs`, regenerates in memory and deep-compares every field (a hand edit fails), and checks that the recorded commit is a full 40-hex SHA, present locally, an ancestor of `HEAD`, and carries this tree's `env-defaults.mjs`. Offline; `npm run contract:emit` regenerates the artifact. |
 | `npm run verify:publishing` | Every referenced skill resolves on its published channel (network). |
 | `npm run verify:upstream` | Upstream drift against the pstack pin (network). Fails on drift; `npm run verify` runs it with `--report-only` so upstream movement is reported but does not break the health check. |
 | `npm run verify:pstack` | The pstack pack contract: frontmatter, cross-references, plugin registration, provenance, no required client couplings, Node smoke of the tooling. Offline except the tooling smoke, which may install tooling dependencies on first run (`npm run verify:pstack -- --skip-smoke` skips it). |
