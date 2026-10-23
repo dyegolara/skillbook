@@ -112,10 +112,12 @@ export const LAUNCH_SCENARIOS = {
   "agent-switch": {
     stage: "dev-flow",
     env: { ...DEFAULT_KEY_ENV, DEV_ENV_AGENT_DEV_FLOW: "grok" },
-    // Grok Build's documented headless shape: `grok -p --model <m> --effort <e>`.
+    // Grok Build's documented headless shape `grok -p --model <m> --effort <e>`
+    // with the bare model id (ADR-0011): the first `provider/` segment is
+    // stripped at emission, so the fixture spells the bare id out.
     expectedCommand:
-      `grok -p --model ${defaultPin("dev-flow").model} --effort ${defaultPin("dev-flow").effort} ` +
-      `'${FIXTURE.pointers}'`,
+      `grok -p --model ${defaultPin("dev-flow").model.replace(/^[^/]+\//, "")} ` +
+      `--effort ${defaultPin("dev-flow").effort} '${FIXTURE.pointers}'`,
   },
 };
 

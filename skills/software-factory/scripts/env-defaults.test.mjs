@@ -156,10 +156,84 @@ test("the pi row builds today's exact pinned-command shape", () => {
   );
 });
 
+// ADR-0011: `pi` and `opencode` take the canonical `provider/model` id, so
+// their argv is byte-identical to the pre-emission shape.
+test("pi and opencode receive the provider/model id byte-identically", () => {
+  const pin = { provider: "opencode-go", model: "opencode-go/glm-5.3", effort: "max", pointers: "p" };
+  assert.deepEqual(buildAgentCommand("pi", pin), [
+    "pi", "--print", "--provider", "opencode-go", "--model", "opencode-go/glm-5.3", "--thinking", "max", "p",
+  ]);
+  assert.deepEqual(buildAgentCommand("opencode", pin), [
+    "opencode", "run", "--model", "opencode-go/glm-5.3", "--variant", "max", "p",
+  ]);
+});
+
+// ADR-0011: the other four agents take a bare model id — only the first
+// `provider/` segment is stripped.
+test("claude-code, codex, grok and cursor-cli receive the bare model id", () => {
+  for (const agent of ["claude-code", "codex", "grok", "cursor-cli"]) {
+    const argv = buildAgentCommand(agent, {
+      provider: "opencode-go",
+      model: "opencode-go/glm-5.3",
+      effort: "max",
+      pointers: "p",
+    });
+    const model = argv[argv.indexOf("--model") + 1];
+    assert.equal(model, "glm-5.3", agent);
+    assert.ok(!argv.some((arg) => arg.includes("opencode-go/")), `${agent}: no provider prefix in the argv`);
+  }
+});
+
+test("a model id without a `/` passes through unchanged for every agent", () => {
+  for (const agent of AGENTS) {
+    const argv = buildAgentCommand(agent, { provider: "opencode-go", model: "glm-5.3", effort: "max", pointers: "p" });
+    assert.equal(argv[argv.indexOf("--model") + 1], "glm-5.3", agent);
+  }
+});
+
+test("only the first provider/ segment is stripped, so a nested id keeps its remainder", () => {
+  for (const agent of ["claude-code", "codex", "grok", "cursor-cli"]) {
+    const argv = buildAgentCommand(agent, {
+      provider: "openrouter",
+      model: "openrouter/anthropic/claude-x",
+      effort: "high",
+      pointers: "p",
+    });
+    assert.equal(argv[argv.indexOf("--model") + 1], "anthropic/claude-x", agent);
+  }
+});
+
 test("the pointers travel as one argv element, verbatim", () => {
   const pointers = "read the report at /tmp/review report's path.md";
   const command = buildAgentCommand("pi", { provider: "opencode-go", model: "m", effort: "high", pointers });
   assert.equal(command.at(-1), pointers);
+});
+
+test("every AGENT_COMMANDS row declares its model-id format and applies it to the emitted argv", () => {
+  const allowed = ["provider/model", "bare"];
+  const expected = {
+    pi: "provider/model",
+    opencode: "provider/model",
+    codex: "bare",
+    "claude-code": "bare",
+    grok: "bare",
+    "cursor-cli": "bare",
+  };
+  for (const agent of AGENTS) {
+    const row = AGENT_COMMANDS[agent];
+    assert.ok(allowed.includes(row.modelIdFormat), `${agent}: ${row.modelIdFormat} is not an allowed model-id format`);
+    assert.equal(row.modelIdFormat, expected[agent], agent);
+
+    // The row's declared format is the one the argv actually carries.
+    const argv = buildAgentCommand(agent, {
+      provider: "opencode-go",
+      model: "opencode-go/glm-5.3",
+      effort: "max",
+      pointers: "p",
+    });
+    const emitted = argv[argv.indexOf("--model") + 1];
+    assert.equal(emitted, row.modelIdFormat === "bare" ? "glm-5.3" : "opencode-go/glm-5.3", agent);
+  }
 });
 
 test("every AGENT_COMMANDS row carries a binary, a Kepler adapterId, a doc source and an args builder", () => {
@@ -188,16 +262,16 @@ test("each external row builds its documented headless command from the pins", (
     "opencode", "run", "--model", "vendor/model-x", "--variant", "high", "p",
   ]);
   assert.deepEqual(buildAgentCommand("codex", pin), [
-    "codex", "exec", "--model", "vendor/model-x", "-c", "model_reasoning_effort=high", "p",
+    "codex", "exec", "--model", "model-x", "-c", "model_reasoning_effort=high", "p",
   ]);
   assert.deepEqual(buildAgentCommand("claude-code", pin), [
-    "claude", "-p", "--model", "vendor/model-x", "--effort", "high", "p",
+    "claude", "-p", "--model", "model-x", "--effort", "high", "p",
   ]);
   assert.deepEqual(buildAgentCommand("grok", pin), [
-    "grok", "-p", "--model", "vendor/model-x", "--effort", "high", "p",
+    "grok", "-p", "--model", "model-x", "--effort", "high", "p",
   ]);
   assert.deepEqual(buildAgentCommand("cursor-cli", pin), [
-    "agent", "-p", "--model", "vendor/model-x", "p",
+    "agent", "-p", "--model", "model-x", "p",
   ]);
 });
 
@@ -208,8 +282,23 @@ test("cursor-cli does not invent an effort flag the official docs do not documen
   assert.ok(!argv.join(" ").includes("max"));
 });
 
-test("an unknown agent is a hard error", () => {
-  assert.throws(() => buildAgentCommand("gemini", { model: "m", pointers: "p" }), /unknown agent/i);
+test("an unknown agent is a hard error naming the agent and the allowed values", () => {
+  assert.throws(
+    () => buildAgentCommand("gemini", { model: "m", pointers: "p" }),
+    (error) => {
+      assert.match(error.message, /unknown agent "gemini"/);
+      assert.ok(error.message.includes(AGENTS.join(", ")), error.message);
+      return true;
+    }
+  );
+});
+
+test("resolveModel returns the canonical provider/model id verbatim for every stage", () => {
+  for (const [stage, names] of Object.entries(STAGE_ENV_NAMES)) {
+    for (const model of ["anthropic/claude-opus-5", "openrouter/anthropic/claude-x", "glm-5.3"]) {
+      assert.equal(resolveModel(stage, { [names.model]: model }), model, stage);
+    }
+  }
 });
 
 test("every stage's resolved pins compose into its agent's command", () => {
@@ -220,7 +309,12 @@ test("every stage's resolved pins compose into its agent's command", () => {
       effort: resolveEffort(stage, {}),
       pointers: "p",
     });
-    assert.ok(argv.includes(TODAYS_PINS.stages[stage].model), stage);
+    const modelIndex = argv.indexOf("--model");
+    const pinModel = TODAYS_PINS.stages[stage].model;
+    const expectedModel = AGENT_COMMANDS[TODAYS_PINS.stages[stage].agent].modelIdFormat === "bare"
+      ? pinModel.slice(pinModel.indexOf("/") + 1)
+      : pinModel;
+    assert.equal(argv[modelIndex + 1], expectedModel, stage);
     assert.equal(argv.at(-1), "p", stage);
   }
 });
