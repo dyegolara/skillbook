@@ -308,6 +308,24 @@ test("the provider credential guard verifies the API child's exact environment w
   assert.ok(!differs.stdout.includes("server-key"));
 });
 
+test("the provider credential guard compares the trimmed key on both sides", () => {
+  const keyVariable = PROVIDER_KEY_VARS[DEFAULTS.provider];
+  const padded = "  padded-key  ";
+  const guard = providerCredentialGuard("dev-flow", { [keyVariable]: padded });
+  assert.ok(guard, "a padded, non-empty key resolves and gets the guard");
+  assert.ok(!guard.command.includes("padded-key"), "neither the padded nor the trimmed key is embedded");
+  assert.ok(!guard.header.includes("padded-key"));
+
+  // The caller resolves the trimmed key; a terminal carrying the same padded
+  // value must trim to the same key, not report a false mismatch.
+  const matches = spawnSync("bash", ["--norc", "-c", `${guard.command} printf MATCH`], {
+    encoding: "utf8",
+    env: { ...process.env, [keyVariable]: padded },
+  });
+  assert.equal(matches.status, 0, matches.stderr);
+  assert.equal(matches.stdout, "MATCH");
+});
+
 test("an alias-only provider key still gets the guard, naming the variable that carries it", () => {
   const guard = providerCredentialGuard("dev-flow", { [DEPRECATED_KEY_VARIABLE]: "alias-key" });
   assert.ok(guard, "the deprecated spelling still resolves, so the guard runs");

@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -49,6 +49,33 @@ function cleanEnv() {
   return Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("DEV_ENV_")));
 }
 
+/** A temporary checkout root, removed when the suite ends. */
+function tempRoot() {
+  const root = mkdtempSync(join(tmpdir(), "dev-env-contract-"));
+  TEMP_ROOTS.push(root);
+  return root;
+}
+
+/** An empty git repo with this repo's origin, so the source repo resolves. */
+function gitRoot() {
+  const root = tempRoot();
+  const initialized = spawnSync("git", ["init"], { cwd: root, encoding: "utf8" });
+  assert.equal(initialized.status, 0, initialized.stderr);
+  const remote = spawnSync(
+    "git",
+    ["remote", "add", "origin", "https://github.com/dyegolara/skillbook.git"],
+    { cwd: root, encoding: "utf8" }
+  );
+  assert.equal(remote.status, 0, remote.stderr);
+  return root;
+}
+
+/** Write a file under a root, creating its parent directories. */
+function writeInto(root, relativePath, contents) {
+  mkdirSync(join(root, dirname(relativePath)), { recursive: true });
+  writeFileSync(join(root, relativePath), contents);
+}
+
 test("the committed artifact is the generator's output for its recorded source commit", () => {
   const committed = readCommitted();
   const regenerated = regenerate(committed.source.commit);
@@ -61,8 +88,7 @@ test("checkContract reports the committed artifact clean", () => {
 });
 
 test("checkContract reports a missing artifact", () => {
-  const root = mkdtempSync(join(tmpdir(), "dev-env-contract-"));
-  TEMP_ROOTS.push(root);
+  const root = tempRoot();
   const result = checkContract({ root });
   assert.equal(result.ok, false);
   assert.ok(
@@ -121,23 +147,94 @@ test("regeneration is idempotent and the check never rewrites the artifact", () 
   assert.equal(afterCheck.mtimeMs, before.mtimeMs);
 });
 
-test("source.commit is a full SHA and records the source file this tree carries", () => {
+test("source.commit is a full SHA and, when available, records the source file this tree carries", () => {
   const { source } = readCommitted();
   assert.equal(source.repo, "dyegolara/skillbook");
   assert.equal(source.path, SOURCE_PATH);
   assert.match(source.commit, /^[0-9a-f]{40}$/);
 
-  const shown = spawnSync("git", ["show", `${source.commit}:${SOURCE_PATH}`], {
-    cwd: ROOT,
+  // Provenance is verified when the object is available. After a squash merge
+  // it may be absent; the body comparison is the drift guard in that case.
+  const known = spawnSync("git", ["cat-file", "-e", `${source.commit}^{commit}`], { cwd: ROOT });
+  if (known.status === 0) {
+    const shown = spawnSync("git", ["show", `${source.commit}:${SOURCE_PATH}`], {
+      cwd: ROOT,
+      encoding: "utf8",
+    });
+    assert.equal(shown.status, 0, shown.stderr);
+    assert.equal(shown.stdout, readFileSync(join(ROOT, SOURCE_PATH), "utf8"));
+  }
+});
+
+test("a squashed history passes: an absent recorded commit is provenance, not drift", () => {
+  const root = gitRoot();
+  // Copy the artifact and the source it names, but commit nothing: the
+  // recorded commit object is exactly as absent as it is after a squash merge.
+  writeInto(root, CONTRACT_FILE, readFileSync(CONTRACT_PATH, "utf8"));
+  writeInto(root, SOURCE_PATH, readFileSync(join(ROOT, SOURCE_PATH), "utf8"));
+
+  const { source } = readCommitted();
+  const absent = spawnSync("git", ["cat-file", "-e", `${source.commit}^{commit}`], { cwd: root });
+  assert.notEqual(absent.status, 0, "the recorded commit object must be absent from this fresh repo");
+
+  assert.deepEqual(checkContract({ root }), { ok: true, problems: [] });
+});
+
+test("a recorded commit that exists but is not an ancestor of HEAD passes", () => {
+  const root = gitRoot();
+  const identity = ["-c", "user.name=Contract Test", "-c", "user.email=contract@test.invalid"];
+  writeInto(root, SOURCE_PATH, readFileSync(join(ROOT, SOURCE_PATH), "utf8"));
+  assert.equal(spawnSync("git", ["add", SOURCE_PATH], { cwd: root }).status, 0);
+  const first = spawnSync("git", [...identity, "commit", "-m", "source"], { cwd: root, encoding: "utf8" });
+  assert.equal(first.status, 0, first.stderr);
+  const sha = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+
+  // A second root commit keeps the recorded object in place but off HEAD's
+  // history — the state a squash merge leaves when the old object still exists.
+  const orphan = spawnSync("git", ["checkout", "--orphan", "unrelated"], { cwd: root, encoding: "utf8" });
+  assert.equal(orphan.status, 0, orphan.stderr);
+  const second = spawnSync("git", [...identity, "commit", "-m", "unrelated root"], {
+    cwd: root,
     encoding: "utf8",
   });
-  assert.equal(shown.status, 0, shown.stderr);
-  assert.equal(shown.stdout, readFileSync(join(ROOT, SOURCE_PATH), "utf8"));
+  assert.equal(second.status, 0, second.stderr);
+  const ancestor = spawnSync("git", ["merge-base", "--is-ancestor", sha, "HEAD"], { cwd: root });
+  assert.notEqual(ancestor.status, 0, "the recorded commit must be off HEAD's history");
 
-  const ancestor = spawnSync("git", ["merge-base", "--is-ancestor", source.commit, "HEAD"], {
-    cwd: ROOT,
-  });
-  assert.equal(ancestor.status, 0, `source.commit ${source.commit} must be an ancestor of HEAD`);
+  const artifact = readCommitted();
+  artifact.source.commit = sha;
+  writeInto(root, CONTRACT_FILE, serializeContract(artifact));
+  assert.deepEqual(checkContract({ root }), { ok: true, problems: [] });
+});
+
+test("a recorded commit that carries a different source file fails", () => {
+  const root = gitRoot();
+  const currentSource = readFileSync(join(ROOT, SOURCE_PATH), "utf8");
+  // Commit a drifted copy, then leave this tree carrying the real source: the
+  // object exists, so the source-at-commit comparison must name the file.
+  writeInto(root, SOURCE_PATH, `${currentSource}\n// drifted copy\n`);
+  const added = spawnSync("git", ["add", SOURCE_PATH], { cwd: root, encoding: "utf8" });
+  assert.equal(added.status, 0, added.stderr);
+  const committed = spawnSync(
+    "git",
+    ["-c", "user.name=Contract Test", "-c", "user.email=contract@test.invalid", "commit", "-m", "drifted source"],
+    { cwd: root, encoding: "utf8" }
+  );
+  assert.equal(committed.status, 0, committed.stderr);
+  writeInto(root, SOURCE_PATH, currentSource);
+
+  const sha = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+  assert.match(sha, /^[0-9a-f]{40}$/);
+  const artifact = readCommitted();
+  artifact.source.commit = sha;
+  writeInto(root, CONTRACT_FILE, serializeContract(artifact));
+
+  const result = checkContract({ root });
+  assert.equal(result.ok, false);
+  assert.ok(
+    result.problems.some((problem) => problem.includes(SOURCE_PATH)),
+    result.problems.join("\n")
+  );
 });
 
 test("the artifact carries the imported contract tables, not copies", () => {

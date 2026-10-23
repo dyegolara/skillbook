@@ -838,8 +838,11 @@ export function agentEnvironment(env = process.env) {
  * using a one-use HMAC challenge. The key resolves through `resolveProviderKey`,
  * so the guard's header and script name the variable that actually carries it
  * — the documented spelling, or a deprecated alias when that is the only one
- * set. The key itself never enters the command or API request; only the
- * nonce-scoped proof does.
+ * set. Both sides compare the trimmed key per that resolution rule: the
+ * caller's value is trimmed by `resolveProviderKey` (`readEnv`), and the
+ * terminal-side script trims `process.env[<KEY>]` before hashing. The key
+ * itself never enters the command or API request; only the nonce-scoped proof
+ * does.
  */
 export function providerCredentialGuard(stage, env = process.env) {
   const resolved = resolveProviderKey(stagePin(stage, env).provider, env);
@@ -852,7 +855,7 @@ export function providerCredentialGuard(stage, env = process.env) {
   const script =
     `const c=require("node:crypto");` +
     `const k=process.env[${JSON.stringify(keyVariable)}];` +
-    `const actual=k?c.createHmac("sha256",k).update(${JSON.stringify(nonce)}).digest("hex"):"";` +
+    `const actual=k?c.createHmac("sha256",k.trim()).update(${JSON.stringify(nonce)}).digest("hex"):"";` +
     `process.exit(actual===${JSON.stringify(digest)}?0:1)`;
   return {
     keyVariable,

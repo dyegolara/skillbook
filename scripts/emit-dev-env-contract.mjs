@@ -30,11 +30,15 @@
  * plus a trailing newline, fields in the order above. `--check` is the drift
  * check `npm run verify:contract` runs: it regenerates in memory from the
  * committed artifact's recorded `source.commit`, compares every field of the
- * committed file, and validates that the recorded commit is a full SHA present
- * locally, an ancestor of `HEAD`, and really carries today's
- * `env-defaults.mjs` (`git show <commit>:<path>` byte-for-byte). Regenerating
- * at the same tree therefore produces no diff by itself, while a hand edit or
- * an outdated pin fails with a concrete diff. It never writes.
+ * committed file, and validates that `source.commit` is a full 40-hex SHA.
+ * The commit is recorded provenance, verified when it is available: if the
+ * object exists locally, `git show <commit>:<path>` must byte-match today's
+ * `env-defaults.mjs`, so a stale recorded commit fails. After a squash merge,
+ * a shallow clone or a rebased history the object may be gone; the check then
+ * skips that verification rather than failing, because the field-by-field
+ * regeneration of the committed body is the drift guard and survives those
+ * histories. Regenerating at the same tree therefore produces no diff by
+ * itself, while a hand edit fails with a concrete diff. It never writes.
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
@@ -226,25 +230,19 @@ function headCommit(root) {
 }
 
 /**
- * The recorded commit is trustworthy only if it exists locally, is an ancestor
- * of `HEAD`, and carries the very `env-defaults.mjs` this tree has — i.e. the
- * artifact really reflects the source it names.
+ * Verify recorded provenance when it is available: if the recorded commit
+ * exists in this checkout, it must carry the very `env-defaults.mjs` this
+ * tree has. An absent object is normal — a squash merge drops the branch
+ * commits, and a shallow clone or a rebased history lacks them — so it is not
+ * a problem; the field-by-field regeneration against the committed body is the
+ * drift guard that survives those histories. Ancestry is deliberately not
+ * required: after a squash merge the recorded commit is no longer an ancestor
+ * of `HEAD` even when the object still exists.
  */
 function sourceCommitProblems(root, commit, currentSource) {
-  const problems = [];
   const known = git(root, ["cat-file", "-e", `${commit}^{commit}`]);
-  if (known.status !== 0) {
-    problems.push(
-      `${CONTRACT_FILE}: source.commit ${commit} is not present in this checkout — fetch it or regenerate the artifact (npm run contract:emit)`
-    );
-    return problems;
-  }
-  const ancestor = git(root, ["merge-base", "--is-ancestor", commit, "HEAD"]);
-  if (ancestor.status !== 0) {
-    problems.push(
-      `${CONTRACT_FILE}: source.commit ${commit} is not an ancestor of HEAD — regenerate the artifact at this tree (npm run contract:emit)`
-    );
-  }
+  if (known.status !== 0) return [];
+  const problems = [];
   const recorded = git(root, ["show", `${commit}:${SOURCE_PATH}`]);
   if (recorded.status !== 0) {
     problems.push(
