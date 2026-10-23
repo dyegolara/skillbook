@@ -59,13 +59,18 @@ export const LAUNCH_STAGES = Object.freeze({
   "create-pr": "CREATE_PR",
 });
 
-/** Provider API-key environment names that launch helpers must not forward. */
+/** Documented Provider key variable per Provider (GLOSSARY: Provider key). */
 export const PROVIDER_KEY_VARS = {
   openrouter: "OPENROUTER_API_KEY",
-  "opencode-go": "OPENCODE_GO_API_KEY",
+  "opencode-go": "OPENCODE_API_KEY",
   openai: "OPENAI_API_KEY",
   xai: "XAI_API_KEY",
   anthropic: "ANTHROPIC_API_KEY",
+};
+
+/** Deprecated Provider key spellings, still read during the transition. */
+export const PROVIDER_KEY_ALIASES = {
+  "opencode-go": ["OPENCODE_GO_API_KEY"],
 };
 
 /**
@@ -176,6 +181,37 @@ function readEnv(env, name) {
   if (raw === undefined || raw === null) return null;
   const value = String(raw).trim();
   return value === "" ? null : value;
+}
+
+/**
+ * The Provider's key variable names in resolution order: the documented name
+ * first, then its deprecated aliases. An unknown Provider has no names.
+ */
+export function providerKeyVariables(provider) {
+  const documented = PROVIDER_KEY_VARS[provider];
+  if (!documented) return [];
+  return [documented, ...(PROVIDER_KEY_ALIASES[provider] ?? [])];
+}
+
+/** Every Provider key variable name, documented and alias, for the strip set. */
+export function providerKeyVariableNames() {
+  return Object.keys(PROVIDER_KEY_VARS).flatMap((provider) => providerKeyVariables(provider));
+}
+
+/**
+ * Resolve a Provider's key from an injected environment: the first name in
+ * `providerKeyVariables` order that resolves wins, so the documented spelling
+ * beats a deprecated alias when both are set and the old spelling alone still
+ * resolves. `readEnv`'s rule applies to each name — unset, empty and
+ * whitespace-only are absent, any other value is trimmed. No key, or an
+ * unknown Provider, resolves to null.
+ */
+export function resolveProviderKey(provider, env = process.env) {
+  for (const name of providerKeyVariables(provider)) {
+    const value = readEnv(env, name);
+    if (value !== null) return { name, value };
+  }
+  return null;
 }
 
 /**

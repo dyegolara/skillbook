@@ -8,10 +8,13 @@ import {
   PROVIDERS,
   PROVIDER_KEY_VARS,
   buildAgentCommand,
+  providerKeyVariableNames,
+  providerKeyVariables,
   resolveAgent,
   resolveEffort,
   resolveModel,
   resolveProvider,
+  resolveProviderKey,
   resolveValue,
 } from "./env-defaults.mjs";
 
@@ -37,14 +40,67 @@ test("the allowed lists are exactly the ticket's", () => {
   assert.deepEqual(AGENTS, ["pi", "opencode", "codex", "claude-code", "grok", "cursor-cli"]);
 });
 
-test("PROVIDER_KEY_VARS maps each provider to its own key variable", () => {
+test("PROVIDER_KEY_VARS maps each provider to its documented key variable", () => {
   assert.deepEqual(PROVIDER_KEY_VARS, {
     openrouter: "OPENROUTER_API_KEY",
-    "opencode-go": "OPENCODE_GO_API_KEY",
+    "opencode-go": "OPENCODE_API_KEY",
     openai: "OPENAI_API_KEY",
     xai: "XAI_API_KEY",
     anthropic: "ANTHROPIC_API_KEY",
   });
+});
+
+test("providerKeyVariables: the documented name first, then the deprecated alias", () => {
+  assert.deepEqual(providerKeyVariables("opencode-go"), ["OPENCODE_API_KEY", "OPENCODE_GO_API_KEY"]);
+  assert.deepEqual(providerKeyVariables("anthropic"), ["ANTHROPIC_API_KEY"]);
+  assert.deepEqual(providerKeyVariables("not-a-provider"), []);
+});
+
+test("providerKeyVariableNames carries every provider's documented name and alias", () => {
+  const names = providerKeyVariableNames();
+  for (const name of Object.values(PROVIDER_KEY_VARS)) assert.ok(names.includes(name), name);
+  assert.ok(names.includes("OPENCODE_GO_API_KEY"), "the deprecated alias is stripped too");
+});
+
+test("resolveProviderKey: the documented name alone resolves", () => {
+  assert.deepEqual(resolveProviderKey("opencode-go", { OPENCODE_API_KEY: "sk-documented" }), {
+    name: "OPENCODE_API_KEY",
+    value: "sk-documented",
+  });
+});
+
+test("resolveProviderKey: the deprecated alias alone still resolves", () => {
+  assert.deepEqual(resolveProviderKey("opencode-go", { OPENCODE_GO_API_KEY: "sk-legacy" }), {
+    name: "OPENCODE_GO_API_KEY",
+    value: "sk-legacy",
+  });
+});
+
+test("resolveProviderKey: with both spellings set the documented name wins", () => {
+  assert.deepEqual(
+    resolveProviderKey("opencode-go", { OPENCODE_API_KEY: "sk-documented", OPENCODE_GO_API_KEY: "sk-legacy" }),
+    { name: "OPENCODE_API_KEY", value: "sk-documented" }
+  );
+});
+
+test("resolveProviderKey trims a set value and reads blank or whitespace-only as absent", () => {
+  assert.deepEqual(resolveProviderKey("opencode-go", { OPENCODE_API_KEY: "  sk-documented  " }), {
+    name: "OPENCODE_API_KEY",
+    value: "sk-documented",
+  });
+  for (const raw of ["", "   ", "\t\n "]) {
+    assert.equal(resolveProviderKey("opencode-go", { OPENCODE_API_KEY: raw }), null, JSON.stringify(raw));
+    assert.deepEqual(
+      resolveProviderKey("opencode-go", { OPENCODE_API_KEY: raw, OPENCODE_GO_API_KEY: "sk-legacy" }),
+      { name: "OPENCODE_GO_API_KEY", value: "sk-legacy" },
+      `a blank documented name falls through to the alias: ${JSON.stringify(raw)}`
+    );
+  }
+});
+
+test("resolveProviderKey: no key resolves to null, and an unknown provider has no names", () => {
+  assert.equal(resolveProviderKey("opencode-go", {}), null);
+  assert.equal(resolveProviderKey("not-a-provider", { OPENCODE_API_KEY: "sk-documented" }), null);
 });
 
 test("resolveValue uses the fallback when the variable is unset", () => {
