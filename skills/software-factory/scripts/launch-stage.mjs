@@ -50,11 +50,12 @@ import { fileURLToPath } from "node:url";
 import {
   buildAgentCommand,
   DEFAULTS,
+  providerKeyVariableNames,
   resolveAgent,
   resolveEffort,
   resolveModel,
   resolveProvider,
-  PROVIDER_KEY_VARS,
+  resolveProviderKey,
   stageKey,
 } from "./env-defaults.mjs";
 
@@ -825,7 +826,7 @@ export function launchDetached({ stage, pointers, spawnImpl = spawn, env = proce
 
 /** Remove credential-like variables from the environment inherited by agents. */
 export function agentEnvironment(env = process.env) {
-  const providerKeyVariables = new Set(Object.values(PROVIDER_KEY_VARS));
+  const providerKeyVariables = new Set(providerKeyVariableNames());
   const sensitiveVariable = /API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL/i;
   return Object.fromEntries(
     Object.entries(env).filter(([name]) => !providerKeyVariables.has(name) && !sensitiveVariable.test(name))
@@ -834,16 +835,19 @@ export function agentEnvironment(env = process.env) {
 
 /**
  * Compare a caller-supplied provider key with the API terminal's inherited key
- * using a one-use HMAC challenge. The key itself never enters the command or
- * API request; only the nonce-scoped proof does.
+ * using a one-use HMAC challenge. The key resolves through `resolveProviderKey`,
+ * so the guard's header and script name the variable that actually carries it
+ * — the documented spelling, or a deprecated alias when that is the only one
+ * set. The key itself never enters the command or API request; only the
+ * nonce-scoped proof does.
  */
 export function providerCredentialGuard(stage, env = process.env) {
-  const keyVariable = PROVIDER_KEY_VARS[stagePin(stage, env).provider];
-  const key = env?.[keyVariable];
-  if (key === undefined || key === null || String(key).trim() === "") return null;
+  const resolved = resolveProviderKey(stagePin(stage, env).provider, env);
+  if (!resolved) return null;
+  const { name: keyVariable, value: key } = resolved;
 
   const nonce = randomBytes(32).toString("hex");
-  const digest = createHmac("sha256", String(key)).update(nonce).digest("hex");
+  const digest = createHmac("sha256", key).update(nonce).digest("hex");
   const mismatchMarker = `PROVIDER-CREDENTIAL-MISMATCH-${nonce}`;
   const script =
     `const c=require("node:crypto");` +

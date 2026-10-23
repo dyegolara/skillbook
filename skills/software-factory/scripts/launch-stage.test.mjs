@@ -78,6 +78,9 @@ const NO_ENV = {};
 /** A hostile caller env used to prove API keys are not forwarded to agents. */
 const LAUNCH_ENV = { [PROVIDER_KEY_VARS[DEFAULTS.provider]]: "sk-test" };
 
+/** The deprecated `opencode-go` Provider key spelling, still read during the transition. */
+const DEPRECATED_KEY_VARIABLE = "OPENCODE_GO_API_KEY";
+
 function resumeCommand(stage, spec, pointers) {
   return buildResumeCommand({ stage, spec, pointers, worktreePath: WORKTREE_PATH });
 }
@@ -277,6 +280,15 @@ test("agentEnvironment strips provider API keys but preserves ordinary variables
   assert.deepEqual(agentEnvironment(env), { PATH: "/bin", DEV_ENV_PROVIDER: "anthropic" });
 });
 
+test("agentEnvironment drops both the documented and the deprecated provider key spellings", () => {
+  const env = {
+    PATH: "/bin",
+    [PROVIDER_KEY_VARS[DEFAULTS.provider]]: "sk-documented",
+    [DEPRECATED_KEY_VARIABLE]: "sk-legacy",
+  };
+  assert.deepEqual(agentEnvironment(env), { PATH: "/bin" });
+});
+
 test("the provider credential guard verifies the API child's exact environment without embedding the key", () => {
   const callerEnv = { DEV_ENV_PROVIDER: "anthropic", ANTHROPIC_API_KEY: "caller-key" };
   const guard = providerCredentialGuard("dev-flow", callerEnv);
@@ -297,6 +309,36 @@ test("the provider credential guard verifies the API child's exact environment w
   assert.equal(differs.status, 1);
   assert.equal(differs.stdout, `${guard.mismatchMarker}\n`);
   assert.ok(!differs.stdout.includes("server-key"));
+});
+
+test("an alias-only provider key still gets the guard, naming the variable that carries it", () => {
+  const guard = providerCredentialGuard("dev-flow", { [DEPRECATED_KEY_VARIABLE]: "alias-key" });
+  assert.ok(guard, "the deprecated spelling still resolves, so the guard runs");
+  assert.ok(guard.header.includes(`PROVIDER-CREDENTIAL-CHECK ${DEPRECATED_KEY_VARIABLE}`));
+  assert.ok(!guard.command.includes("alias-key"));
+  assert.ok(!guard.header.includes("alias-key"));
+
+  // `--norc` keeps a dev-server's own shell profile from overriding the
+  // explicit environment this guard must be verified against.
+  const matches = spawnSync("bash", ["--norc", "-c", `${guard.command} printf MATCH`], {
+    encoding: "utf8",
+    env: { ...process.env, [DEPRECATED_KEY_VARIABLE]: "alias-key" },
+  });
+  assert.equal(matches.status, 0, matches.stderr);
+  assert.equal(matches.stdout, "MATCH");
+});
+
+test("with both key spellings set the documented name wins the guard header", () => {
+  const documented = PROVIDER_KEY_VARS[DEFAULTS.provider];
+  const guard = providerCredentialGuard("dev-flow", {
+    [documented]: "sk-documented",
+    [DEPRECATED_KEY_VARIABLE]: "sk-legacy",
+  });
+  assert.ok(guard.header.includes(`PROVIDER-CREDENTIAL-CHECK ${documented}`));
+  assert.ok(!guard.header.includes(DEPRECATED_KEY_VARIABLE));
+  assert.ok(!guard.command.includes(DEPRECATED_KEY_VARIABLE));
+  assert.ok(!guard.command.includes("sk-documented"));
+  assert.ok(!guard.command.includes("sk-legacy"));
 });
 
 test("an API launch does not require the caller's API key; authentication is user-managed by Kepler", async () => {
@@ -1137,6 +1179,27 @@ test("caller API keys never ride the API request or launched input", async () =>
   );
 });
 
+test("an alias-only caller key is guarded without reaching the API request or injected input", async () => {
+  const worktreePath = "/work/tree";
+  const terminals = [{ worktreePath, label: "Terminal 1", repoId: "r", worktreeId: "w", taskId: "t" }];
+  const env = { [DEPRECATED_KEY_VARIABLE]: "sk-legacy" };
+  const { fetchImpl, calls, inputs } = mockKeplerApi({ terminals, terminalEnv: env });
+
+  const result = await main(["dev-flow", "55", "pointers"], {
+    env,
+    apiBase: "http://api.test",
+    fetchImpl,
+    worktreePath,
+    write: () => {},
+  });
+
+  assert.equal(result.path, "api");
+  const input = inputs()[0].input;
+  assert.ok(input.includes(`PROVIDER-CREDENTIAL-CHECK ${DEPRECATED_KEY_VARIABLE}`));
+  assert.ok(!input.includes("sk-legacy"), "the key value never reaches the injected command");
+  assert.ok(!JSON.stringify(calls).includes("sk-legacy"), "the key value is not sent to Kepler");
+});
+
 test("an API terminal with a different provider key is closed before the stage executes", async () => {
   const env = {
     DEV_ENV_PROVIDER: "anthropic",
@@ -1423,6 +1486,23 @@ test("a connection-level fetch rejection falls back to nohup and preserves error
   assert.equal(args[1], `nohup ${buildStageCommand("dev-flow", "pointers", LAUNCH_ENV)} > /tmp/skillbook-dev-flow-pi.log 2>&1 &`);
   assert.equal(options.detached, true);
   assert.equal(options.env[PROVIDER_KEY_VARS[DEFAULTS.provider]], undefined);
+});
+
+test("the detached fallback strips an alias-only provider key from the agent environment", async () => {
+  const { spawnImpl, calls: spawnCalls } = spawnRecorder();
+  const result = await main(["dev-flow", "55", "pointers"], {
+    env: { [DEPRECATED_KEY_VARIABLE]: "sk-legacy" },
+    apiBase: "http://127.0.0.1:1",
+    fetchImpl: async () => {
+      throw new Error("fetch failed");
+    },
+    spawnImpl,
+    write: () => {},
+  });
+  assert.equal(result.path, "nohup");
+  assert.equal(spawnCalls.length, 1);
+  assert.equal(spawnCalls[0][2].env[DEPRECATED_KEY_VARIABLE], undefined);
+  assert.ok(!JSON.stringify(spawnCalls).includes("sk-legacy"));
 });
 
 test("a missing Kepler data dir falls back to nohup with the read error's message", async () => {
