@@ -46,8 +46,9 @@
  * drift guard and survive those histories. A vanished commit pointer cannot be
  * re-authenticated after history is rewritten — that is why the digest exists.
  * Regenerating at the same tree therefore produces no diff by itself, while a
- * hand edit (including a hand-edited `source.commit` or `source.sha256`) fails
- * with a concrete diff. It never writes.
+ * hand edit fails with a concrete diff: every contract value and
+ * `source.sha256` are regenerated and compared, and `source.commit` is
+ * compared whenever its object is still available. It never writes.
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
