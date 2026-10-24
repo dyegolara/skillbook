@@ -53,15 +53,46 @@ per-stage variables with defaults in `env-defaults.mjs`, overridable per run
 fixed at the model's highest available effort.
 _Avoid_: model config, model setting.
 
+**Provider**:
+The service a chain stage runs models against — `openrouter`, `opencode-go`,
+`openai`, `xai`, `anthropic`. `DEV_ENV_PROVIDER` names it once per docker and
+the model id carries it per stage.
+_Avoid_: model vendor, engine
+
+**Provider key**:
+The API key that authenticates one provider for one docker, carried in that
+provider's own variable (`PROVIDER_KEY_VARS`). The chain never sends it to
+kepler-server or to a launched agent.
+_Avoid_: api secret, key file
+
+**Model id**:
+The exact `provider/model` string a stage runs on, resolved from
+`DEV_ENV_MODEL_<STAGE>` and emitted in the form the stage's agent accepts.
+_Avoid_: model name, model slug
+
+**Stage**:
+One of the five chain positions — `GRILL`, `DEV_FLOW`, `IMPLEMENT_SPEC`,
+`CODE_REVIEW_LOOP`, `CREATE_PR` — each resolving its own model, effort and
+agent.
+_Avoid_: pipeline stage, phase
+
+**Stage assignment**:
+The binding of one stage to a provider, model id, effort and agent. The unit a
+settings surface edits and the chain resolves at launch.
+_Avoid_: preset, mapping
+
 **Provider-environment pattern**:
 The chain's key rule for its launched stages — dev-flow, implement-spec,
 code-review-loop and create-pr: each docker sets `DEV_ENV_PROVIDER` plus
-that provider's own key variable (`OPENCODE_GO_API_KEY`, `OPENAI_API_KEY`,
-…), carrying its own account. The provider's variable is the only key
-mechanism — no generic key, no fallback; a missing key is a hard error
-naming the provider and the variable to set. The grill stage runs as an
-interactive Kepler agent session on its own configured auth and runs no key
-preflight.
+that provider's own key variable (`OPENCODE_API_KEY`, `OPENAI_API_KEY`, …),
+carrying its own account. `OPENCODE_GO_API_KEY` is a deprecated alias of
+`OPENCODE_API_KEY`, still read during the transition. The provider's
+variable is the only key mechanism — no generic key and no fallback to
+another Provider's variable; a deprecated alias of the same Provider's
+variable is read during the transition. A missing key is a hard error naming
+the provider and the variable to set. The grill
+stage runs as an interactive Kepler agent session on its own configured auth
+and runs no key preflight.
 _Avoid_: universal key, generic API key, opt-in pair.
 
 **Handoff doc**:

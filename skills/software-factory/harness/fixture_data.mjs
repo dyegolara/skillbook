@@ -112,10 +112,12 @@ export const LAUNCH_SCENARIOS = {
   "agent-switch": {
     stage: "dev-flow",
     env: { ...DEFAULT_KEY_ENV, DEV_ENV_AGENT_DEV_FLOW: "grok" },
-    // Grok Build's documented headless shape: `grok -p --model <m> --effort <e>`.
+    // Grok Build's documented headless shape `grok -p --model <m> --effort <e>`
+    // with the bare model id (ADR-0011): the fixture spells today's dev-flow
+    // bare id out as its own independent expectation, not re-derived from the pin.
     expectedCommand:
-      `grok -p --model ${defaultPin("dev-flow").model} --effort ${defaultPin("dev-flow").effort} ` +
-      `'${FIXTURE.pointers}'`,
+      `grok -p --model glm-5.3 ` +
+      `--effort ${defaultPin("dev-flow").effort} '${FIXTURE.pointers}'`,
   },
 };
 

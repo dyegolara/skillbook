@@ -48,13 +48,14 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  allProviderKeyNames,
   buildAgentCommand,
   DEFAULTS,
   resolveAgent,
   resolveEffort,
   resolveModel,
   resolveProvider,
-  PROVIDER_KEY_VARS,
+  resolveProviderKey,
   stageKey,
 } from "./env-defaults.mjs";
 
@@ -825,30 +826,36 @@ export function launchDetached({ stage, pointers, spawnImpl = spawn, env = proce
 
 /** Remove credential-like variables from the environment inherited by agents. */
 export function agentEnvironment(env = process.env) {
-  const providerKeyVariables = new Set(Object.values(PROVIDER_KEY_VARS));
+  const keyNames = new Set(allProviderKeyNames());
   const sensitiveVariable = /API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL/i;
   return Object.fromEntries(
-    Object.entries(env).filter(([name]) => !providerKeyVariables.has(name) && !sensitiveVariable.test(name))
+    Object.entries(env).filter(([name]) => !keyNames.has(name) && !sensitiveVariable.test(name))
   );
 }
 
 /**
  * Compare a caller-supplied provider key with the API terminal's inherited key
- * using a one-use HMAC challenge. The key itself never enters the command or
- * API request; only the nonce-scoped proof does.
+ * using a one-use HMAC challenge. The key resolves through `resolveProviderKey`,
+ * so the guard's header and script name the variable that actually carries it
+ * — the documented spelling, or a deprecated alias when that is the only one
+ * set. Both sides compare the trimmed key per that resolution rule: the
+ * caller's value is trimmed by `resolveProviderKey` (`readEnv`), and the
+ * terminal-side script trims `process.env[<KEY>]` before hashing. The key
+ * itself never enters the command or API request; only the nonce-scoped proof
+ * does.
  */
 export function providerCredentialGuard(stage, env = process.env) {
-  const keyVariable = PROVIDER_KEY_VARS[stagePin(stage, env).provider];
-  const key = env?.[keyVariable];
-  if (key === undefined || key === null || String(key).trim() === "") return null;
+  const resolved = resolveProviderKey(stagePin(stage, env).provider, env);
+  if (!resolved) return null;
+  const { name: keyVariable, value: key } = resolved;
 
   const nonce = randomBytes(32).toString("hex");
-  const digest = createHmac("sha256", String(key)).update(nonce).digest("hex");
+  const digest = createHmac("sha256", key).update(nonce).digest("hex");
   const mismatchMarker = `PROVIDER-CREDENTIAL-MISMATCH-${nonce}`;
   const script =
     `const c=require("node:crypto");` +
     `const k=process.env[${JSON.stringify(keyVariable)}];` +
-    `const actual=k?c.createHmac("sha256",k).update(${JSON.stringify(nonce)}).digest("hex"):"";` +
+    `const actual=k?c.createHmac("sha256",k.trim()).update(${JSON.stringify(nonce)}).digest("hex"):"";` +
     `process.exit(actual===${JSON.stringify(digest)}?0:1)`;
   return {
     keyVariable,
