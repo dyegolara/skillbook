@@ -48,9 +48,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  allProviderKeyNames,
   buildAgentCommand,
   DEFAULTS,
-  providerKeyVariableNames,
   resolveAgent,
   resolveEffort,
   resolveModel,
@@ -826,10 +826,10 @@ export function launchDetached({ stage, pointers, spawnImpl = spawn, env = proce
 
 /** Remove credential-like variables from the environment inherited by agents. */
 export function agentEnvironment(env = process.env) {
-  const providerKeyVariables = new Set(providerKeyVariableNames());
+  const keyNames = new Set(allProviderKeyNames());
   const sensitiveVariable = /API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL/i;
   return Object.fromEntries(
-    Object.entries(env).filter(([name]) => !providerKeyVariables.has(name) && !sensitiveVariable.test(name))
+    Object.entries(env).filter(([name]) => !keyNames.has(name) && !sensitiveVariable.test(name))
   );
 }
 

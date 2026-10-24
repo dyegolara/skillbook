@@ -7,9 +7,9 @@ import {
   EFFORTS,
   PROVIDERS,
   PROVIDER_KEY_VARS,
+  allProviderKeyNames,
   buildAgentCommand,
-  providerKeyVariableNames,
-  providerKeyVariables,
+  providerKeyNames,
   resolveAgent,
   resolveEffort,
   resolveModel,
@@ -50,14 +50,14 @@ test("PROVIDER_KEY_VARS maps each provider to its documented key variable", () =
   });
 });
 
-test("providerKeyVariables: the documented name first, then the deprecated alias", () => {
-  assert.deepEqual(providerKeyVariables("opencode-go"), ["OPENCODE_API_KEY", "OPENCODE_GO_API_KEY"]);
-  assert.deepEqual(providerKeyVariables("anthropic"), ["ANTHROPIC_API_KEY"]);
-  assert.deepEqual(providerKeyVariables("not-a-provider"), []);
+test("providerKeyNames: the documented name first, then the deprecated alias", () => {
+  assert.deepEqual(providerKeyNames("opencode-go"), ["OPENCODE_API_KEY", "OPENCODE_GO_API_KEY"]);
+  assert.deepEqual(providerKeyNames("anthropic"), ["ANTHROPIC_API_KEY"]);
+  assert.deepEqual(providerKeyNames("not-a-provider"), []);
 });
 
-test("providerKeyVariableNames carries every provider's documented name and alias", () => {
-  const names = providerKeyVariableNames();
+test("allProviderKeyNames carries every provider's documented name and alias", () => {
+  const names = allProviderKeyNames();
   for (const name of Object.values(PROVIDER_KEY_VARS)) assert.ok(names.includes(name), name);
   assert.ok(names.includes("OPENCODE_GO_API_KEY"), "the deprecated alias is stripped too");
 });

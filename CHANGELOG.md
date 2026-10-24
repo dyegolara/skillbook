@@ -13,9 +13,10 @@
   evidence (ADR-0011, #186).
 - The `DEV_ENV` contract ships as generated
   `contracts/dev-env.contract.json`: `contractVersion`, the source
-  repo/path/commit it was generated from, the allowed Providers, Effort values
-  and agents, each Provider's key variable, the agent→adapter map, the launch
-  stage set and every Stage's default assignment (ADR-0010, #187).
+  repo/path/commit and source SHA-256 digest it was generated from, the allowed
+  Providers, Effort values and agents, each Provider's key variable, the
+  agent→adapter map, the launch stage set and every Stage's default assignment
+  (ADR-0010, #187).
 - `npm run verify:contract` is the offline drift check: it regenerates the
   contract from `env-defaults.mjs` and fails on any drift or hand edit, and
   `npm run verify` keeps it in its network-free core; `npm run contract:emit`

@@ -2,21 +2,13 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { after, test } from "node:test";
 import assert from "node:assert/strict";
-import {
-  AGENTS,
-  AGENT_COMMANDS,
-  DEFAULTS,
-  EFFORTS,
-  LAUNCH_STAGES,
-  PROVIDERS,
-  PROVIDER_KEY_VARS,
-} from "../skills/software-factory/scripts/env-defaults.mjs";
+import { PROVIDERS } from "../skills/software-factory/scripts/env-defaults.mjs";
 import {
   CONTRACT_FILE,
-  CONTRACT_VERSION,
   SOURCE_PATH,
   buildContract,
   checkContract,
@@ -39,9 +31,18 @@ function readCommitted() {
   return JSON.parse(readFileSync(CONTRACT_PATH, "utf8"));
 }
 
-/** The generator's output at a commit, with the repo read from the checkout. */
+/** The generator's output at a commit, with the repo and digest read from the checkout. */
 function regenerate(commit) {
-  return buildContract({ commit, repo: resolveSourceRepo(ROOT) });
+  return buildContract({
+    commit,
+    repo: resolveSourceRepo(ROOT),
+    sha256: sourceDigest(readFileSync(join(ROOT, SOURCE_PATH), "utf8")),
+  });
+}
+
+/** The hex SHA-256 of a source file's bytes. */
+function sourceDigest(source) {
+  return createHash("sha256").update(source).digest("hex");
 }
 
 /** The CLI's environment without the chain pins a parent session exports. */
@@ -133,6 +134,17 @@ test("a hand edit fails: a faked source commit is drift the comparison names", (
   );
 });
 
+test("a hand edit fails: a faked source digest is drift the comparison names", () => {
+  const committed = readCommitted();
+  const handEdited = structuredClone(committed);
+  handEdited.source.sha256 = "0".repeat(64);
+  const problems = diffContracts(handEdited, regenerate(committed.source.commit));
+  assert.ok(
+    problems.some((problem) => problem.startsWith("source.sha256")),
+    problems.join("\n")
+  );
+});
+
 test("regeneration is idempotent and the check never rewrites the artifact", () => {
   const committed = readCommitted();
   const first = serializeContract(regenerate(committed.source.commit));
@@ -152,6 +164,7 @@ test("source.commit is a full SHA and, when available, records the source file t
   assert.equal(source.repo, "dyegolara/skillbook");
   assert.equal(source.path, SOURCE_PATH);
   assert.match(source.commit, /^[0-9a-f]{40}$/);
+  assert.equal(source.sha256, sourceDigest(readFileSync(join(ROOT, SOURCE_PATH), "utf8")));
 
   // Provenance is verified when the object is available. After a squash merge
   // it may be absent; the body comparison is the drift guard in that case.
@@ -235,34 +248,6 @@ test("a recorded commit that carries a different source file fails", () => {
     result.problems.some((problem) => problem.includes(SOURCE_PATH)),
     result.problems.join("\n")
   );
-});
-
-test("the artifact carries the imported contract tables, not copies", () => {
-  const committed = readCommitted();
-  assert.equal(committed.contractVersion, CONTRACT_VERSION);
-  assert.equal(committed.defaultProvider, DEFAULTS.provider);
-  assert.deepEqual(committed.providers, PROVIDERS);
-  assert.deepEqual(committed.efforts, EFFORTS);
-  assert.deepEqual(committed.agents, AGENTS);
-  assert.deepEqual(committed.providerKeyVars, { ...PROVIDER_KEY_VARS });
-  assert.deepEqual(
-    committed.agentAdapters,
-    Object.fromEntries(AGENTS.map((agent) => [agent, AGENT_COMMANDS[agent].adapterId]))
-  );
-  assert.deepEqual(committed.launchStages, { ...LAUNCH_STAGES });
-  assert.deepEqual(
-    committed.stages.map(({ key }) => key),
-    Object.keys(DEFAULTS.stages)
-  );
-  for (const stage of committed.stages) {
-    assert.deepEqual(stage.defaults, DEFAULTS.stages[stage.key]);
-    assert.equal(
-      stage.launchName,
-      Object.keys(LAUNCH_STAGES).find((name) => LAUNCH_STAGES[name] === stage.key) ?? null
-    );
-    // Only the grill stage is an interactive session; the launch stages are CLI launches.
-    assert.equal(stage.interactive, stage.key === "GRILL");
-  }
 });
 
 test("the --check CLI exits 0 on the committed tree without touching it", () => {

@@ -8,9 +8,12 @@
  * `STAGE_PINS`/`GRILL_PIN` tables are gone (ticket #162).
  *
  * Every pin the chain resolves lives here: the defaults (today's pins, per
- * ticket #161 and ADR-0006), the allowed values, the provider key-variable
- * names (`PROVIDER_KEY_VARS`, used to prevent keys from reaching child agents),
- * the agent→launch table, and the resolution rules. Resolution is
+ * ticket #161 and ADR-0006), the allowed values, the documented Provider key
+ * map (`PROVIDER_KEY_VARS`) with its deprecated aliases
+ * (`PROVIDER_KEY_ALIASES`), the resolution helpers for both
+ * (`resolveProviderKey`, `providerKeyNames`, `allProviderKeyNames`), the
+ * agent→launch table, and the resolution rules. The key names are also the
+ * strip set that keeps credentials out of child agents. Resolution is
  * environment-injectable: the functions take an `env` object defaulting to
  * `process.env`, so tests need no global mutation.
  *
@@ -218,30 +221,34 @@ function readEnv(env, name) {
 }
 
 /**
- * The Provider's key variable names in resolution order: the documented name
- * first, then its deprecated aliases. An unknown Provider has no names.
+ * What `providerKeyNames` returns: the Provider's key variable names in
+ * resolution order — the documented name first, then its deprecated aliases.
+ * An unknown Provider has no names, so the result is an empty array.
  */
-export function providerKeyVariables(provider) {
+export function providerKeyNames(provider) {
   const documented = PROVIDER_KEY_VARS[provider];
   if (!documented) return [];
   return [documented, ...(PROVIDER_KEY_ALIASES[provider] ?? [])];
 }
 
-/** Every Provider key variable name, documented and alias, for the strip set. */
-export function providerKeyVariableNames() {
-  return Object.keys(PROVIDER_KEY_VARS).flatMap((provider) => providerKeyVariables(provider));
+/**
+ * What `allProviderKeyNames` returns: every Provider key variable name — each
+ * documented name and each deprecated alias — for the strip set.
+ */
+export function allProviderKeyNames() {
+  return Object.keys(PROVIDER_KEY_VARS).flatMap((provider) => providerKeyNames(provider));
 }
 
 /**
  * Resolve a Provider's key from an injected environment: the first name in
- * `providerKeyVariables` order that resolves wins, so the documented spelling
+ * `providerKeyNames` order that resolves wins, so the documented spelling
  * beats a deprecated alias when both are set and the old spelling alone still
  * resolves. `readEnv`'s rule applies to each name — unset, empty and
  * whitespace-only are absent, any other value is trimmed. No key, or an
  * unknown Provider, resolves to null.
  */
 export function resolveProviderKey(provider, env = process.env) {
-  for (const name of providerKeyVariables(provider)) {
+  for (const name of providerKeyNames(provider)) {
     const value = readEnv(env, name);
     if (value !== null) return { name, value };
   }

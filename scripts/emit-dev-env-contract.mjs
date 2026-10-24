@@ -11,8 +11,9 @@
  *   contractVersion  the artifact schema's version (integer, bumped only on a
  *                    breaking schema change)
  *   source           the repo (owner/name), the path and the commit the
- *                    artifact was generated from, so a consumer can say which
- *                    contract a saved Stage assignment was validated against
+ *                    artifact was generated from, plus the SHA-256 digest of
+ *                    the source bytes, so a consumer can say which contract a
+ *                    saved Stage assignment was validated against
  *   defaultProvider  `DEFAULTS.provider`
  *   providers        `PROVIDERS`, the allowed Providers
  *   efforts          `EFFORTS`, the allowed Effort values
@@ -30,17 +31,26 @@
  * plus a trailing newline, fields in the order above. `--check` is the drift
  * check `npm run verify:contract` runs: it regenerates in memory from the
  * committed artifact's recorded `source.commit`, compares every field of the
- * committed file, and validates that `source.commit` is a full 40-hex SHA.
- * The commit is recorded provenance, verified when it is available: if the
- * object exists locally, `git show <commit>:<path>` must byte-match today's
- * `env-defaults.mjs`, so a stale recorded commit fails. After a squash merge,
- * a shallow clone or a rebased history the object may be gone; the check then
- * skips that verification rather than failing, because the field-by-field
- * regeneration of the committed body is the drift guard and survives those
- * histories. Regenerating at the same tree therefore produces no diff by
- * itself, while a hand edit fails with a concrete diff. It never writes.
+ * committed file, validates that `source.commit` is a full 40-hex SHA, and
+ * always verifies that `source.sha256` is the digest of today's
+ * `env-defaults.mjs`. The digest is the verifiable source reference in every
+ * history: rewrite the history and the digest still proves which source bytes
+ * the artifact was generated from.
+ *
+ * The commit is recorded provenance, verified only when its object is
+ * available: if it exists locally, `git show <commit>:<path>` must byte-match
+ * today's `env-defaults.mjs`, so a stale recorded commit fails. After a squash
+ * merge, a shallow clone or a rebased history the object may be gone; the
+ * check then skips that verification rather than failing, because the
+ * field-by-field regeneration of the committed body and the digest are the
+ * drift guard and survive those histories. A vanished commit pointer cannot be
+ * re-authenticated after history is rewritten — that is why the digest exists.
+ * Regenerating at the same tree therefore produces no diff by itself, while a
+ * hand edit (including a hand-edited `source.commit` or `source.sha256`) fails
+ * with a concrete diff. It never writes.
  */
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -65,9 +75,12 @@ export const SOURCE_PATH = "skills/software-factory/scripts/env-defaults.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const COMMIT_SHA = /^[0-9a-f]{40}$/;
-// The one Stage that is an interactive Kepler session rather than a CLI launch
-// (LAUNCH_STAGES omits it; `open-grill-session.mjs` opens it).
-const INTERACTIVE_STAGES = new Set(["GRILL"]);
+const SOURCE_SHA256 = /^[0-9a-f]{64}$/;
+
+/** The hex SHA-256 of a source file's bytes — the artifact's source reference. */
+function digestOf(source) {
+  return createHash("sha256").update(source).digest("hex");
+}
 
 function isPlainObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -89,20 +102,23 @@ function launchNameFor(stageKey) {
 }
 
 /**
- * The contract for a source commit: a pure copy of the imported tables, so
- * the tests and the check regenerate it without touching the filesystem or a
- * network. Field order is the artifact's byte order.
+ * The contract for a source commit and its source digest: a pure copy of the
+ * imported tables, so the tests and the check regenerate it without touching
+ * the filesystem or a network. Field order is the artifact's byte order.
  */
-export function buildContract({ commit, repo }) {
+export function buildContract({ commit, repo, sha256 }) {
   if (typeof commit !== "string" || commit.trim() === "") {
     throw new Error("the contract needs the source commit it was generated from");
   }
   if (typeof repo !== "string" || repo.trim() === "") {
     throw new Error("the contract needs the source repo (owner/name)");
   }
+  if (typeof sha256 !== "string" || !SOURCE_SHA256.test(sha256)) {
+    throw new Error("the contract needs the source file's hex SHA-256 digest");
+  }
   return {
     contractVersion: CONTRACT_VERSION,
-    source: { repo, path: SOURCE_PATH, commit },
+    source: { repo, path: SOURCE_PATH, commit, sha256 },
     defaultProvider: DEFAULTS.provider,
     providers: [...PROVIDERS],
     efforts: [...EFFORTS],
@@ -112,12 +128,17 @@ export function buildContract({ commit, repo }) {
       AGENTS.map((agent) => [agent, AGENT_COMMANDS[agent].adapterId])
     ),
     launchStages: { ...LAUNCH_STAGES },
-    stages: Object.keys(DEFAULTS.stages).map((key) => ({
-      key,
-      launchName: launchNameFor(key),
-      interactive: INTERACTIVE_STAGES.has(key),
-      defaults: { ...DEFAULTS.stages[key] },
-    })),
+    stages: Object.keys(DEFAULTS.stages).map((key) => {
+      const launchName = launchNameFor(key);
+      return {
+        key,
+        launchName,
+        // A Stage in LAUNCH_STAGES is a CLI launch; the one DEFAULTS.stages key
+        // with no launch name (GRILL) is the interactive Kepler session.
+        interactive: launchName === null,
+        defaults: { ...DEFAULTS.stages[key] },
+      };
+    }),
   };
 }
 
@@ -279,7 +300,14 @@ export function checkContract({ root = REPO_ROOT } = {}) {
 
   const problems = [];
   const commit = committed.source?.commit;
+  const recordedDigest = committed.source?.sha256;
   const currentSource = readFileSync(join(root, SOURCE_PATH), "utf8");
+  const currentDigest = digestOf(currentSource);
+  if (recordedDigest !== currentDigest) {
+    problems.push(
+      `${CONTRACT_FILE}: source.sha256 ${describe(recordedDigest)} does not match today's ${SOURCE_PATH} (sha256 ${currentDigest}) — regenerate the artifact (npm run contract:emit)`
+    );
+  }
   const commitLooksValid = typeof commit === "string" && COMMIT_SHA.test(commit);
   if (!commitLooksValid) {
     problems.push(
@@ -300,7 +328,7 @@ export function checkContract({ root = REPO_ROOT } = {}) {
     problems.push(error.message);
   }
   if (repo !== null && typeof commit === "string" && commit.trim() !== "") {
-    const regenerated = buildContract({ commit, repo });
+    const regenerated = buildContract({ commit, repo, sha256: currentDigest });
     const drift = diffContracts(committed, regenerated);
     for (const problem of drift) problems.push(`${CONTRACT_FILE}: ${problem}`);
     if (drift.length === 0 && serializeContract(regenerated) !== text) {
@@ -315,7 +343,8 @@ export function checkContract({ root = REPO_ROOT } = {}) {
 function generate(root) {
   const commit = headCommit(root);
   const repo = resolveSourceRepo(root);
-  const contract = buildContract({ commit, repo });
+  const sha256 = digestOf(readFileSync(join(root, SOURCE_PATH), "utf8"));
+  const contract = buildContract({ commit, repo, sha256 });
   const path = join(root, CONTRACT_FILE);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, serializeContract(contract));
