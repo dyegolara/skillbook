@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -13,6 +13,7 @@ import {
   buildContract,
   checkContract,
   diffContracts,
+  generateContract,
   resolveSourceRepo,
   serializeContract,
 } from "./emit-dev-env-contract.mjs";
@@ -248,6 +249,26 @@ test("a recorded commit that carries a different source file fails", () => {
     result.problems.some((problem) => problem.includes(SOURCE_PATH)),
     result.problems.join("\n")
   );
+});
+
+test("generation rejects source changes not committed at HEAD", () => {
+  const root = gitRoot();
+  const source = readFileSync(join(ROOT, SOURCE_PATH), "utf8");
+  writeInto(root, SOURCE_PATH, source);
+  assert.equal(spawnSync("git", ["add", SOURCE_PATH], { cwd: root }).status, 0);
+  const committed = spawnSync(
+    "git",
+    ["-c", "user.name=Contract Test", "-c", "user.email=contract@test.invalid", "commit", "-m", "source"],
+    { cwd: root, encoding: "utf8" }
+  );
+  assert.equal(committed.status, 0, committed.stderr);
+  writeInto(root, SOURCE_PATH, `${source}\n`);
+
+  assert.throws(
+    () => generateContract({ root }),
+    /does not match HEAD — commit source changes first/
+  );
+  assert.equal(existsSync(join(root, CONTRACT_FILE)), false);
 });
 
 test("the --check CLI exits 0 on the committed tree without touching it", () => {

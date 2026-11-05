@@ -251,6 +251,15 @@ function headCommit(root) {
   return sha;
 }
 
+function assertSourceMatchesHead(root, commit, currentSource) {
+  const recorded = git(root, ["show", `${commit}:${SOURCE_PATH}`]);
+  if (recorded.status !== 0 || recorded.stdout !== currentSource) {
+    throw new Error(
+      `${SOURCE_PATH} does not match HEAD — commit source changes first, then run npm run contract:emit`
+    );
+  }
+}
+
 /**
  * Verify recorded provenance when it is available: if the recorded commit
  * exists in this checkout, it must carry the very `env-defaults.mjs` this
@@ -341,10 +350,12 @@ export function checkContract({ root = REPO_ROOT } = {}) {
   return { ok: problems.length === 0, problems };
 }
 
-function generate(root) {
+export function generateContract({ root = REPO_ROOT } = {}) {
   const commit = headCommit(root);
+  const source = readFileSync(join(root, SOURCE_PATH), "utf8");
+  assertSourceMatchesHead(root, commit, source);
   const repo = resolveSourceRepo(root);
-  const sha256 = digestOf(readFileSync(join(root, SOURCE_PATH), "utf8"));
+  const sha256 = digestOf(source);
   const contract = buildContract({ commit, repo, sha256 });
   const path = join(root, CONTRACT_FILE);
   mkdirSync(dirname(path), { recursive: true });
@@ -379,7 +390,7 @@ function main(argv) {
     check(REPO_ROOT);
     return;
   }
-  generate(REPO_ROOT);
+  generateContract({ root: REPO_ROOT });
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

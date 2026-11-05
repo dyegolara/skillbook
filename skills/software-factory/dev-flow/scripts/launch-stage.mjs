@@ -51,6 +51,7 @@ import {
   allProviderKeyNames,
   buildAgentCommand,
   DEFAULTS,
+  providerKeyNames,
   resolveAgent,
   resolveEffort,
   resolveModel,
@@ -834,28 +835,27 @@ export function agentEnvironment(env = process.env) {
 }
 
 /**
- * Compare a caller-supplied provider key with the API terminal's inherited key
- * using a one-use HMAC challenge. The key resolves through `resolveProviderKey`,
- * so the guard's header and script name the variable that actually carries it
- * — the documented spelling, or a deprecated alias when that is the only one
- * set. Both sides compare the trimmed key per that resolution rule: the
- * caller's value is trimmed by `resolveProviderKey` (`readEnv`), and the
- * terminal-side script trims `process.env[<KEY>]` before hashing. The key
- * itself never enters the command or API request; only the nonce-scoped proof
- * does.
+ * Compare the caller's resolved provider key with the API terminal's inherited
+ * key using a one-use HMAC challenge. The caller resolves its key through
+ * `resolveProviderKey`; the terminal independently searches
+ * `providerKeyNames` in documented-name-first order, treating blank values as
+ * absent. Both sides trim the resolved key before hashing. The key itself
+ * never enters the command or API request; only the nonce-scoped proof does.
  */
 export function providerCredentialGuard(stage, env = process.env) {
-  const resolved = resolveProviderKey(stagePin(stage, env).provider, env);
+  const provider = stagePin(stage, env).provider;
+  const resolved = resolveProviderKey(provider, env);
   if (!resolved) return null;
   const { name: keyVariable, value: key } = resolved;
+  const keyNames = JSON.stringify(providerKeyNames(provider));
 
   const nonce = randomBytes(32).toString("hex");
   const digest = createHmac("sha256", key).update(nonce).digest("hex");
   const mismatchMarker = `PROVIDER-CREDENTIAL-MISMATCH-${nonce}`;
   const script =
     `const c=require("node:crypto");` +
-    `const k=process.env[${JSON.stringify(keyVariable)}];` +
-    `const actual=k?c.createHmac("sha256",k.trim()).update(${JSON.stringify(nonce)}).digest("hex"):"";` +
+    `const k=${keyNames}.map(n=>process.env[n]).find(v=>v!=null&&String(v).trim()!=="");` +
+    `const actual=k?c.createHmac("sha256",String(k).trim()).update(${JSON.stringify(nonce)}).digest("hex"):"";` +
     `process.exit(actual===${JSON.stringify(digest)}?0:1)`;
   return {
     keyVariable,

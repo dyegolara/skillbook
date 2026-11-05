@@ -44,7 +44,15 @@ import {
   stripAnsi,
   wakeHelperPath,
 } from "./launch-stage.mjs";
-import { AGENTS, AGENT_COMMANDS, DEFAULTS, PROVIDER_KEY_VARS, buildAgentCommand, stageKey } from "./env-defaults.mjs";
+import {
+  AGENTS,
+  AGENT_COMMANDS,
+  DEFAULTS,
+  PROVIDER_KEY_VARS,
+  buildAgentCommand,
+  providerKeyNames,
+  stageKey,
+} from "./env-defaults.mjs";
 import { grillPin } from "./open-grill-session.mjs";
 
 // The env-defaults stage key for each launch stage. Every pin value in these
@@ -343,6 +351,39 @@ test("an alias-only provider key still gets the guard, naming the variable that 
   assert.equal(matches.stdout, "MATCH");
 });
 
+test("the terminal guard resolves the documented key before a matching alias", () => {
+  const documented = PROVIDER_KEY_VARS[DEFAULTS.provider];
+  const guard = providerCredentialGuard("dev-flow", { [DEPRECATED_KEY_VARIABLE]: "shared-key" });
+  const matches = spawnSync("bash", ["--norc", "-c", `${guard.command} printf MATCH`], {
+    encoding: "utf8",
+    env: { PATH: process.env.PATH, [documented]: "shared-key", [DEPRECATED_KEY_VARIABLE]: "other-key" },
+  });
+  assert.equal(matches.status, 0, matches.stderr);
+  assert.equal(matches.stdout, "MATCH");
+});
+
+test("a blank documented terminal key falls back to the matching alias", () => {
+  const documented = PROVIDER_KEY_VARS[DEFAULTS.provider];
+  const guard = providerCredentialGuard("dev-flow", { [DEPRECATED_KEY_VARIABLE]: "shared-key" });
+  const matches = spawnSync("bash", ["--norc", "-c", `${guard.command} printf MATCH`], {
+    encoding: "utf8",
+    env: { PATH: process.env.PATH, [documented]: "   ", [DEPRECATED_KEY_VARIABLE]: "shared-key" },
+  });
+  assert.equal(matches.status, 0, matches.stderr);
+  assert.equal(matches.stdout, "MATCH");
+});
+
+test("a different nonblank documented terminal key takes precedence over a matching alias", () => {
+  const documented = PROVIDER_KEY_VARS[DEFAULTS.provider];
+  const guard = providerCredentialGuard("dev-flow", { [DEPRECATED_KEY_VARIABLE]: "shared-key" });
+  const differs = spawnSync("bash", ["--norc", "-c", guard.command], {
+    encoding: "utf8",
+    env: { PATH: process.env.PATH, [documented]: "different-key", [DEPRECATED_KEY_VARIABLE]: "shared-key" },
+  });
+  assert.equal(differs.status, 1);
+  assert.equal(differs.stdout, `${guard.mismatchMarker}\n`);
+});
+
 test("with both key spellings set the documented name wins the guard header", () => {
   const documented = PROVIDER_KEY_VARS[DEFAULTS.provider];
   const guard = providerCredentialGuard("dev-flow", {
@@ -351,7 +392,7 @@ test("with both key spellings set the documented name wins the guard header", ()
   });
   assert.ok(guard.header.includes(`PROVIDER-CREDENTIAL-CHECK ${documented}`));
   assert.ok(!guard.header.includes(DEPRECATED_KEY_VARIABLE));
-  assert.ok(!guard.command.includes(DEPRECATED_KEY_VARIABLE));
+  assert.ok(guard.command.includes(DEPRECATED_KEY_VARIABLE));
   assert.ok(!guard.command.includes("sk-documented"));
   assert.ok(!guard.command.includes("sk-legacy"));
 });
@@ -1973,9 +2014,14 @@ function mockKeplerApi({ terminals, terminalId = "term-new", terminalEnv = LAUNC
         /^# PROVIDER-CREDENTIAL-CHECK (\w+) ([a-f0-9]+) ([a-f0-9]+) (\S+)$/m.exec(call.body.input);
       if (credentialCheck) {
         const [, keyVariable, nonce, expected, mismatchMarker] = credentialCheck;
-        const key = terminalEnv?.[keyVariable];
+        const provider = Object.keys(PROVIDER_KEY_VARS).find((candidate) =>
+          providerKeyNames(candidate).includes(keyVariable)
+        );
+        const key = providerKeyNames(provider)
+          .map((name) => terminalEnv?.[name])
+          .find((value) => value != null && String(value).trim() !== "");
         const actual = key
-          ? createHmac("sha256", String(key)).update(nonce).digest("hex")
+          ? createHmac("sha256", String(key).trim()).update(nonce).digest("hex")
           : "";
         if (actual !== expected) {
           buffer += `\r\n${mismatchMarker}\r\n`;
