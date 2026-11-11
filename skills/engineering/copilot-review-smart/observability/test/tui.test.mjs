@@ -7,6 +7,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { createObservabilityServer } from "../src/server.mjs";
+import { renderApiError, renderFrame } from "../src/tui.mjs";
 
 // ---------------------------------------------------------------------------
 // The TUI is tested through its CLI entry against the read-only API.
@@ -30,6 +31,31 @@ const NOW = Date.parse("2026-09-08T00:00:00.000Z");
 const HOUR = 3600_000;
 const iso = (ms) => new Date(ms).toISOString();
 const visible = (line) => line.replace(/\u001b\[[0-9;]*m/g, "");
+
+test("TUI renderers strip control characters from API-provided values", () => {
+  const frame = renderFrame({
+    timeline: {
+      now: "now\u001b]0;spoof\u0007",
+      executed: [{ action: "wait\u001b[2J", ts: "time\ninjected" }],
+      scheduled: [{ deadline_at: "later\u009b31m" }],
+      in_flight: { pid: "123\rspoof", alive: true },
+    },
+    flows: [{
+      key: "acme/widgets#7\u001b[2J\nspoof",
+      terminal: "needs-human\u001b]52;c;payload\u0007",
+      stages: [],
+    }],
+  });
+  const error = renderApiError({
+    url: "http://example.test\u001b[2J",
+    message: "bad response\nspoof\u009b31m",
+  });
+
+  assert.doesNotMatch(frame, /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
+  assert.doesNotMatch(error, /[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
+  assert.ok(frame.includes("acme/widgets#7spoof"));
+  assert.ok(frame.includes("needs-human"));
+});
 
 // ---------------------------------------------------------------------------
 // integration: the API is the only seam

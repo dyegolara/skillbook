@@ -2283,6 +2283,54 @@ test("GitHub CLI errors redact webhook secrets from arguments and stderr", async
   }
 });
 
+test("GitHub CLI sends webhook secrets through stdin rather than process arguments", async () => {
+  const dir = makeRuntimeDir();
+  const ghPath = path.join(dir, "gh");
+  const argsPath = path.join(dir, "args");
+  const inputPath = path.join(dir, "input");
+  fs.writeFileSync(
+    ghPath,
+    "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$GH_ARGS_FILE\"\ncat > \"$GH_INPUT_FILE\"\nprintf '{}'\n"
+  );
+  fs.chmodSync(ghPath, 0o755);
+  const previous = {
+    PATH: process.env.PATH,
+    GH_ARGS_FILE: process.env.GH_ARGS_FILE,
+    GH_INPUT_FILE: process.env.GH_INPUT_FILE,
+  };
+  process.env.PATH = `${dir}${path.delimiter}${previous.PATH || ""}`;
+  process.env.GH_ARGS_FILE = argsPath;
+  process.env.GH_INPUT_FILE = inputPath;
+  try {
+    await runGh([
+      "repos/example/repo/hooks/1",
+      "-X", "PATCH",
+      "-f", "name=skillbook",
+      "-F", "active=true",
+      "-f", "config[url]=https://example.test/hook",
+      "-f", "config[secret]=stdin-only-secret",
+      "-f", "events[]=pull_request",
+    ]);
+
+    const args = fs.readFileSync(argsPath, "utf8");
+    const body = JSON.parse(fs.readFileSync(inputPath, "utf8"));
+    assert.ok(args.includes("--input\n-\n"), args);
+    assert.ok(!args.includes("stdin-only-secret"), args);
+    assert.deepEqual(body, {
+      name: "skillbook",
+      active: true,
+      config: { url: "https://example.test/hook", secret: "stdin-only-secret" },
+      events: ["pull_request"],
+    });
+  } finally {
+    process.env.PATH = previous.PATH;
+    if (previous.GH_ARGS_FILE === undefined) delete process.env.GH_ARGS_FILE;
+    else process.env.GH_ARGS_FILE = previous.GH_ARGS_FILE;
+    if (previous.GH_INPUT_FILE === undefined) delete process.env.GH_INPUT_FILE;
+    else process.env.GH_INPUT_FILE = previous.GH_INPUT_FILE;
+  }
+});
+
 test("owner notifications from a Tick report are forwarded and failures are logged", async (t) => {
   const clock = makeClock();
   const noted = [];

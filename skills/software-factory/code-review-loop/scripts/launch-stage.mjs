@@ -454,13 +454,20 @@ function assertCompleteIdFlags(ids) {
 }
 
 /**
- * Pick the terminal whose repo/worktree/task ids the new terminal reuses: a
- * chain-labeled entry on the same worktree is preferred (task-correctness),
- * any other entry on that worktree is accepted, and an unrelated worktree is
- * ignored. Returns the chosen entry or null.
+ * Pick the terminal whose repo/worktree/task ids the new terminal reuses.
+ * When a spec is supplied, prefer only its matching chain terminal and never
+ * reuse a differently labeled chain; otherwise preserve the worktree fallback.
+ * Returns the chosen entry or null.
  */
-export function pickAnchor(terminals, worktreePath) {
+export function pickAnchor(terminals, worktreePath, spec) {
   const onWorktree = (terminals ?? []).filter((entry) => entry && entry.worktreePath === worktreePath);
+  if (spec !== undefined && spec !== null) {
+    const expected = `chain #${specNumber(spec)}: `;
+    const chain = onWorktree.find((entry) => String(entry.label ?? "").startsWith(expected));
+    if (chain) return chain;
+    if (onWorktree.some((entry) => CHAIN_LABEL.test(String(entry.label ?? "")))) return null;
+    return onWorktree[0] ?? null;
+  }
   const chain = onWorktree.find((entry) => CHAIN_LABEL.test(String(entry.label ?? "")));
   return chain ?? onWorktree[0] ?? null;
 }
@@ -530,18 +537,19 @@ export async function requestJson(fetchImpl, url, init) {
  * neither yields ids. Connection-level failures are tagged so callers can
  * classify them; every other failure is a hard error.
  *
- * @param {{ apiBase: string, fetchImpl?: typeof fetch, worktreePath: string, flags?: IdFlags }} options
+ * @param {{ apiBase: string, fetchImpl?: typeof fetch, worktreePath: string, flags?: IdFlags, spec?: string|number }} options
  * @returns {Promise<TaskIds>}
  */
-export async function resolveIds({ apiBase, fetchImpl = fetch, worktreePath, flags = {} }) {
+export async function resolveIds({ apiBase, fetchImpl = fetch, worktreePath, flags = {}, spec }) {
   const explicit = toIdFlags(flags);
   assertCompleteIdFlags(explicit);
   if (Object.values(explicit).some((value) => value !== undefined)) return explicit;
 
   const terminals = await requestJson(fetchImpl, `${apiBase}/terminal/list`);
-  const anchor = pickAnchor(terminals, worktreePath);
+  const anchor = pickAnchor(terminals, worktreePath, spec);
   if (!anchor) {
-    throw new Error(`no terminal on ${worktreePath} and no ${ID_FLAG_HINT} flags — cannot derive ids`);
+    const specHint = spec === undefined ? "" : ` matching spec #${spec}`;
+    throw new Error(`no terminal${specHint} on ${worktreePath} and no ${ID_FLAG_HINT} flags — cannot derive ids`);
   }
   // The anchor is an external `GET /terminal/list` entry: construct it like
   // every other triple.
@@ -556,10 +564,10 @@ export async function resolveIds({ apiBase, fetchImpl = fetch, worktreePath, fla
  * (HTTP error, malformed body, anchorless hard error) is a hard error and
  * propagates, so no caller degrades silently against a live server.
  *
- * @param {{ apiBase?: string, dataDir?: string, fetchImpl?: typeof fetch, worktreePath: string, flags?: IdFlags }} options
+ * @param {{ apiBase?: string, dataDir?: string, fetchImpl?: typeof fetch, worktreePath: string, flags?: IdFlags, spec?: string|number }} options
  * @returns {Promise<{ ok: true, apiBase: string, ids: TaskIds } | { ok: false, error: Error }>}
  */
-export async function reachApi({ apiBase, dataDir, fetchImpl = fetch, worktreePath, flags }) {
+export async function reachApi({ apiBase, dataDir, fetchImpl = fetch, worktreePath, flags, spec }) {
   let resolvedBase;
   try {
     resolvedBase = apiBase ?? readKeplerApiBase({ dataDir });
@@ -569,7 +577,7 @@ export async function reachApi({ apiBase, dataDir, fetchImpl = fetch, worktreePa
 
   let ids;
   try {
-    ids = await resolveIds({ apiBase: resolvedBase, fetchImpl, worktreePath, flags });
+    ids = await resolveIds({ apiBase: resolvedBase, fetchImpl, worktreePath, flags, spec });
   } catch (error) {
     if (!isConnectionError(error)) throw error; // reachable API, bad response: hard error
     return { ok: false, error };
@@ -828,7 +836,8 @@ export function launchDetached({ stage, pointers, spawnImpl = spawn, env = proce
 /** Remove credential-like variables from the environment inherited by agents. */
 export function agentEnvironment(env = process.env) {
   const keyNames = new Set(allProviderKeyNames());
-  const sensitiveVariable = /API[_-]?KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL/i;
+  const sensitiveVariable =
+    /API[_-]?KEY|ACCESS[_-]?KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH|PRIVATE[_-]?KEY|CONNECTION[_-]?(?:STRING|URL|URI)|(?:^|_)(?:DATABASE|DB|REDIS|MONGO(?:DB)?|MYSQL|POSTGRES(?:QL)?|PG)(?:_|$)/i;
   return Object.fromEntries(
     Object.entries(env).filter(([name]) => !keyNames.has(name) && !sensitiveVariable.test(name))
   );
@@ -875,7 +884,7 @@ export async function launchStage({ stage, spec, pointers, flags, deps = {} }) {
 
   const fallback = (error) => ({ ...launchDetached({ stage, pointers, spawnImpl, env }), reason: error.message });
 
-  const reached = await reachApi({ apiBase: deps.apiBase, dataDir: deps.dataDir, fetchImpl, worktreePath, flags });
+  const reached = await reachApi({ apiBase: deps.apiBase, dataDir: deps.dataDir, fetchImpl, worktreePath, flags, spec });
   if (!reached.ok) return fallback(reached.error);
   const { apiBase, ids } = reached;
 

@@ -281,6 +281,9 @@ test("agentEnvironment strips provider API keys but preserves ordinary variables
     OPENAI_API_KEY: "sk-openai",
     DEV_ENV_API_KEY: "legacy-key",
     GITHUB_TOKEN: "github-token",
+    DATABASE_URL: "******db.test/app",
+    DOCKER_AUTH_CONFIG: "{\"auths\":{}}",
+    AWS_ACCESS_KEY_ID: "access-key",
   };
   assert.deepEqual(agentEnvironment(env), { PATH: "/bin", DEV_ENV_PROVIDER: "anthropic" });
 });
@@ -791,6 +794,29 @@ test("pickAnchor returns null when the worktree has no terminal", () => {
   assert.equal(pickAnchor(undefined, "/work/tree"), null);
 });
 
+test("pickAnchor only reuses a chain terminal for the requested spec", () => {
+  const worktreePath = "/work/tree";
+  const terminals = [
+    { worktreePath, label: "chain #41: dev-flow", repoId: "wrong", worktreeId: "wrong", taskId: "wrong" },
+    { worktreePath, label: "chain #55: implement-spec", repoId: "right", worktreeId: "right", taskId: "right" },
+  ];
+  assert.equal(pickAnchor(terminals, worktreePath, "55").repoId, "right");
+  assert.equal(pickAnchor(terminals.slice(0, 1), worktreePath, "55"), null);
+});
+
+test("pickAnchor may use an unlabeled terminal when no chain terminal exists for another spec", () => {
+  const worktreePath = "/work/tree";
+  const terminals = [
+    { worktreePath, label: "chain #41: dev-flow", repoId: "wrong" },
+    { worktreePath, label: "Terminal 1", repoId: "plain" },
+  ];
+  assert.equal(pickAnchor(terminals, worktreePath, "55"), null);
+  assert.equal(
+    pickAnchor([{ worktreePath, label: "Terminal 1", repoId: "plain" }], worktreePath, "55").repoId,
+    "plain"
+  );
+});
+
 test("resolveIds returns the explicit flags without touching the API", async () => {
   const ids = await resolveIds({
     apiBase: "http://api.test",
@@ -816,6 +842,22 @@ test("resolveIds throws when there are no flags and no anchor", async () => {
   await assert.rejects(
     resolveIds({ apiBase: "http://api.test", fetchImpl, worktreePath: "/work/tree" }),
     /no terminal on/
+  );
+});
+
+test("resolveIds rejects an anchor chain from a different spec", async () => {
+  const { fetchImpl } = mockKeplerApi({
+    terminals: [{
+      worktreePath: "/work/tree",
+      label: "chain #41: dev-flow",
+      repoId: "r",
+      worktreeId: "w",
+      taskId: "t",
+    }],
+  });
+  await assert.rejects(
+    resolveIds({ apiBase: "http://api.test", fetchImpl, worktreePath: "/work/tree", spec: "55" }),
+    /no terminal matching spec #55/
   );
 });
 
@@ -1157,7 +1199,7 @@ test("the spec argument builds the label — never the anchor terminal's label",
   const terminals = [
     {
       worktreePath,
-      label: "chain #55: implement-spec",
+      label: "chain #77: implement-spec",
       repoId: "repo-55",
       worktreeId: "worktree-55",
       taskId: "task-55",
@@ -1368,7 +1410,7 @@ test("a reachable API with no anchor and no flags is a hard error — no fallbac
       spawnImpl,
       write: () => {},
     }),
-    /no terminal on/
+    /no terminal(?: matching spec #55)? on/
   );
   assert.equal(spawnCalls.length, 0);
 });
