@@ -79,6 +79,22 @@ function writeInto(root, relativePath, contents) {
   writeFileSync(join(root, relativePath), contents);
 }
 
+test("the committed artifact records the source-touching commit on this history", () => {
+  const { source } = readCommitted();
+  assert.equal(source.repo, "dyegolara/skillbook");
+  assert.equal(source.commit, "d83ae673ec08a63cd0d70b961e90eadb7174c817");
+  assert.equal(source.sha256, "fc8c1d17ab85c60751264c2e61587fe310b81663ae02809302e2ea81d8c9342e");
+
+  const before = readFileSync(CONTRACT_PATH, "utf8");
+  const emitted = spawnSync(process.execPath, [CLI], {
+    cwd: ROOT,
+    encoding: "utf8",
+    env: cleanEnv(),
+  });
+  assert.equal(emitted.status, 0, emitted.stdout + emitted.stderr);
+  assert.equal(readFileSync(CONTRACT_PATH, "utf8"), before);
+});
+
 test("the committed artifact is the generator's output for its recorded source commit", () => {
   const committed = readCommitted();
   const regenerated = regenerate(committed.source.commit);
