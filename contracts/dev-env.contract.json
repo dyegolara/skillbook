@@ -3,7 +3,7 @@
   "source": {
     "repo": "dyegolara/skillbook",
     "path": "skills/software-factory/scripts/env-defaults.mjs",
-    "commit": "621d85e9c02f617235f7e259a63859e21bfb6b3d",
+    "commit": "d83ae673ec08a63cd0d70b961e90eadb7174c817",
     "sha256": "fc8c1d17ab85c60751264c2e61587fe310b81663ae02809302e2ea81d8c9342e"
   },
   "defaultProvider": "opencode-go",

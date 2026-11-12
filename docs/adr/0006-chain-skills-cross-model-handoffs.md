@@ -290,12 +290,12 @@ context is not independent.
   scoped, never environment-generic. `DEV_ENV_API_KEY` is removed from the
   design — the 2026-10-16 sentences above that carry it (the per-docker
   pairing and the manual-override rule) are superseded. A key is carried by
-  the provider's own variable (`OPENCODE_GO_API_KEY`, `OPENAI_API_KEY`,
-  `XAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` — the variables
-  that exist today), and its value is that environment's (docker's) account
-  for that provider. Resolution is that one variable: set and non-empty
-  after trim wins, and a missing key is a hard error naming the provider and
-  the variable to set — no fallback chain, no opt-in gate. Zero exposure:
+  the provider's own variable. The variable names live in `PROVIDER_KEY_VARS`
+  in `skills/software-factory/scripts/env-defaults.mjs`. The value is the
+  account for that provider on that docker. Resolution is that one variable:
+  set and non-empty after trim wins, and a missing key is a hard error
+  naming the provider and the variable to set — no fallback chain, no
+  opt-in gate. Zero exposure:
   no API key value ever lands in `env-defaults.mjs`, `.env.example` or any
   git-tracked file; the defaults file carries non-secret values only
   (provider, models, efforts, agents). Because the key lives in the
@@ -325,9 +325,13 @@ context is not independent.
   the wave's live environment still carried `DEV_ENV_API_KEY` from ticket
   #163, which nothing reads. The wave's own environment file (`~/.dev-env`,
   outside the repo and never committed) now exports the
-  provider-environment pattern — `DEV_ENV_PROVIDER` plus the provider's own
-  key variable, `OPENCODE_GO_API_KEY`, carrying the account — and no longer
-  exports `DEV_ENV_API_KEY`. An already-running process keeps the stale
+  provider-environment pattern. That pattern is `DEV_ENV_PROVIDER` plus the
+  provider's own key variable. The variable's name lives in
+  `PROVIDER_KEY_VARS` in `skills/software-factory/scripts/env-defaults.mjs`.
+  The file carries the account under that name and no longer exports
+  `DEV_ENV_API_KEY`. `PROVIDER_KEY_VARS` in
+  `skills/software-factory/scripts/env-defaults.mjs` does not list that name.
+  An already-running process keeps the stale
   variable in its inherited environment until the docker or shell restarts;
   nothing reads it, so it has no effect.
   Amended 2026-10-21, maintainer instruction: provider authentication is
@@ -337,6 +341,19 @@ context is not independent.
   and credential-like variables from the child environment. The API path
   uses the Kepler server's user-configured agent login, not a key from the
   helper's invocation environment.
+  Amended 2026-10-23, ticket #185: `OPENCODE_API_KEY` is the documented
+  name in `PROVIDER_KEY_VARS` in
+  `skills/software-factory/scripts/env-defaults.mjs`. `OPENCODE_GO_API_KEY`
+  is the deprecated alias in `PROVIDER_KEY_ALIASES` in that file. The credential
+  guard compares trimmed keys. `providerCredentialGuard` in
+  `skills/software-factory/scripts/launch-stage.mjs` hashes `String(k).trim()`
+  in the terminal probe. Spec #184's review, row 7, called that `k.trim()`
+  comparison scope creep. The caller hashes the trimmed value from
+  `resolveProviderKey`. The test "the provider credential guard compares
+  the trimmed key on both sides" passes a non-empty key padded with
+  spaces. The guard still runs. The command and the header do not contain
+  the key text. A terminal that holds the same padded value makes the
+  check exit 0 with stdout `MATCH`.
 - `GLOSSARY.md` replaces `CONTEXT.md`, adopting the referenced pack's glossary
   convention; ADRs keep living in `docs/adr/`.
 

@@ -1,0 +1,28 @@
+name: verify
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    # The documented gate. verify starts with verify:contract, which regenerates
+    # contracts/dev-env.contract.json and diffs, so a hand edit fails this job.
+    # Full history lets that check compare source.commit when the object exists.
+    # Node 22.x meets ADR-0004 (Node >= 22.18) for the pstack suite inside npm test.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+      - run: npm ci
+      - name: Run the documented gate
+        run: npm run verify && npm test

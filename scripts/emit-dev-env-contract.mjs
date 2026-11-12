@@ -5,15 +5,17 @@
  * A consumer in another repo (the dashboard's settings surface) cannot import
  * `env-defaults.mjs`, and a hand copy of the lists already drifted once
  * (ADR-0010). So this script imports the module — the single source, never a
- * retyped copy — and writes `contracts/dev-env.contract.json`, the artifact
- * consumers pin:
+ * retyped copy — and writes `contracts/dev-env.contract.json`:
  *
  *   contractVersion  the artifact schema's version (integer, bumped only on a
  *                    breaking schema change)
- *   source           the repo (owner/name), the path and the commit the
- *                    artifact was generated from, plus the SHA-256 digest of
- *                    the source bytes, so a consumer can say which contract a
- *                    saved Stage assignment was validated against
+ *   source           repo, path, commit, and the SHA-256 digest of the source
+ *                    bytes. `source.repo` is `owner/name` from package.json's
+ *                    `repository` field. `source.commit` is the last commit
+ *                    that touched `env-defaults.mjs`, the commit that
+ *                    introduced those bytes, not HEAD at generation time.
+ *                    A consumer uses `source` to say which contract a saved
+ *                    Stage assignment was validated against
  *   defaultProvider  `DEFAULTS.provider`
  *   providers        `PROVIDERS`, the allowed Providers
  *   efforts          `EFFORTS`, the allowed Effort values
@@ -28,27 +30,28 @@
  *                    interactive session, and its default Stage assignment
  *
  * Generation is offline and deterministic: `JSON.stringify(contract, null, 2)`
- * plus a trailing newline, fields in the order above. `--check` is the drift
- * check `npm run verify:contract` runs: it regenerates in memory from the
- * committed artifact's recorded `source.commit`, compares every field of the
- * committed file, validates that `source.commit` is a full 40-hex SHA, and
- * always verifies that `source.sha256` is the digest of today's
- * `env-defaults.mjs`. The digest is the verifiable source reference in every
- * history: rewrite the history and the digest still proves which source bytes
- * the artifact was generated from.
+ * plus a trailing newline, fields in the order above. `--check` is what
+ * `npm run verify:contract` runs. It regenerates in memory from the committed
+ * artifact's recorded `source.commit` and recorded `source.repo`, compares
+ * every field, and validates `source.repo` against package.json's
+ * `repository` field. It does not read `git remote`. It checks that
+ * `source.commit` is a full 40-hex SHA, and it always checks that
+ * `source.sha256` is the digest of today's `env-defaults.mjs`. The digest is
+ * the verifiable source reference in every history. If the history is
+ * rewritten, the digest still proves which source bytes the artifact was
+ * generated from.
  *
  * The commit is recorded provenance, verified only when its object is
- * available: if it exists locally, `git show <commit>:<path>` must byte-match
+ * available. If it exists locally, `git show <commit>:<path>` must byte-match
  * today's `env-defaults.mjs`, so a stale recorded commit fails. After a squash
- * merge, a shallow clone or a rebased history the object may be gone; the
- * check then skips that verification rather than failing, because the
- * field-by-field regeneration of the committed body and the digest are the
- * drift guard and survive those histories. A vanished commit pointer cannot be
- * re-authenticated after history is rewritten — that is why the digest exists.
- * Regenerating at the same tree therefore produces no diff by itself, while a
- * hand edit fails with a concrete diff: every contract value and
- * `source.sha256` are regenerated and compared, and `source.commit` is
- * compared whenever its object is still available. It never writes.
+ * merge, a shallow clone, or a rebased history, the object may be gone. The
+ * check then skips that verification rather than failing. The field-by-field
+ * regeneration of the committed body and the digest are the drift guard, and
+ * they survive those histories. A vanished commit pointer cannot be
+ * re-authenticated after history is rewritten. That is why the digest exists.
+ * Regenerating on any tree of the same history produces no diff by itself,
+ * because `source.commit` follows the source file rather than HEAD. A hand
+ * edit fails with a concrete diff. The check never writes.
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -78,6 +81,9 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const COMMIT_SHA = /^[0-9a-f]{40}$/;
 const SOURCE_SHA256 = /^[0-9a-f]{64}$/;
 
+/** Remediation shared by the check's problem strings that ask for a fresh artifact. */
+const REGENERATE_ARTIFACT = "regenerate the artifact (npm run contract:emit)";
+
 /** The hex SHA-256 of a source file's bytes — the artifact's source reference. */
 function digestOf(source) {
   return createHash("sha256").update(source).digest("hex");
@@ -87,7 +93,8 @@ function isPlainObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function describe(value) {
+/** A value as error text: `missing`, or the value's JSON form. */
+function formatForError(value) {
   return value === undefined ? "missing" : JSON.stringify(value);
 }
 
@@ -103,11 +110,13 @@ function launchNameFor(stageKey) {
 }
 
 /**
- * The contract for a source commit and its source digest: a pure copy of the
- * imported tables, so the tests and the check regenerate it without touching
- * the filesystem or a network. Field order is the artifact's byte order.
+ * The contract for one `source` record (repo, path, commit, sha256), the same
+ * shape as the artifact field. A pure copy of the imported tables, so the
+ * tests and the check regenerate it without touching the filesystem or a
+ * network. Field order is the artifact's byte order.
  */
-export function buildContract({ commit, repo, sha256 }) {
+export function buildContract(source) {
+  const { repo, path, commit, sha256 } = source;
   if (typeof commit !== "string" || commit.trim() === "") {
     throw new Error("the contract needs the source commit it was generated from");
   }
@@ -119,7 +128,7 @@ export function buildContract({ commit, repo, sha256 }) {
   }
   return {
     contractVersion: CONTRACT_VERSION,
-    source: { repo, path: SOURCE_PATH, commit, sha256 },
+    source: { repo, path, commit, sha256 },
     defaultProvider: DEFAULTS.provider,
     providers: [...PROVIDERS],
     efforts: [...EFFORTS],
@@ -172,7 +181,7 @@ function walkDiff(path, committed, regenerated, problems) {
     return;
   }
   if (JSON.stringify(committed) !== JSON.stringify(regenerated)) {
-    problems.push(`${path}: committed ${describe(committed)} but the generator gives ${describe(regenerated)}`);
+    problems.push(`${path}: committed ${formatForError(committed)} but the generator gives ${formatForError(regenerated)}`);
   }
 }
 
@@ -196,7 +205,6 @@ function git(root, args) {
 
 function normalizeRepoUrl(rawUrl) {
   const raw = String(rawUrl ?? "").trim();
-  const shape = "expected an origin like https://github.com/<owner>/<repo>.git";
   let path = null;
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) {
     try {
@@ -219,43 +227,71 @@ function normalizeRepoUrl(rawUrl) {
           .split("/")
           .filter(Boolean);
   if (segments.length < 2) {
-    throw new Error(`cannot derive the contract's source repo from origin "${raw}" — ${shape}`);
+    throw new Error(`cannot parse a source repo from "${raw}"`);
   }
   return segments.slice(-2).join("/");
 }
 
-/**
- * The normalized `origin` remote of a checkout (`owner/name`): the artifact's
- * `source.repo`. A missing or unparseable remote is a clear error, since a
- * consumer would otherwise pin an artifact that names no source.
- */
-export function resolveSourceRepo(root = REPO_ROOT) {
-  const result = git(root, ["remote", "get-url", "origin"]);
-  if (result.status !== 0) {
-    const detail = result.stderr.trim() || `exit ${result.status}`;
+/** `owner/name` from package.json's `repository` string or `{ url }` object. */
+function repoFromRepositoryField(field) {
+  const url = typeof field === "string" ? field.trim() : isPlainObject(field) ? field.url : null;
+  let repo = null;
+  if (typeof url === "string" && url.trim() !== "") {
+    try {
+      repo = normalizeRepoUrl(url);
+    } catch {
+      repo = null;
+    }
+  }
+  if (repo === null) {
     throw new Error(
-      `cannot derive the contract's source repo — \`git remote get-url origin\` failed in ${root}: ${detail}`
+      `package.json repository is malformed — source.repo is read from that field, got ${formatForError(field)}`
     );
   }
-  return normalizeRepoUrl(result.stdout);
+  return repo;
 }
 
-/** The commit generation records: `HEAD` at generation time. */
-function headCommit(root) {
-  const result = git(root, ["rev-parse", "HEAD"]);
+/**
+ * The artifact's `source.repo` (`owner/name`), from the checkout's
+ * `package.json` `repository` field. A missing or malformed field is a hard
+ * error naming `repository`. The origin remote is not consulted.
+ */
+export function resolveSourceRepo(root = REPO_ROOT) {
+  const path = join(root, "package.json");
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    throw new Error(
+      `package.json repository is missing or malformed — source.repo is read from that field (${error.message})`
+    );
+  }
+  if (!isPlainObject(parsed) || !Object.hasOwn(parsed, "repository")) {
+    throw new Error("package.json repository is missing — source.repo is read from that field");
+  }
+  return repoFromRepositoryField(parsed.repository);
+}
+
+/** Last commit that touched the source file. No such commit is a hard error. */
+function sourceTouchingCommit(root) {
+  const result = git(root, ["log", "-1", "--format=%H", "--", SOURCE_PATH]);
   const sha = result.stdout.trim();
   if (result.status !== 0 || !COMMIT_SHA.test(sha)) {
-    const detail = result.stderr.trim() || `exit ${result.status}`;
-    throw new Error(`cannot record the contract's source commit — \`git rev-parse HEAD\` failed in ${root}: ${detail}`);
+    const detail = result.stderr.trim();
+    throw new Error(
+      `${SOURCE_PATH} has no commit in ${root}` +
+        (detail ? ` (${detail})` : "") +
+        " — refusing to stamp a source.commit that never carried the file"
+    );
   }
   return sha;
 }
 
-function assertSourceMatchesHead(root, commit, currentSource) {
+function assertSourceMatchesCommit(root, commit, currentSource) {
   const recorded = git(root, ["show", `${commit}:${SOURCE_PATH}`]);
   if (recorded.status !== 0 || recorded.stdout !== currentSource) {
     throw new Error(
-      `${SOURCE_PATH} does not match HEAD — commit source changes first, then run npm run contract:emit`
+      `${SOURCE_PATH} does not match commit ${commit} — commit the source change, then run npm run contract:emit`
     );
   }
 }
@@ -277,11 +313,11 @@ function sourceCommitProblems(root, commit, currentSource) {
   const recorded = git(root, ["show", `${commit}:${SOURCE_PATH}`]);
   if (recorded.status !== 0) {
     problems.push(
-      `${CONTRACT_FILE}: source.commit ${commit} carries no ${SOURCE_PATH} — regenerate the artifact (npm run contract:emit)`
+      `${CONTRACT_FILE}: source.commit ${commit} carries no ${SOURCE_PATH} — ${REGENERATE_ARTIFACT}`
     );
   } else if (recorded.stdout !== currentSource) {
     problems.push(
-      `${CONTRACT_FILE}: source.commit ${commit} carries a different ${SOURCE_PATH} than this tree — the artifact no longer reflects the source; regenerate it (npm run contract:emit)`
+      `${CONTRACT_FILE}: source.commit ${commit} carries a different ${SOURCE_PATH} than this tree — the artifact no longer reflects the source; ${REGENERATE_ARTIFACT}`
     );
   }
   return problems;
@@ -315,13 +351,13 @@ export function checkContract({ root = REPO_ROOT } = {}) {
   const currentDigest = digestOf(currentSource);
   if (recordedDigest !== currentDigest) {
     problems.push(
-      `${CONTRACT_FILE}: source.sha256 ${describe(recordedDigest)} does not match today's ${SOURCE_PATH} (sha256 ${currentDigest}) — regenerate the artifact (npm run contract:emit)`
+      `${CONTRACT_FILE}: source.sha256 ${formatForError(recordedDigest)} does not match today's ${SOURCE_PATH} (sha256 ${currentDigest}) — ${REGENERATE_ARTIFACT}`
     );
   }
   const commitLooksValid = typeof commit === "string" && COMMIT_SHA.test(commit);
   if (!commitLooksValid) {
     problems.push(
-      `${CONTRACT_FILE}: source.commit ${describe(commit)} is not a full 40-hex commit SHA — regenerate the artifact (npm run contract:emit)`
+      `${CONTRACT_FILE}: source.commit ${formatForError(commit)} is not a full 40-hex commit SHA — ${REGENERATE_ARTIFACT}`
     );
   } else {
     try {
@@ -331,14 +367,28 @@ export function checkContract({ root = REPO_ROOT } = {}) {
     }
   }
 
-  let repo = null;
+  let repoFromPackage = null;
   try {
-    repo = resolveSourceRepo(root);
+    repoFromPackage = resolveSourceRepo(root);
   } catch (error) {
     problems.push(error.message);
   }
+  // Rebuild from the recorded repo. package.json validates that field, and
+  // the origin remote is not an input, so a fork checkout does not false-drift.
+  const recordedRepo = committed.source?.repo;
+  if (repoFromPackage !== null && recordedRepo !== repoFromPackage) {
+    problems.push(
+      `${CONTRACT_FILE}: source.repo ${formatForError(recordedRepo)} does not match package.json repository (${repoFromPackage}) — ${REGENERATE_ARTIFACT}`
+    );
+  }
+  const repo = typeof recordedRepo === "string" && recordedRepo.trim() !== "" ? recordedRepo : null;
   if (repo !== null && typeof commit === "string" && commit.trim() !== "") {
-    const regenerated = buildContract({ commit, repo, sha256: currentDigest });
+    const regenerated = buildContract({
+      repo,
+      path: SOURCE_PATH,
+      commit,
+      sha256: currentDigest,
+    });
     const drift = diffContracts(committed, regenerated);
     for (const problem of drift) problems.push(`${CONTRACT_FILE}: ${problem}`);
     if (drift.length === 0 && serializeContract(regenerated) !== text) {
@@ -351,12 +401,12 @@ export function checkContract({ root = REPO_ROOT } = {}) {
 }
 
 export function generateContract({ root = REPO_ROOT } = {}) {
-  const commit = headCommit(root);
+  const commit = sourceTouchingCommit(root);
   const source = readFileSync(join(root, SOURCE_PATH), "utf8");
-  assertSourceMatchesHead(root, commit, source);
+  assertSourceMatchesCommit(root, commit, source);
   const repo = resolveSourceRepo(root);
   const sha256 = digestOf(source);
-  const contract = buildContract({ commit, repo, sha256 });
+  const contract = buildContract({ repo, path: SOURCE_PATH, commit, sha256 });
   const path = join(root, CONTRACT_FILE);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, serializeContract(contract));
