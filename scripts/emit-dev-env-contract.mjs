@@ -5,15 +5,17 @@
  * A consumer in another repo (the dashboard's settings surface) cannot import
  * `env-defaults.mjs`, and a hand copy of the lists already drifted once
  * (ADR-0010). So this script imports the module — the single source, never a
- * retyped copy — and writes `contracts/dev-env.contract.json`, the artifact
- * consumers pin:
+ * retyped copy — and writes `contracts/dev-env.contract.json`:
  *
  *   contractVersion  the artifact schema's version (integer, bumped only on a
  *                    breaking schema change)
- *   source           the repo (owner/name), the path and the commit the
- *                    artifact was generated from, plus the SHA-256 digest of
- *                    the source bytes, so a consumer can say which contract a
- *                    saved Stage assignment was validated against
+ *   source           repo, path, commit, and the SHA-256 digest of the source
+ *                    bytes. `source.repo` is `owner/name` from package.json's
+ *                    `repository` field. `source.commit` is the last commit
+ *                    that touched `env-defaults.mjs`, the commit that
+ *                    introduced those bytes, not HEAD at generation time.
+ *                    A consumer uses `source` to say which contract a saved
+ *                    Stage assignment was validated against
  *   defaultProvider  `DEFAULTS.provider`
  *   providers        `PROVIDERS`, the allowed Providers
  *   efforts          `EFFORTS`, the allowed Effort values
@@ -28,27 +30,28 @@
  *                    interactive session, and its default Stage assignment
  *
  * Generation is offline and deterministic: `JSON.stringify(contract, null, 2)`
- * plus a trailing newline, fields in the order above. `--check` is the drift
- * check `npm run verify:contract` runs: it regenerates in memory from the
- * committed artifact's recorded `source.commit`, compares every field of the
- * committed file, validates that `source.commit` is a full 40-hex SHA, and
- * always verifies that `source.sha256` is the digest of today's
- * `env-defaults.mjs`. The digest is the verifiable source reference in every
- * history: rewrite the history and the digest still proves which source bytes
- * the artifact was generated from.
+ * plus a trailing newline, fields in the order above. `--check` is what
+ * `npm run verify:contract` runs. It regenerates in memory from the committed
+ * artifact's recorded `source.commit` and recorded `source.repo`, compares
+ * every field, and validates `source.repo` against package.json's
+ * `repository` field. It does not read `git remote`. It checks that
+ * `source.commit` is a full 40-hex SHA, and it always checks that
+ * `source.sha256` is the digest of today's `env-defaults.mjs`. The digest is
+ * the verifiable source reference in every history. If the history is
+ * rewritten, the digest still proves which source bytes the artifact was
+ * generated from.
  *
  * The commit is recorded provenance, verified only when its object is
- * available: if it exists locally, `git show <commit>:<path>` must byte-match
+ * available. If it exists locally, `git show <commit>:<path>` must byte-match
  * today's `env-defaults.mjs`, so a stale recorded commit fails. After a squash
- * merge, a shallow clone or a rebased history the object may be gone; the
- * check then skips that verification rather than failing, because the
- * field-by-field regeneration of the committed body and the digest are the
- * drift guard and survive those histories. A vanished commit pointer cannot be
- * re-authenticated after history is rewritten — that is why the digest exists.
- * Regenerating at the same tree therefore produces no diff by itself, while a
- * hand edit fails with a concrete diff: every contract value and
- * `source.sha256` are regenerated and compared, and `source.commit` is
- * compared whenever its object is still available. It never writes.
+ * merge, a shallow clone, or a rebased history, the object may be gone. The
+ * check then skips that verification rather than failing. The field-by-field
+ * regeneration of the committed body and the digest are the drift guard, and
+ * they survive those histories. A vanished commit pointer cannot be
+ * re-authenticated after history is rewritten. That is why the digest exists.
+ * Regenerating on any tree of the same history produces no diff by itself,
+ * because `source.commit` follows the source file rather than HEAD. A hand
+ * edit fails with a concrete diff. The check never writes.
  */
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
