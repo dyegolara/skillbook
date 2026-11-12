@@ -35,5 +35,9 @@
     "github",
     "pstack"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dyegolara/skillbook.git"
+  },
   "license": "MIT"
 }

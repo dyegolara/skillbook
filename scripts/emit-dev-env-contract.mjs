@@ -196,7 +196,6 @@ function git(root, args) {
 
 function normalizeRepoUrl(rawUrl) {
   const raw = String(rawUrl ?? "").trim();
-  const shape = "expected an origin like https://github.com/<owner>/<repo>.git";
   let path = null;
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(raw)) {
     try {
@@ -219,25 +218,47 @@ function normalizeRepoUrl(rawUrl) {
           .split("/")
           .filter(Boolean);
   if (segments.length < 2) {
-    throw new Error(`cannot derive the contract's source repo from origin "${raw}" — ${shape}`);
+    throw new Error(`cannot parse a source repo from "${raw}"`);
   }
   return segments.slice(-2).join("/");
 }
 
-/**
- * The normalized `origin` remote of a checkout (`owner/name`): the artifact's
- * `source.repo`. A missing or unparseable remote is a clear error, since a
- * consumer would otherwise pin an artifact that names no source.
- */
-export function resolveSourceRepo(root = REPO_ROOT) {
-  const result = git(root, ["remote", "get-url", "origin"]);
-  if (result.status !== 0) {
-    const detail = result.stderr.trim() || `exit ${result.status}`;
+/** `owner/name` from package.json's `repository` string or `{ url }` object. */
+function repoFromRepositoryField(field) {
+  const url = typeof field === "string" ? field.trim() : isPlainObject(field) ? field.url : null;
+  if (typeof url !== "string" || url.trim() === "") {
     throw new Error(
-      `cannot derive the contract's source repo — \`git remote get-url origin\` failed in ${root}: ${detail}`
+      `package.json repository is malformed — source.repo is read from that field, got ${describe(field)}`
     );
   }
-  return normalizeRepoUrl(result.stdout);
+  try {
+    return normalizeRepoUrl(url);
+  } catch {
+    throw new Error(
+      `package.json repository is malformed — source.repo is read from that field, got ${describe(field)}`
+    );
+  }
+}
+
+/**
+ * The artifact's `source.repo` (`owner/name`), from the checkout's
+ * `package.json` `repository` field. A missing or malformed field is a hard
+ * error naming `repository`. The origin remote is not consulted.
+ */
+export function resolveSourceRepo(root = REPO_ROOT) {
+  const path = join(root, "package.json");
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    throw new Error(
+      `package.json repository is missing or malformed — source.repo is read from that field (${error.message})`
+    );
+  }
+  if (!isPlainObject(parsed) || !Object.hasOwn(parsed, "repository")) {
+    throw new Error("package.json repository is missing — source.repo is read from that field");
+  }
+  return repoFromRepositoryField(parsed.repository);
 }
 
 /** Last commit that touched the source file. No such commit is a hard error. */
