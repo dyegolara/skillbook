@@ -22,6 +22,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const CONTRACT_PATH = join(ROOT, CONTRACT_FILE);
 const CLI = join(ROOT, "scripts", "emit-dev-env-contract.mjs");
 const TEMP_ROOTS = [];
+const identity = ["-c", "user.name=Contract Test", "-c", "user.email=contract@test.invalid"];
 
 after(() => {
   for (const root of TEMP_ROOTS) rmSync(root, { recursive: true, force: true });
@@ -242,7 +243,6 @@ test("a squashed history passes: an absent recorded commit is provenance, not dr
 
 test("a recorded commit that exists but is not an ancestor of HEAD passes", () => {
   const root = gitRoot();
-  const identity = ["-c", "user.name=Contract Test", "-c", "user.email=contract@test.invalid"];
   writeInto(root, SOURCE_PATH, readFileSync(join(ROOT, SOURCE_PATH), "utf8"));
   assert.equal(spawnSync("git", ["add", SOURCE_PATH], { cwd: root }).status, 0);
   const first = spawnSync("git", [...identity, "commit", "-m", "source"], { cwd: root, encoding: "utf8" });
@@ -277,7 +277,7 @@ test("a recorded commit that carries a different source file fails", () => {
   assert.equal(added.status, 0, added.stderr);
   const committed = spawnSync(
     "git",
-    ["-c", "user.name=Contract Test", "-c", "user.email=contract@test.invalid", "commit", "-m", "drifted source"],
+    [...identity, "commit", "-m", "drifted source"],
     { cwd: root, encoding: "utf8" }
   );
   assert.equal(committed.status, 0, committed.stderr);
@@ -303,7 +303,7 @@ test("contract:emit records the last commit that touched the source file, not HE
   assert.equal(spawnSync("git", ["add", SOURCE_PATH], { cwd: root }).status, 0);
   const introduced = spawnSync(
     "git",
-    ["-c", "user.name=Contract Test", "-c", "user.email=contract@test.invalid", "commit", "-m", "introduce source"],
+    [...identity, "commit", "-m", "introduce source"],
     { cwd: root, encoding: "utf8" }
   );
   assert.equal(introduced.status, 0, introduced.stderr);
@@ -313,7 +313,7 @@ test("contract:emit records the last commit that touched the source file, not HE
   assert.equal(spawnSync("git", ["add", "README.md"], { cwd: root }).status, 0);
   const later = spawnSync(
     "git",
-    ["-c", "user.name=Contract Test", "-c", "user.email=contract@test.invalid", "commit", "-m", "unrelated"],
+    [...identity, "commit", "-m", "unrelated"],
     { cwd: root, encoding: "utf8" }
   );
   assert.equal(later.status, 0, later.stderr);
@@ -336,7 +336,7 @@ test("contract:emit records the last commit that touched the source file, not HE
   assert.equal(spawnSync("git", ["add", "NOTES.md"], { cwd: root }).status, 0);
   const again = spawnSync(
     "git",
-    ["-c", "user.name=Contract Test", "-c", "user.email=contract@test.invalid", "commit", "-m", "still unrelated"],
+    [...identity, "commit", "-m", "still unrelated"],
     { cwd: root, encoding: "utf8" }
   );
   assert.equal(again.status, 0, again.stderr);
@@ -351,7 +351,7 @@ test("contract:emit fails when the source file has no commit and writes nothing"
   assert.equal(spawnSync("git", ["add", "README.md"], { cwd: root }).status, 0);
   const committed = spawnSync(
     "git",
-    ["-c", "user.name=Contract Test", "-c", "user.email=contract@test.invalid", "commit", "-m", "unrelated"],
+    [...identity, "commit", "-m", "unrelated"],
     { cwd: root, encoding: "utf8" }
   );
   assert.equal(committed.status, 0, committed.stderr);
@@ -373,7 +373,7 @@ test("contract:emit refuses uncommitted source changes against the commit it rec
   assert.equal(spawnSync("git", ["add", SOURCE_PATH], { cwd: root }).status, 0);
   const introduced = spawnSync(
     "git",
-    ["-c", "user.name=Contract Test", "-c", "user.email=contract@test.invalid", "commit", "-m", "introduce source"],
+    [...identity, "commit", "-m", "introduce source"],
     { cwd: root, encoding: "utf8" }
   );
   assert.equal(introduced.status, 0, introduced.stderr);
@@ -383,7 +383,7 @@ test("contract:emit refuses uncommitted source changes against the commit it rec
   assert.equal(spawnSync("git", ["add", "README.md"], { cwd: root }).status, 0);
   const later = spawnSync(
     "git",
-    ["-c", "user.name=Contract Test", "-c", "user.email=contract@test.invalid", "commit", "-m", "unrelated"],
+    [...identity, "commit", "-m", "unrelated"],
     { cwd: root, encoding: "utf8" }
   );
   assert.equal(later.status, 0, later.stderr);
@@ -407,7 +407,7 @@ test("contract:emit refuses a source change that is not in the recorded commit",
   assert.equal(spawnSync("git", ["add", SOURCE_PATH], { cwd: root }).status, 0);
   const committed = spawnSync(
     "git",
-    ["-c", "user.name=Contract Test", "-c", "user.email=contract@test.invalid", "commit", "-m", "source"],
+    [...identity, "commit", "-m", "source"],
     { cwd: root, encoding: "utf8" }
   );
   assert.equal(committed.status, 0, committed.stderr);
@@ -439,7 +439,7 @@ test("contract:emit reads source.repo from package.json, not from the origin rem
   assert.equal(spawnSync("git", ["add", SOURCE_PATH], { cwd: root }).status, 0);
   const committed = spawnSync(
     "git",
-    ["-c", "user.name=Contract Test", "-c", "user.email=contract@test.invalid", "commit", "-m", "source"],
+    [...identity, "commit", "-m", "source"],
     { cwd: root, encoding: "utf8" }
   );
   assert.equal(committed.status, 0, committed.stderr);
@@ -456,7 +456,7 @@ test("contract:emit fails when package.json has no repository field and writes n
   assert.equal(spawnSync("git", ["add", SOURCE_PATH], { cwd: root }).status, 0);
   const committed = spawnSync(
     "git",
-    ["-c", "user.name=Contract Test", "-c", "user.email=contract@test.invalid", "commit", "-m", "source"],
+    [...identity, "commit", "-m", "source"],
     { cwd: root, encoding: "utf8" }
   );
   assert.equal(committed.status, 0, committed.stderr);
@@ -472,7 +472,7 @@ test("contract:emit fails when package.json repository is malformed and writes n
   assert.equal(spawnSync("git", ["add", SOURCE_PATH], { cwd: root }).status, 0);
   const committed = spawnSync(
     "git",
-    ["-c", "user.name=Contract Test", "-c", "user.email=contract@test.invalid", "commit", "-m", "source"],
+    [...identity, "commit", "-m", "source"],
     { cwd: root, encoding: "utf8" }
   );
   assert.equal(committed.status, 0, committed.stderr);

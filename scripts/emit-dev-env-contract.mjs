@@ -235,18 +235,20 @@ function normalizeRepoUrl(rawUrl) {
 /** `owner/name` from package.json's `repository` string or `{ url }` object. */
 function repoFromRepositoryField(field) {
   const url = typeof field === "string" ? field.trim() : isPlainObject(field) ? field.url : null;
-  if (typeof url !== "string" || url.trim() === "") {
+  let repo = null;
+  if (typeof url === "string" && url.trim() !== "") {
+    try {
+      repo = normalizeRepoUrl(url);
+    } catch {
+      repo = null;
+    }
+  }
+  if (repo === null) {
     throw new Error(
       `package.json repository is malformed — source.repo is read from that field, got ${formatForError(field)}`
     );
   }
-  try {
-    return normalizeRepoUrl(url);
-  } catch {
-    throw new Error(
-      `package.json repository is malformed — source.repo is read from that field, got ${formatForError(field)}`
-    );
-  }
+  return repo;
 }
 
 /**

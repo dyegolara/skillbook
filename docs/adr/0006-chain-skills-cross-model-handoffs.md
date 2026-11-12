@@ -329,7 +329,9 @@ context is not independent.
   provider's own key variable. The variable's name lives in
   `PROVIDER_KEY_VARS` in `skills/software-factory/scripts/env-defaults.mjs`.
   The file carries the account under that name and no longer exports
-  `DEV_ENV_API_KEY`. An already-running process keeps the stale
+  `DEV_ENV_API_KEY`. `PROVIDER_KEY_VARS` in
+  `skills/software-factory/scripts/env-defaults.mjs` does not list that name.
+  An already-running process keeps the stale
   variable in its inherited environment until the docker or shell restarts;
   nothing reads it, so it has no effect.
   Amended 2026-10-21, maintainer instruction: provider authentication is
@@ -339,10 +341,10 @@ context is not independent.
   and credential-like variables from the child environment. The API path
   uses the Kepler server's user-configured agent login, not a key from the
   helper's invocation environment.
-  Amended 2026-10-23, ticket #185: `OPENCODE_API_KEY` is documented, and
-  `OPENCODE_GO_API_KEY` is a deprecated alias. The documented name lives in
-  `PROVIDER_KEY_VARS` in `skills/software-factory/scripts/env-defaults.mjs`.
-  The alias lives in `PROVIDER_KEY_ALIASES` in that file. The credential
+  Amended 2026-10-23, ticket #185: `OPENCODE_API_KEY` is the documented
+  name in `PROVIDER_KEY_VARS` in
+  `skills/software-factory/scripts/env-defaults.mjs`. `OPENCODE_GO_API_KEY`
+  is the deprecated alias in `PROVIDER_KEY_ALIASES` in that file. The credential
   guard compares trimmed keys. `providerCredentialGuard` in
   `skills/software-factory/scripts/launch-stage.mjs` hashes `String(k).trim()`
   in the terminal probe. Spec #184's review, row 7, called that `k.trim()`
