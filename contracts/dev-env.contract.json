@@ -1,0 +1,103 @@
+{
+  "contractVersion": 1,
+  "source": {
+    "repo": "dyegolara/skillbook",
+    "path": "skills/software-factory/scripts/env-defaults.mjs",
+    "commit": "621d85e9c02f617235f7e259a63859e21bfb6b3d",
+    "sha256": "fc8c1d17ab85c60751264c2e61587fe310b81663ae02809302e2ea81d8c9342e"
+  },
+  "defaultProvider": "opencode-go",
+  "providers": [
+    "openrouter",
+    "opencode-go",
+    "openai",
+    "xai",
+    "anthropic"
+  ],
+  "efforts": [
+    "max",
+    "xhigh",
+    "high"
+  ],
+  "agents": [
+    "pi",
+    "opencode",
+    "codex",
+    "claude-code",
+    "grok",
+    "cursor-cli"
+  ],
+  "providerKeyVars": {
+    "openrouter": "OPENROUTER_API_KEY",
+    "opencode-go": "OPENCODE_API_KEY",
+    "openai": "OPENAI_API_KEY",
+    "xai": "XAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY"
+  },
+  "agentAdapters": {
+    "pi": "pi",
+    "opencode": "opencode",
+    "codex": "codex",
+    "claude-code": "claude-code",
+    "grok": "grok",
+    "cursor-cli": "cursor"
+  },
+  "launchStages": {
+    "dev-flow": "DEV_FLOW",
+    "implement-spec": "IMPLEMENT_SPEC",
+    "code-review-loop": "CODE_REVIEW_LOOP",
+    "create-pr": "CREATE_PR"
+  },
+  "stages": [
+    {
+      "key": "GRILL",
+      "launchName": null,
+      "interactive": true,
+      "defaults": {
+        "model": "opencode-go/glm-5.3",
+        "effort": "max",
+        "agent": "opencode"
+      }
+    },
+    {
+      "key": "DEV_FLOW",
+      "launchName": "dev-flow",
+      "interactive": false,
+      "defaults": {
+        "model": "opencode-go/glm-5.3",
+        "effort": "max",
+        "agent": "pi"
+      }
+    },
+    {
+      "key": "IMPLEMENT_SPEC",
+      "launchName": "implement-spec",
+      "interactive": false,
+      "defaults": {
+        "model": "opencode-go/deepseek-v4.1-flash",
+        "effort": "max",
+        "agent": "pi"
+      }
+    },
+    {
+      "key": "CODE_REVIEW_LOOP",
+      "launchName": "code-review-loop",
+      "interactive": false,
+      "defaults": {
+        "model": "opencode-go/mimo-v2.6-pro",
+        "effort": "high",
+        "agent": "pi"
+      }
+    },
+    {
+      "key": "CREATE_PR",
+      "launchName": "create-pr",
+      "interactive": false,
+      "defaults": {
+        "model": "opencode-go/muse-spark-1.3-contributor",
+        "effort": "xhigh",
+        "agent": "pi"
+      }
+    }
+  ]
+}

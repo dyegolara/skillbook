@@ -157,7 +157,7 @@ test("pin overrides survive a handoff when the server environment differs", asyn
   assert.equal(resumed.error, null);
   assert.equal(
     injectedCommand(resumed.input),
-    `claude -p --model anthropic/claude-opus-5 --effort high '${FIXTURE.pointers}'`
+    `claude -p --model claude-opus-5 --effort high '${FIXTURE.pointers}'`
   );
 });
 
@@ -165,12 +165,10 @@ test("agent switch: DEV_ENV_AGENT_DEV_FLOW=grok builds grok's documented command
   const scenario = LAUNCH_SCENARIOS["agent-switch"];
   const out = await runLaunchFixture(scenario);
   assert.equal(out.error, null);
-  assert.equal(injectedCommand(out.input), scenario.expectedCommand);
-  assert.ok(
-    injectedCommand(out.input).startsWith(
-      `grok -p --model ${DEFAULTS.stages.DEV_FLOW.model} --effort ${DEFAULTS.stages.DEV_FLOW.effort} `
-    )
-  );
+  const command = injectedCommand(out.input);
+  assert.equal(command, scenario.expectedCommand);
+  assert.ok(command.startsWith("grok -p --model "));
+  assert.ok(!command.includes(`${DEFAULTS.provider}/`), "the bare model id carries no provider prefix");
 });
 
 test("invalid value: a readable hard error names the variable and lists the allowed values", async () => {
@@ -286,7 +284,7 @@ test("review → grill → dev-flow carries caller pins across conflicting serve
   assert.equal(resumed.error, null);
   assert.equal(
     injectedCommand(resumed.input),
-    "claude -p --model anthropic/claude-opus-5 --effort high '" + FIXTURE.pointers + "'"
+    "claude -p --model claude-opus-5 --effort high '" + FIXTURE.pointers + "'"
   );
   assert.ok(!prompt.includes(FIXTURE_KEY));
   assert.ok(!prompt.includes("ANTHROPIC_API_KEY"));

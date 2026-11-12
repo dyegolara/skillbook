@@ -24,6 +24,12 @@ export const ANSI = {
 
 const STATUS_CODES = { past: ANSI.past, current: ANSI.current, next: ANSI.next };
 const ANSI_ANYWHERE = /\u001b\[[0-9;]*m/g;
+const TERMINAL_ESCAPES = /\u001b(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001b]*(?:\u0007|\u001b\\))|\u009b[0-?]*[ -/]*[@-~]/g;
+const TERMINAL_CONTROLS = /[\u0000-\u001f\u007f-\u009f]/g;
+
+function safeText(value) {
+  return String(value).replace(TERMINAL_ESCAPES, "").replace(TERMINAL_CONTROLS, "");
+}
 
 function paint(text, code, color) {
   return color ? `${code}${text}${ANSI.reset}` : text;
@@ -70,10 +76,11 @@ function renderStageSequence(stages, color) {
 }
 
 function renderFlowLine(flow, { color, keyWidth }) {
-  const terminal = flow?.terminal
-    ? paint(flow.terminal, terminalCode(flow.terminal), color)
+  const terminalText = flow?.terminal ? safeText(flow.terminal) : "";
+  const terminal = terminalText
+    ? paint(terminalText, terminalCode(terminalText), color)
     : paint("—", ANSI.dim, color);
-  return `${String(flow?.key ?? "?").padEnd(keyWidth)}  ${renderStageSequence(flow?.stages, color)}  ${terminal}`;
+  return `${safeText(flow?.key ?? "?").padEnd(keyWidth)}  ${renderStageSequence(flow?.stages, color)}  ${terminal}`;
 }
 
 function renderHeader(timeline, color) {
@@ -85,11 +92,11 @@ function renderHeader(timeline, color) {
   const lines = [
     paint("copilot-review-smart", ANSI.heading, color) +
       paint(" · observability", ANSI.dim, color) +
-      (timeline?.now ? paint(`  ${timeline.now}`, ANSI.dim, color) : ""),
+      (timeline?.now ? paint(`  ${safeText(timeline.now)}`, ANSI.dim, color) : ""),
   ];
-  const done = `done ${executed.length}${last ? ` (last ${last.action ?? "?"} @ ${last.ts ?? "?"})` : ""}`;
-  const running = `in-flight ${inFlight ? `pid ${inFlight.pid}${inFlight.alive === false ? " (stale)" : ""}` : "idle"}`;
-  const nextCheck = scheduled.length ? `next check ${scheduled[0]?.deadline_at ?? "?"}` : "next check none";
+  const done = `done ${executed.length}${last ? ` (last ${safeText(last.action ?? "?")} @ ${safeText(last.ts ?? "?")})` : ""}`;
+  const running = `in-flight ${inFlight ? `pid ${safeText(inFlight.pid)}${inFlight.alive === false ? " (stale)" : ""}` : "idle"}`;
+  const nextCheck = scheduled.length ? `next check ${safeText(scheduled[0]?.deadline_at ?? "?")}` : "next check none";
   lines.push(`ticks  ${done}  ·  ${running}  ·  scheduled ${scheduled.length}  ·  ${nextCheck}`);
   return lines;
 }
@@ -117,10 +124,10 @@ export function renderFrame({ timeline, flows = [], color = false, columns = 0 }
  * because the live loop does.
  */
 export function renderApiError({ url, message = "", intervalMs = 2000, color = false, columns = 0 } = {}) {
-  const base = String(url ?? "").replace(/\/+$/, "");
+  const base = safeText(String(url ?? "").replace(/\/+$/, ""));
   const lines = [
     paint("⚠ observability API unreachable", ANSI.warn, color) + `  ${base}`,
-    paint(`  reason: ${message}`, ANSI.dim, color),
+    paint(`  reason: ${safeText(message)}`, ANSI.dim, color),
     "  start it:  node pr_monitor_observability.mjs",
     "  or:        npm --prefix observability start",
     paint(`  retrying every ${intervalMs} ms — Ctrl-C to exit`, ANSI.dim, color),

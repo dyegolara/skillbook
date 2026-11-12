@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.4.0
+
+- The `opencode-go` Provider key is `OPENCODE_API_KEY` — the name every harness
+  and the model catalog read. `OPENCODE_GO_API_KEY` stays a deprecated alias
+  read during the transition, so an existing dev-server keeps its key; the
+  documented spelling wins when both are set (#185).
+- Model ids are emitted in the form each agent accepts: `provider/model` for
+  `pi` and `opencode`, the bare model id for `claude-code`, `codex`, `grok`
+  and `cursor-cli`. `DEV_ENV_MODEL_<STAGE>` keeps one canonical form and the
+  shape rule lives at emission, next to each `AGENT_COMMANDS` row's flag
+  evidence (ADR-0011, #186).
+- The `DEV_ENV` contract ships as generated
+  `contracts/dev-env.contract.json`: `contractVersion`, the source
+  repo/path/commit and source SHA-256 digest it was generated from, the allowed
+  Providers, Effort values and agents, each Provider's key variable, the
+  agent→adapter map, the launch stage set and every Stage's default assignment
+  (ADR-0010, #187).
+- `npm run verify:contract` is the offline drift check: it regenerates the
+  contract from `env-defaults.mjs` and fails on any drift or hand edit, and
+  `npm run verify` keeps it in its network-free core; `npm run contract:emit`
+  regenerates the artifact (#187).
+
 ## 1.3.0
 
 - Add `skills/software-factory/scripts/env-defaults.mjs`: the single source of

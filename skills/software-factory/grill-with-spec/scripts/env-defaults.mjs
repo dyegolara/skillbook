@@ -8,9 +8,12 @@
  * `STAGE_PINS`/`GRILL_PIN` tables are gone (ticket #162).
  *
  * Every pin the chain resolves lives here: the defaults (today's pins, per
- * ticket #161 and ADR-0006), the allowed values, the provider key-variable
- * names (`PROVIDER_KEY_VARS`, used to prevent keys from reaching child agents),
- * the agent→launch table, and the resolution rules. Resolution is
+ * ticket #161 and ADR-0006), the allowed values, the documented Provider key
+ * map (`PROVIDER_KEY_VARS`) with its deprecated aliases
+ * (`PROVIDER_KEY_ALIASES`), the resolution helpers for both
+ * (`resolveProviderKey`, `providerKeyNames`, `allProviderKeyNames`), the
+ * agent→launch table, and the resolution rules. The key names are also the
+ * strip set that keeps credentials out of child agents. Resolution is
  * environment-injectable: the functions take an `env` object defaulting to
  * `process.env`, so tests need no global mutation.
  *
@@ -27,6 +30,23 @@ export const EFFORTS = ["max", "xhigh", "high"];
 
 /** Allowed agents for `DEV_ENV_AGENT_<STAGE>`, in one list. */
 export const AGENTS = ["pi", "opencode", "codex", "claude-code", "grok", "cursor-cli"];
+
+/**
+ * The model-id emission formats, keyed by the name each `AGENT_COMMANDS` row
+ * declares in `modelIdFormat` (ADR-0011). `provider/model` passes the
+ * canonical id through unchanged; `bare` strips the first `provider/`
+ * segment — only the first, so a nested id keeps its remainder
+ * (`openrouter/anthropic/claude-x` becomes `anthropic/claude-x`) and an id
+ * without `/` passes through unchanged. This is emission, not validation:
+ * `DEV_ENV_MODEL_<STAGE>` keeps its canonical form.
+ */
+const MODEL_ID_FORMATS = Object.freeze({
+  "provider/model": (model) => model,
+  bare: (model) => {
+    const slash = model.indexOf("/");
+    return slash === -1 ? model : model.slice(slash + 1);
+  },
+});
 
 /**
  * Today's pins per ticket #161 / ADR-0006: the global provider and each
@@ -59,25 +79,35 @@ export const LAUNCH_STAGES = Object.freeze({
   "create-pr": "CREATE_PR",
 });
 
-/** Provider API-key environment names that launch helpers must not forward. */
+/** Documented Provider key variable per Provider (GLOSSARY: Provider key). */
 export const PROVIDER_KEY_VARS = {
   openrouter: "OPENROUTER_API_KEY",
-  "opencode-go": "OPENCODE_GO_API_KEY",
+  "opencode-go": "OPENCODE_API_KEY",
   openai: "OPENAI_API_KEY",
   xai: "XAI_API_KEY",
   anthropic: "ANTHROPIC_API_KEY",
 };
 
+/** Deprecated Provider key spellings, still read during the transition. */
+export const PROVIDER_KEY_ALIASES = {
+  "opencode-go": ["OPENCODE_GO_API_KEY"],
+};
+
 /**
  * The agent→launch table: each row names the CLI binary, Kepler's adapter id,
- * the doc that verifies its flags, and builds the argv after the binary from
- * the stage pins (`provider`, `model`, `effort`, `pointers`). `buildAgentCommand`
- * prepends the binary. Binaries verified 2026-10-16 (ticket #161): `pi→pi`,
- * `opencode→opencode` (v2), `codex→codex`, `claude-code→claude`, `grok→grok`,
- * `cursor-cli→agent` (legacy alias `cursor-agent` accepted). Kepler adapterIds
- * verified against the local `GET /agent/adapters` registry (2026-10-16):
- * pi, opencode, codex, claude-code, grok, cursor — `cursor-cli` maps to
- * Kepler's `cursor` adapter.
+ * the doc that verifies its flags, its model-id emission format (ADR-0011)
+ * and builds the argv after the binary from the stage pins (`provider`,
+ * `model`, `effort`, `pointers`). `modelIdFormat` is one of
+ * `MODEL_ID_FORMATS`'s keys: `provider/model` for the agents whose `--model`
+ * flag takes the canonical id, `bare` for those that take a bare model id.
+ * `buildAgentCommand` applies the row's rule before `args` sees the model, so
+ * a new agent extends this table with its format instead of adding a second
+ * model representation. `buildAgentCommand` prepends the binary. Binaries
+ * verified 2026-10-16 (ticket #161): `pi→pi`, `opencode→opencode` (v2),
+ * `codex→codex`, `claude-code→claude`, `grok→grok`, `cursor-cli→agent`
+ * (legacy alias `cursor-agent` accepted). Kepler adapterIds verified against
+ * the local `GET /agent/adapters` registry (2026-10-16): pi, opencode, codex,
+ * claude-code, grok, cursor — `cursor-cli` maps to Kepler's `cursor` adapter.
  */
 export const AGENT_COMMANDS = {
   // Today's exact pinned shape: `pi --print --provider <p> --model <m>
@@ -88,6 +118,8 @@ export const AGENT_COMMANDS = {
     binary: "pi",
     adapterId: "pi",
     docs: ["pi --help (pi 1.3.0)"],
+    // ADR-0011: pi emits the canonical provider/model id.
+    modelIdFormat: "provider/model",
     args: ({ provider, model, effort, pointers }) => [
       "--print",
       "--provider",
@@ -108,6 +140,8 @@ export const AGENT_COMMANDS = {
     binary: "opencode",
     adapterId: "opencode",
     docs: ["https://opencode.ai/docs/cli/", "https://opencode.ai/docs/models/"],
+    // ADR-0011: the model flag takes the `provider/model` id (see above).
+    modelIdFormat: "provider/model",
     args: ({ model, effort, pointers }) => ["run", "--model", model, "--variant", effort, pointers],
   },
   // `codex exec` is the documented non-interactive command; `--model`
@@ -123,6 +157,8 @@ export const AGENT_COMMANDS = {
       "https://developers.openai.com/codex/cli/reference",
       "https://developers.openai.com/codex/config-reference",
     ],
+    // ADR-0011: codex takes a bare model id or alias.
+    modelIdFormat: "bare",
     args: ({ model, effort, pointers }) => [
       "exec",
       "--model",
@@ -139,6 +175,8 @@ export const AGENT_COMMANDS = {
     binary: "claude",
     adapterId: "claude-code",
     docs: ["https://docs.claude.com/en/docs/claude-code/cli-reference"],
+    // ADR-0011: the model flag takes a bare model id or alias.
+    modelIdFormat: "bare",
     args: ({ model, effort, pointers }) => ["-p", "--model", model, "--effort", effort, pointers],
   },
   // `grok -p` sends one prompt headlessly; `-m/--model` picks the model and
@@ -149,6 +187,8 @@ export const AGENT_COMMANDS = {
     binary: "grok",
     adapterId: "grok",
     docs: ["https://docs.x.ai/build/cli/headless-scripting", "https://docs.x.ai/build/cli/reference"],
+    // ADR-0011: the model flag takes a bare model id or alias.
+    modelIdFormat: "bare",
     args: ({ model, effort, pointers }) => ["-p", "--model", model, "--effort", effort, pointers],
   },
   // `agent -p` prints non-interactively and `--model` picks the model. The
@@ -163,6 +203,8 @@ export const AGENT_COMMANDS = {
     // (2026-10-16), not a CLI-doc fact.
     adapterId: "cursor",
     docs: ["https://cursor.com/docs/cli/reference/parameters", "https://cursor.com/docs/cli/headless"],
+    // ADR-0011: the model flag takes a bare model id or alias.
+    modelIdFormat: "bare",
     args: ({ model, pointers }) => ["-p", "--model", model, pointers],
   },
 };
@@ -176,6 +218,41 @@ function readEnv(env, name) {
   if (raw === undefined || raw === null) return null;
   const value = String(raw).trim();
   return value === "" ? null : value;
+}
+
+/**
+ * What `providerKeyNames` returns: the Provider's key variable names in
+ * resolution order — the documented name first, then its deprecated aliases.
+ * An unknown Provider has no names, so the result is an empty array.
+ */
+export function providerKeyNames(provider) {
+  const documented = PROVIDER_KEY_VARS[provider];
+  if (!documented) return [];
+  return [documented, ...(PROVIDER_KEY_ALIASES[provider] ?? [])];
+}
+
+/**
+ * What `allProviderKeyNames` returns: every Provider key variable name — each
+ * documented name and each deprecated alias — for the strip set.
+ */
+export function allProviderKeyNames() {
+  return Object.keys(PROVIDER_KEY_VARS).flatMap((provider) => providerKeyNames(provider));
+}
+
+/**
+ * Resolve a Provider's key from an injected environment: the first name in
+ * `providerKeyNames` order that resolves wins, so the documented spelling
+ * beats a deprecated alias when both are set and the old spelling alone still
+ * resolves. `readEnv`'s rule applies to each name — unset, empty and
+ * whitespace-only are absent, any other value is trimmed. No key, or an
+ * unknown Provider, resolves to null.
+ */
+export function resolveProviderKey(provider, env = process.env) {
+  for (const name of providerKeyNames(provider)) {
+    const value = readEnv(env, name);
+    if (value !== null) return { name, value };
+  }
+  return null;
 }
 
 /**
@@ -271,12 +348,21 @@ export function resolveAgent(stage, env = process.env) {
 
 /**
  * Build an agent's launch argv from a stage's pins. The command construction
- * goes through `AGENT_COMMANDS`; an unknown agent is a hard error.
+ * goes through `AGENT_COMMANDS`, and the row's `modelIdFormat` (ADR-0011) is
+ * applied here — the one emission point: the pins keep the canonical
+ * `provider/model` id, while the row's agent receives the shape its `--model`
+ * flag documents. An unknown agent or table format is a hard error.
  */
 export function buildAgentCommand(agent, pin) {
   const row = AGENT_COMMANDS[agent];
   if (!row) {
     throw new Error(`unknown agent "${agent}" — expected one of ${AGENTS.join(", ")}`);
   }
-  return [row.binary, ...row.args(pin)];
+  const format = MODEL_ID_FORMATS[row.modelIdFormat];
+  if (!format) {
+    throw new Error(
+      `unknown model-id format "${row.modelIdFormat}" for agent "${agent}" — expected one of ${Object.keys(MODEL_ID_FORMATS).join(", ")}`
+    );
+  }
+  return [row.binary, ...row.args({ ...pin, model: format(pin.model) })];
 }
