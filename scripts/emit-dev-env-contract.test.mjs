@@ -32,11 +32,12 @@ function readCommitted() {
   return JSON.parse(readFileSync(CONTRACT_PATH, "utf8"));
 }
 
-/** The generator's output at a commit, with the repo and digest read from the checkout. */
+/** The generator's output at a commit, from one source record read off the checkout. */
 function regenerate(commit) {
   return buildContract({
-    commit,
     repo: resolveSourceRepo(ROOT),
+    path: SOURCE_PATH,
+    commit,
     sha256: sourceDigest(readFileSync(join(ROOT, SOURCE_PATH), "utf8")),
   });
 }
@@ -102,6 +103,18 @@ test("the committed artifact is the generator's output for its recorded source c
   assert.equal(readFileSync(CONTRACT_PATH, "utf8"), serializeContract(regenerated));
 });
 
+test("buildContract records the source object it was given", () => {
+  const source = {
+    repo: "dyegolara/skillbook",
+    path: SOURCE_PATH,
+    commit: "d83ae673ec08a63cd0d70b961e90eadb7174c817",
+    sha256: "fc8c1d17ab85c60751264c2e61587fe310b81663ae02809302e2ea81d8c9342e",
+  };
+  const contract = buildContract(source);
+  assert.deepEqual(contract.source, source);
+  assert.deepEqual(contract, readCommitted());
+});
+
 test("checkContract reports the committed artifact clean", () => {
   assert.deepEqual(checkContract({ root: ROOT }), { ok: true, problems: [] });
 });
@@ -150,6 +163,22 @@ test("a hand edit fails: a faked source commit is drift the comparison names", (
     problems.some((problem) => problem.startsWith("source.commit")),
     problems.join("\n")
   );
+});
+
+test("the check shows a missing value as missing and any other value as JSON", () => {
+  const root = gitRoot();
+  writeInto(root, SOURCE_PATH, readFileSync(join(ROOT, SOURCE_PATH), "utf8"));
+  const artifact = readCommitted();
+  delete artifact.source.commit;
+  artifact.source.sha256 = { not: "a digest" };
+  writeInto(root, CONTRACT_FILE, serializeContract(artifact));
+
+  const result = checkContract({ root });
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.problems, [
+    `${CONTRACT_FILE}: source.sha256 {"not":"a digest"} does not match today's ${SOURCE_PATH} (sha256 fc8c1d17ab85c60751264c2e61587fe310b81663ae02809302e2ea81d8c9342e) — regenerate the artifact (npm run contract:emit)`,
+    `${CONTRACT_FILE}: source.commit missing is not a full 40-hex commit SHA — regenerate the artifact (npm run contract:emit)`,
+  ]);
 });
 
 test("a hand edit fails: a faked source digest is drift the comparison names", () => {
@@ -262,10 +291,9 @@ test("a recorded commit that carries a different source file fails", () => {
 
   const result = checkContract({ root });
   assert.equal(result.ok, false);
-  assert.ok(
-    result.problems.some((problem) => problem.includes(SOURCE_PATH)),
-    result.problems.join("\n")
-  );
+  assert.deepEqual(result.problems, [
+    `${CONTRACT_FILE}: source.commit ${sha} carries a different ${SOURCE_PATH} than this tree — the artifact no longer reflects the source; regenerate the artifact (npm run contract:emit)`,
+  ]);
 });
 
 test("contract:emit records the last commit that touched the source file, not HEAD", () => {
