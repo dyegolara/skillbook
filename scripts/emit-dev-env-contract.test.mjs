@@ -437,6 +437,57 @@ test("contract:emit fails when package.json repository is malformed and writes n
   assert.equal(existsSync(join(root, CONTRACT_FILE)), false);
 });
 
+test("the check rebuilds from the recorded source.repo and names a bad repository field", () => {
+  const root = gitRoot();
+  writeInto(root, "package.json", "{}\n");
+  writeInto(root, SOURCE_PATH, readFileSync(join(ROOT, SOURCE_PATH), "utf8"));
+  const artifact = readCommitted();
+  artifact.providers = artifact.providers.filter((provider) => provider !== PROVIDERS[PROVIDERS.length - 1]);
+  writeInto(root, CONTRACT_FILE, serializeContract(artifact));
+
+  const result = checkContract({ root });
+  assert.equal(result.ok, false);
+  assert.ok(
+    result.problems.some((problem) => problem.includes("repository")),
+    result.problems.join("\n")
+  );
+  assert.ok(
+    result.problems.some((problem) => problem.includes("providers")),
+    result.problems.join("\n")
+  );
+});
+
+test("a fork checkout passes the check", () => {
+  const root = gitRoot();
+  const remote = spawnSync(
+    "git",
+    ["remote", "add", "origin", "https://github.com/a-forker/skillbook.git"],
+    { cwd: root, encoding: "utf8" }
+  );
+  assert.equal(remote.status, 0, remote.stderr);
+  writeInto(root, SOURCE_PATH, readFileSync(join(ROOT, SOURCE_PATH), "utf8"));
+  writeInto(root, CONTRACT_FILE, readFileSync(CONTRACT_PATH, "utf8"));
+
+  assert.deepEqual(checkContract({ root }), { ok: true, problems: [] });
+  const origin = spawnSync("git", ["remote", "get-url", "origin"], { cwd: root, encoding: "utf8" });
+  assert.equal(origin.stdout.trim(), "https://github.com/a-forker/skillbook.git");
+});
+
+test("the check names package.json repository when the committed source.repo disagrees", () => {
+  const root = gitRoot();
+  writeInto(root, SOURCE_PATH, readFileSync(join(ROOT, SOURCE_PATH), "utf8"));
+  const artifact = readCommitted();
+  artifact.source.repo = "someone/fork";
+  writeInto(root, CONTRACT_FILE, serializeContract(artifact));
+
+  const result = checkContract({ root });
+  assert.equal(result.ok, false);
+  assert.ok(
+    result.problems.some((problem) => problem.includes("repository") && problem.includes("someone/fork")),
+    result.problems.join("\n")
+  );
+});
+
 test("the --check CLI exits 0 on the committed tree without touching it", () => {
   const before = readFileSync(CONTRACT_PATH, "utf8");
   const result = spawnSync(process.execPath, [CLI, "--check"], {

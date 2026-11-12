@@ -356,12 +356,21 @@ export function checkContract({ root = REPO_ROOT } = {}) {
     }
   }
 
-  let repo = null;
+  let repoFromPackage = null;
   try {
-    repo = resolveSourceRepo(root);
+    repoFromPackage = resolveSourceRepo(root);
   } catch (error) {
     problems.push(error.message);
   }
+  // Rebuild from the recorded repo. package.json validates that field, and
+  // the origin remote is not an input, so a fork checkout does not false-drift.
+  const recordedRepo = committed.source?.repo;
+  if (repoFromPackage !== null && recordedRepo !== repoFromPackage) {
+    problems.push(
+      `${CONTRACT_FILE}: source.repo ${describe(recordedRepo)} does not match package.json repository (${repoFromPackage}) — regenerate the artifact (npm run contract:emit)`
+    );
+  }
+  const repo = typeof recordedRepo === "string" && recordedRepo.trim() !== "" ? recordedRepo : null;
   if (repo !== null && typeof commit === "string" && commit.trim() !== "") {
     const regenerated = buildContract({ commit, repo, sha256: currentDigest });
     const drift = diffContracts(committed, regenerated);
