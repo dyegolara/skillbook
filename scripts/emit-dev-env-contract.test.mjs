@@ -58,17 +58,18 @@ function tempRoot() {
   return root;
 }
 
-/** An empty git repo with this repo's origin, so the source repo resolves. */
+/** An empty git repo whose package.json names this repo. The origin remote is not the source of `source.repo`. */
 function gitRoot() {
   const root = tempRoot();
   const initialized = spawnSync("git", ["init"], { cwd: root, encoding: "utf8" });
   assert.equal(initialized.status, 0, initialized.stderr);
-  const remote = spawnSync(
-    "git",
-    ["remote", "add", "origin", "https://github.com/dyegolara/skillbook.git"],
-    { cwd: root, encoding: "utf8" }
+  writeInto(
+    root,
+    "package.json",
+    `${JSON.stringify({
+      repository: { type: "git", url: "https://github.com/dyegolara/skillbook.git" },
+    })}\n`
   );
-  assert.equal(remote.status, 0, remote.stderr);
   return root;
 }
 
@@ -77,6 +78,22 @@ function writeInto(root, relativePath, contents) {
   mkdirSync(join(root, dirname(relativePath)), { recursive: true });
   writeFileSync(join(root, relativePath), contents);
 }
+
+test("the committed artifact records the source-touching commit on this history", () => {
+  const { source } = readCommitted();
+  assert.equal(source.repo, "dyegolara/skillbook");
+  assert.equal(source.commit, "d83ae673ec08a63cd0d70b961e90eadb7174c817");
+  assert.equal(source.sha256, "fc8c1d17ab85c60751264c2e61587fe310b81663ae02809302e2ea81d8c9342e");
+
+  const before = readFileSync(CONTRACT_PATH, "utf8");
+  const emitted = spawnSync(process.execPath, [CLI], {
+    cwd: ROOT,
+    encoding: "utf8",
+    env: cleanEnv(),
+  });
+  assert.equal(emitted.status, 0, emitted.stdout + emitted.stderr);
+  assert.equal(readFileSync(CONTRACT_PATH, "utf8"), before);
+});
 
 test("the committed artifact is the generator's output for its recorded source commit", () => {
   const committed = readCommitted();
@@ -251,7 +268,111 @@ test("a recorded commit that carries a different source file fails", () => {
   );
 });
 
-test("generation rejects source changes not committed at HEAD", () => {
+test("contract:emit records the last commit that touched the source file, not HEAD", () => {
+  const root = gitRoot();
+  const source = "export const SOURCE_TOUCH = 1;\n";
+  writeInto(root, SOURCE_PATH, source);
+  assert.equal(spawnSync("git", ["add", SOURCE_PATH], { cwd: root }).status, 0);
+  const introduced = spawnSync(
+    "git",
+    ["-c", "user.name=Contract Test", "-c", "user.email=contract@test.invalid", "commit", "-m", "introduce source"],
+    { cwd: root, encoding: "utf8" }
+  );
+  assert.equal(introduced.status, 0, introduced.stderr);
+  const sourceCommit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+
+  writeInto(root, "README.md", "later commit\n");
+  assert.equal(spawnSync("git", ["add", "README.md"], { cwd: root }).status, 0);
+  const later = spawnSync(
+    "git",
+    ["-c", "user.name=Contract Test", "-c", "user.email=contract@test.invalid", "commit", "-m", "unrelated"],
+    { cwd: root, encoding: "utf8" }
+  );
+  assert.equal(later.status, 0, later.stderr);
+  const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+  assert.notEqual(head, sourceCommit);
+
+  generateContract({ root });
+  const artifact = JSON.parse(readFileSync(join(root, CONTRACT_FILE), "utf8"));
+  assert.equal(artifact.source.commit, sourceCommit);
+  assert.notEqual(artifact.source.commit, head);
+  const shown = spawnSync("git", ["show", `${sourceCommit}:${SOURCE_PATH}`], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(shown.status, 0, shown.stderr);
+  assert.equal(shown.stdout, source);
+  assert.equal(artifact.source.sha256, sourceDigest(source));
+
+  writeInto(root, "NOTES.md", "still later\n");
+  assert.equal(spawnSync("git", ["add", "NOTES.md"], { cwd: root }).status, 0);
+  const again = spawnSync(
+    "git",
+    ["-c", "user.name=Contract Test", "-c", "user.email=contract@test.invalid", "commit", "-m", "still unrelated"],
+    { cwd: root, encoding: "utf8" }
+  );
+  assert.equal(again.status, 0, again.stderr);
+  const before = readFileSync(join(root, CONTRACT_FILE), "utf8");
+  generateContract({ root });
+  assert.equal(readFileSync(join(root, CONTRACT_FILE), "utf8"), before);
+});
+
+test("contract:emit fails when the source file has no commit and writes nothing", () => {
+  const root = gitRoot();
+  writeInto(root, "README.md", "no source yet\n");
+  assert.equal(spawnSync("git", ["add", "README.md"], { cwd: root }).status, 0);
+  const committed = spawnSync(
+    "git",
+    ["-c", "user.name=Contract Test", "-c", "user.email=contract@test.invalid", "commit", "-m", "unrelated"],
+    { cwd: root, encoding: "utf8" }
+  );
+  assert.equal(committed.status, 0, committed.stderr);
+  const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+  writeInto(root, SOURCE_PATH, "export const NEVER_COMMITTED = 1;\n");
+
+  assert.throws(() => generateContract({ root }), (error) => {
+    assert.match(error.message, new RegExp(SOURCE_PATH.replaceAll(".", "\\.")));
+    assert.doesNotMatch(error.message, new RegExp(head));
+    return true;
+  });
+  assert.equal(existsSync(join(root, CONTRACT_FILE)), false);
+});
+
+test("contract:emit refuses uncommitted source changes against the commit it records", () => {
+  const root = gitRoot();
+  const source = "export const COMMITTED = 1;\n";
+  writeInto(root, SOURCE_PATH, source);
+  assert.equal(spawnSync("git", ["add", SOURCE_PATH], { cwd: root }).status, 0);
+  const introduced = spawnSync(
+    "git",
+    ["-c", "user.name=Contract Test", "-c", "user.email=contract@test.invalid", "commit", "-m", "introduce source"],
+    { cwd: root, encoding: "utf8" }
+  );
+  assert.equal(introduced.status, 0, introduced.stderr);
+  const sourceCommit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+
+  writeInto(root, "README.md", "later\n");
+  assert.equal(spawnSync("git", ["add", "README.md"], { cwd: root }).status, 0);
+  const later = spawnSync(
+    "git",
+    ["-c", "user.name=Contract Test", "-c", "user.email=contract@test.invalid", "commit", "-m", "unrelated"],
+    { cwd: root, encoding: "utf8" }
+  );
+  assert.equal(later.status, 0, later.stderr);
+  const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+  assert.notEqual(head, sourceCommit);
+  writeInto(root, SOURCE_PATH, `${source}\n`);
+
+  assert.throws(() => generateContract({ root }), (error) => {
+    assert.match(error.message, new RegExp(sourceCommit));
+    assert.doesNotMatch(error.message, /HEAD/);
+    assert.match(error.message, /commit the source change/);
+    return true;
+  });
+  assert.equal(existsSync(join(root, CONTRACT_FILE)), false);
+});
+
+test("contract:emit refuses a source change that is not in the recorded commit", () => {
   const root = gitRoot();
   const source = readFileSync(join(ROOT, SOURCE_PATH), "utf8");
   writeInto(root, SOURCE_PATH, source);
@@ -266,9 +387,121 @@ test("generation rejects source changes not committed at HEAD", () => {
 
   assert.throws(
     () => generateContract({ root }),
-    /does not match HEAD — commit source changes first/
+    /does not match commit [0-9a-f]{40} — commit the source change/
   );
   assert.equal(existsSync(join(root, CONTRACT_FILE)), false);
+});
+
+test("contract:emit reads source.repo from package.json, not from the origin remote", () => {
+  const root = gitRoot();
+  const remote = spawnSync(
+    "git",
+    ["remote", "add", "origin", "https://github.com/a-forker/skillbook.git"],
+    { cwd: root, encoding: "utf8" }
+  );
+  assert.equal(remote.status, 0, remote.stderr);
+  writeInto(
+    root,
+    "package.json",
+    `${JSON.stringify({
+      repository: { type: "git", url: "https://github.com/dyegolara/skillbook.git" },
+    })}\n`
+  );
+  writeInto(root, SOURCE_PATH, "export const REPO = 1;\n");
+  assert.equal(spawnSync("git", ["add", SOURCE_PATH], { cwd: root }).status, 0);
+  const committed = spawnSync(
+    "git",
+    ["-c", "user.name=Contract Test", "-c", "user.email=contract@test.invalid", "commit", "-m", "source"],
+    { cwd: root, encoding: "utf8" }
+  );
+  assert.equal(committed.status, 0, committed.stderr);
+
+  generateContract({ root });
+  const artifact = JSON.parse(readFileSync(join(root, CONTRACT_FILE), "utf8"));
+  assert.equal(artifact.source.repo, "dyegolara/skillbook");
+});
+
+test("contract:emit fails when package.json has no repository field and writes nothing", () => {
+  const root = gitRoot();
+  writeInto(root, "package.json", "{}\n");
+  writeInto(root, SOURCE_PATH, "export const REPO = 1;\n");
+  assert.equal(spawnSync("git", ["add", SOURCE_PATH], { cwd: root }).status, 0);
+  const committed = spawnSync(
+    "git",
+    ["-c", "user.name=Contract Test", "-c", "user.email=contract@test.invalid", "commit", "-m", "source"],
+    { cwd: root, encoding: "utf8" }
+  );
+  assert.equal(committed.status, 0, committed.stderr);
+
+  assert.throws(() => generateContract({ root }), /repository/);
+  assert.equal(existsSync(join(root, CONTRACT_FILE)), false);
+});
+
+test("contract:emit fails when package.json repository is malformed and writes nothing", () => {
+  const root = gitRoot();
+  writeInto(root, "package.json", `${JSON.stringify({ repository: { type: "git" } })}\n`);
+  writeInto(root, SOURCE_PATH, "export const REPO = 1;\n");
+  assert.equal(spawnSync("git", ["add", SOURCE_PATH], { cwd: root }).status, 0);
+  const committed = spawnSync(
+    "git",
+    ["-c", "user.name=Contract Test", "-c", "user.email=contract@test.invalid", "commit", "-m", "source"],
+    { cwd: root, encoding: "utf8" }
+  );
+  assert.equal(committed.status, 0, committed.stderr);
+
+  assert.throws(() => generateContract({ root }), /repository/);
+  assert.equal(existsSync(join(root, CONTRACT_FILE)), false);
+});
+
+test("the check rebuilds from the recorded source.repo and names a bad repository field", () => {
+  const root = gitRoot();
+  writeInto(root, "package.json", "{}\n");
+  writeInto(root, SOURCE_PATH, readFileSync(join(ROOT, SOURCE_PATH), "utf8"));
+  const artifact = readCommitted();
+  artifact.providers = artifact.providers.filter((provider) => provider !== PROVIDERS[PROVIDERS.length - 1]);
+  writeInto(root, CONTRACT_FILE, serializeContract(artifact));
+
+  const result = checkContract({ root });
+  assert.equal(result.ok, false);
+  assert.ok(
+    result.problems.some((problem) => problem.includes("repository")),
+    result.problems.join("\n")
+  );
+  assert.ok(
+    result.problems.some((problem) => problem.includes("providers")),
+    result.problems.join("\n")
+  );
+});
+
+test("a fork checkout passes the check", () => {
+  const root = gitRoot();
+  const remote = spawnSync(
+    "git",
+    ["remote", "add", "origin", "https://github.com/a-forker/skillbook.git"],
+    { cwd: root, encoding: "utf8" }
+  );
+  assert.equal(remote.status, 0, remote.stderr);
+  writeInto(root, SOURCE_PATH, readFileSync(join(ROOT, SOURCE_PATH), "utf8"));
+  writeInto(root, CONTRACT_FILE, readFileSync(CONTRACT_PATH, "utf8"));
+
+  assert.deepEqual(checkContract({ root }), { ok: true, problems: [] });
+  const origin = spawnSync("git", ["remote", "get-url", "origin"], { cwd: root, encoding: "utf8" });
+  assert.equal(origin.stdout.trim(), "https://github.com/a-forker/skillbook.git");
+});
+
+test("the check names package.json repository when the committed source.repo disagrees", () => {
+  const root = gitRoot();
+  writeInto(root, SOURCE_PATH, readFileSync(join(ROOT, SOURCE_PATH), "utf8"));
+  const artifact = readCommitted();
+  artifact.source.repo = "someone/fork";
+  writeInto(root, CONTRACT_FILE, serializeContract(artifact));
+
+  const result = checkContract({ root });
+  assert.equal(result.ok, false);
+  assert.ok(
+    result.problems.some((problem) => problem.includes("repository") && problem.includes("someone/fork")),
+    result.problems.join("\n")
+  );
 });
 
 test("the --check CLI exits 0 on the committed tree without touching it", () => {
