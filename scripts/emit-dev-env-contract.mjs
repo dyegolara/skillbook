@@ -81,6 +81,9 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const COMMIT_SHA = /^[0-9a-f]{40}$/;
 const SOURCE_SHA256 = /^[0-9a-f]{64}$/;
 
+/** Remediation shared by the check's problem strings that ask for a fresh artifact. */
+const REGENERATE_ARTIFACT = "regenerate the artifact (npm run contract:emit)";
+
 /** The hex SHA-256 of a source file's bytes — the artifact's source reference. */
 function digestOf(source) {
   return createHash("sha256").update(source).digest("hex");
@@ -90,7 +93,8 @@ function isPlainObject(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function describe(value) {
+/** A value as error text: `missing`, or the value's JSON form. */
+function formatForError(value) {
   return value === undefined ? "missing" : JSON.stringify(value);
 }
 
@@ -106,11 +110,13 @@ function launchNameFor(stageKey) {
 }
 
 /**
- * The contract for a source commit and its source digest: a pure copy of the
- * imported tables, so the tests and the check regenerate it without touching
- * the filesystem or a network. Field order is the artifact's byte order.
+ * The contract for one `source` record (repo, path, commit, sha256), the same
+ * shape as the artifact field. A pure copy of the imported tables, so the
+ * tests and the check regenerate it without touching the filesystem or a
+ * network. Field order is the artifact's byte order.
  */
-export function buildContract({ commit, repo, sha256 }) {
+export function buildContract(source) {
+  const { repo, path, commit, sha256 } = source;
   if (typeof commit !== "string" || commit.trim() === "") {
     throw new Error("the contract needs the source commit it was generated from");
   }
@@ -122,7 +128,7 @@ export function buildContract({ commit, repo, sha256 }) {
   }
   return {
     contractVersion: CONTRACT_VERSION,
-    source: { repo, path: SOURCE_PATH, commit, sha256 },
+    source: { repo, path, commit, sha256 },
     defaultProvider: DEFAULTS.provider,
     providers: [...PROVIDERS],
     efforts: [...EFFORTS],
@@ -175,7 +181,7 @@ function walkDiff(path, committed, regenerated, problems) {
     return;
   }
   if (JSON.stringify(committed) !== JSON.stringify(regenerated)) {
-    problems.push(`${path}: committed ${describe(committed)} but the generator gives ${describe(regenerated)}`);
+    problems.push(`${path}: committed ${formatForError(committed)} but the generator gives ${formatForError(regenerated)}`);
   }
 }
 
@@ -231,14 +237,14 @@ function repoFromRepositoryField(field) {
   const url = typeof field === "string" ? field.trim() : isPlainObject(field) ? field.url : null;
   if (typeof url !== "string" || url.trim() === "") {
     throw new Error(
-      `package.json repository is malformed — source.repo is read from that field, got ${describe(field)}`
+      `package.json repository is malformed — source.repo is read from that field, got ${formatForError(field)}`
     );
   }
   try {
     return normalizeRepoUrl(url);
   } catch {
     throw new Error(
-      `package.json repository is malformed — source.repo is read from that field, got ${describe(field)}`
+      `package.json repository is malformed — source.repo is read from that field, got ${formatForError(field)}`
     );
   }
 }
@@ -305,11 +311,11 @@ function sourceCommitProblems(root, commit, currentSource) {
   const recorded = git(root, ["show", `${commit}:${SOURCE_PATH}`]);
   if (recorded.status !== 0) {
     problems.push(
-      `${CONTRACT_FILE}: source.commit ${commit} carries no ${SOURCE_PATH} — regenerate the artifact (npm run contract:emit)`
+      `${CONTRACT_FILE}: source.commit ${commit} carries no ${SOURCE_PATH} — ${REGENERATE_ARTIFACT}`
     );
   } else if (recorded.stdout !== currentSource) {
     problems.push(
-      `${CONTRACT_FILE}: source.commit ${commit} carries a different ${SOURCE_PATH} than this tree — the artifact no longer reflects the source; regenerate it (npm run contract:emit)`
+      `${CONTRACT_FILE}: source.commit ${commit} carries a different ${SOURCE_PATH} than this tree — the artifact no longer reflects the source; ${REGENERATE_ARTIFACT}`
     );
   }
   return problems;
@@ -343,13 +349,13 @@ export function checkContract({ root = REPO_ROOT } = {}) {
   const currentDigest = digestOf(currentSource);
   if (recordedDigest !== currentDigest) {
     problems.push(
-      `${CONTRACT_FILE}: source.sha256 ${describe(recordedDigest)} does not match today's ${SOURCE_PATH} (sha256 ${currentDigest}) — regenerate the artifact (npm run contract:emit)`
+      `${CONTRACT_FILE}: source.sha256 ${formatForError(recordedDigest)} does not match today's ${SOURCE_PATH} (sha256 ${currentDigest}) — ${REGENERATE_ARTIFACT}`
     );
   }
   const commitLooksValid = typeof commit === "string" && COMMIT_SHA.test(commit);
   if (!commitLooksValid) {
     problems.push(
-      `${CONTRACT_FILE}: source.commit ${describe(commit)} is not a full 40-hex commit SHA — regenerate the artifact (npm run contract:emit)`
+      `${CONTRACT_FILE}: source.commit ${formatForError(commit)} is not a full 40-hex commit SHA — ${REGENERATE_ARTIFACT}`
     );
   } else {
     try {
@@ -370,12 +376,17 @@ export function checkContract({ root = REPO_ROOT } = {}) {
   const recordedRepo = committed.source?.repo;
   if (repoFromPackage !== null && recordedRepo !== repoFromPackage) {
     problems.push(
-      `${CONTRACT_FILE}: source.repo ${describe(recordedRepo)} does not match package.json repository (${repoFromPackage}) — regenerate the artifact (npm run contract:emit)`
+      `${CONTRACT_FILE}: source.repo ${formatForError(recordedRepo)} does not match package.json repository (${repoFromPackage}) — ${REGENERATE_ARTIFACT}`
     );
   }
   const repo = typeof recordedRepo === "string" && recordedRepo.trim() !== "" ? recordedRepo : null;
   if (repo !== null && typeof commit === "string" && commit.trim() !== "") {
-    const regenerated = buildContract({ commit, repo, sha256: currentDigest });
+    const regenerated = buildContract({
+      repo,
+      path: SOURCE_PATH,
+      commit,
+      sha256: currentDigest,
+    });
     const drift = diffContracts(committed, regenerated);
     for (const problem of drift) problems.push(`${CONTRACT_FILE}: ${problem}`);
     if (drift.length === 0 && serializeContract(regenerated) !== text) {
@@ -393,7 +404,7 @@ export function generateContract({ root = REPO_ROOT } = {}) {
   assertSourceMatchesCommit(root, commit, source);
   const repo = resolveSourceRepo(root);
   const sha256 = digestOf(source);
-  const contract = buildContract({ commit, repo, sha256 });
+  const contract = buildContract({ repo, path: SOURCE_PATH, commit, sha256 });
   const path = join(root, CONTRACT_FILE);
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, serializeContract(contract));
