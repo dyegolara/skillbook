@@ -81,6 +81,21 @@ The binding of one stage to a provider, model id, effort and agent. The unit a
 settings surface edits and the chain resolves at launch.
 _Avoid_: preset, mapping
 
+**Definition**:
+skillbook owns the definition. It is the variable names, the legal value lists,
+the stage and agent sets, the defaults, and the emission rules in
+`skills/software-factory/scripts/env-defaults.mjs`. The generated artifact is
+`contracts/dev-env.contract.json`. The dashboard reads that artifact directly
+and keeps no copy of it.
+_Avoid_: pin, vendored copy
+
+**Values**:
+The dashboard owns the values. They are the provider, model id, effort, and
+agent an operator chooses for each stage, and the provider keys. Those choices
+are rows in the dashboard's database. The dashboard's UI edits the rows.
+skillbook's files do not store them.
+_Avoid_: defaults, env file
+
 **Provider-environment pattern**:
 The chain's key rule for its launched stages — dev-flow, implement-spec,
 code-review-loop and create-pr: each docker sets `DEV_ENV_PROVIDER` plus
