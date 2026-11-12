@@ -240,22 +240,26 @@ export function resolveSourceRepo(root = REPO_ROOT) {
   return normalizeRepoUrl(result.stdout);
 }
 
-/** The commit generation records: `HEAD` at generation time. */
-function headCommit(root) {
-  const result = git(root, ["rev-parse", "HEAD"]);
+/** Last commit that touched the source file. No such commit is a hard error. */
+function sourceTouchingCommit(root) {
+  const result = git(root, ["log", "-1", "--format=%H", "--", SOURCE_PATH]);
   const sha = result.stdout.trim();
   if (result.status !== 0 || !COMMIT_SHA.test(sha)) {
-    const detail = result.stderr.trim() || `exit ${result.status}`;
-    throw new Error(`cannot record the contract's source commit — \`git rev-parse HEAD\` failed in ${root}: ${detail}`);
+    const detail = result.stderr.trim();
+    throw new Error(
+      `${SOURCE_PATH} has no commit in ${root}` +
+        (detail ? ` (${detail})` : "") +
+        " — refusing to stamp a source.commit that never carried the file"
+    );
   }
   return sha;
 }
 
-function assertSourceMatchesHead(root, commit, currentSource) {
+function assertSourceMatchesCommit(root, commit, currentSource) {
   const recorded = git(root, ["show", `${commit}:${SOURCE_PATH}`]);
   if (recorded.status !== 0 || recorded.stdout !== currentSource) {
     throw new Error(
-      `${SOURCE_PATH} does not match HEAD — commit source changes first, then run npm run contract:emit`
+      `${SOURCE_PATH} does not match commit ${commit} — commit the source change, then run npm run contract:emit`
     );
   }
 }
@@ -351,9 +355,9 @@ export function checkContract({ root = REPO_ROOT } = {}) {
 }
 
 export function generateContract({ root = REPO_ROOT } = {}) {
-  const commit = headCommit(root);
+  const commit = sourceTouchingCommit(root);
   const source = readFileSync(join(root, SOURCE_PATH), "utf8");
-  assertSourceMatchesHead(root, commit, source);
+  assertSourceMatchesCommit(root, commit, source);
   const repo = resolveSourceRepo(root);
   const sha256 = digestOf(source);
   const contract = buildContract({ commit, repo, sha256 });

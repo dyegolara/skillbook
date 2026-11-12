@@ -251,7 +251,111 @@ test("a recorded commit that carries a different source file fails", () => {
   );
 });
 
-test("generation rejects source changes not committed at HEAD", () => {
+test("contract:emit records the last commit that touched the source file, not HEAD", () => {
+  const root = gitRoot();
+  const source = "export const SOURCE_TOUCH = 1;\n";
+  writeInto(root, SOURCE_PATH, source);
+  assert.equal(spawnSync("git", ["add", SOURCE_PATH], { cwd: root }).status, 0);
+  const introduced = spawnSync(
+    "git",
+    ["-c", "user.name=Contract Test", "-c", "user.email=contract@test.invalid", "commit", "-m", "introduce source"],
+    { cwd: root, encoding: "utf8" }
+  );
+  assert.equal(introduced.status, 0, introduced.stderr);
+  const sourceCommit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+
+  writeInto(root, "README.md", "later commit\n");
+  assert.equal(spawnSync("git", ["add", "README.md"], { cwd: root }).status, 0);
+  const later = spawnSync(
+    "git",
+    ["-c", "user.name=Contract Test", "-c", "user.email=contract@test.invalid", "commit", "-m", "unrelated"],
+    { cwd: root, encoding: "utf8" }
+  );
+  assert.equal(later.status, 0, later.stderr);
+  const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+  assert.notEqual(head, sourceCommit);
+
+  generateContract({ root });
+  const artifact = JSON.parse(readFileSync(join(root, CONTRACT_FILE), "utf8"));
+  assert.equal(artifact.source.commit, sourceCommit);
+  assert.notEqual(artifact.source.commit, head);
+  const shown = spawnSync("git", ["show", `${sourceCommit}:${SOURCE_PATH}`], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(shown.status, 0, shown.stderr);
+  assert.equal(shown.stdout, source);
+  assert.equal(artifact.source.sha256, sourceDigest(source));
+
+  writeInto(root, "NOTES.md", "still later\n");
+  assert.equal(spawnSync("git", ["add", "NOTES.md"], { cwd: root }).status, 0);
+  const again = spawnSync(
+    "git",
+    ["-c", "user.name=Contract Test", "-c", "user.email=contract@test.invalid", "commit", "-m", "still unrelated"],
+    { cwd: root, encoding: "utf8" }
+  );
+  assert.equal(again.status, 0, again.stderr);
+  const before = readFileSync(join(root, CONTRACT_FILE), "utf8");
+  generateContract({ root });
+  assert.equal(readFileSync(join(root, CONTRACT_FILE), "utf8"), before);
+});
+
+test("contract:emit fails when the source file has no commit and writes nothing", () => {
+  const root = gitRoot();
+  writeInto(root, "README.md", "no source yet\n");
+  assert.equal(spawnSync("git", ["add", "README.md"], { cwd: root }).status, 0);
+  const committed = spawnSync(
+    "git",
+    ["-c", "user.name=Contract Test", "-c", "user.email=contract@test.invalid", "commit", "-m", "unrelated"],
+    { cwd: root, encoding: "utf8" }
+  );
+  assert.equal(committed.status, 0, committed.stderr);
+  const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+  writeInto(root, SOURCE_PATH, "export const NEVER_COMMITTED = 1;\n");
+
+  assert.throws(() => generateContract({ root }), (error) => {
+    assert.match(error.message, new RegExp(SOURCE_PATH.replaceAll(".", "\\.")));
+    assert.doesNotMatch(error.message, new RegExp(head));
+    return true;
+  });
+  assert.equal(existsSync(join(root, CONTRACT_FILE)), false);
+});
+
+test("contract:emit refuses uncommitted source changes against the commit it records", () => {
+  const root = gitRoot();
+  const source = "export const COMMITTED = 1;\n";
+  writeInto(root, SOURCE_PATH, source);
+  assert.equal(spawnSync("git", ["add", SOURCE_PATH], { cwd: root }).status, 0);
+  const introduced = spawnSync(
+    "git",
+    ["-c", "user.name=Contract Test", "-c", "user.email=contract@test.invalid", "commit", "-m", "introduce source"],
+    { cwd: root, encoding: "utf8" }
+  );
+  assert.equal(introduced.status, 0, introduced.stderr);
+  const sourceCommit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+
+  writeInto(root, "README.md", "later\n");
+  assert.equal(spawnSync("git", ["add", "README.md"], { cwd: root }).status, 0);
+  const later = spawnSync(
+    "git",
+    ["-c", "user.name=Contract Test", "-c", "user.email=contract@test.invalid", "commit", "-m", "unrelated"],
+    { cwd: root, encoding: "utf8" }
+  );
+  assert.equal(later.status, 0, later.stderr);
+  const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+  assert.notEqual(head, sourceCommit);
+  writeInto(root, SOURCE_PATH, `${source}\n`);
+
+  assert.throws(() => generateContract({ root }), (error) => {
+    assert.match(error.message, new RegExp(sourceCommit));
+    assert.doesNotMatch(error.message, /HEAD/);
+    assert.match(error.message, /commit the source change/);
+    return true;
+  });
+  assert.equal(existsSync(join(root, CONTRACT_FILE)), false);
+});
+
+test("contract:emit refuses a source change that is not in the recorded commit", () => {
   const root = gitRoot();
   const source = readFileSync(join(ROOT, SOURCE_PATH), "utf8");
   writeInto(root, SOURCE_PATH, source);
@@ -266,7 +370,7 @@ test("generation rejects source changes not committed at HEAD", () => {
 
   assert.throws(
     () => generateContract({ root }),
-    /does not match HEAD — commit source changes first/
+    /does not match commit [0-9a-f]{40} — commit the source change/
   );
   assert.equal(existsSync(join(root, CONTRACT_FILE)), false);
 });
