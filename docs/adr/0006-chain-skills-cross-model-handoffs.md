@@ -353,7 +353,8 @@ context is not independent.
   the trimmed key on both sides" passes a non-empty key padded with
   spaces. The guard still runs. The command and the header do not contain
   the key text. A terminal that holds the same padded value makes the
-  check exit 0 with stdout `MATCH`.
+  guard exit 0 and print nothing. The test appends `printf MATCH` and
+  reads that sentinel from stdout.
 - `GLOSSARY.md` replaces `CONTEXT.md`, adopting the referenced pack's glossary
   convention; ADRs keep living in `docs/adr/`.
 

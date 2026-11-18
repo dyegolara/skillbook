@@ -81,6 +81,20 @@ function writeInto(root, relativePath, contents) {
   writeFileSync(join(root, relativePath), contents);
 }
 
+/** Add one path, commit it, and return the new HEAD sha. */
+function commitPath(root, relativePath, message) {
+  const added = spawnSync("git", ["add", relativePath], { cwd: root, encoding: "utf8" });
+  assert.equal(added.status, 0, added.stderr);
+  const committed = spawnSync("git", [...identity, "commit", "-m", message], {
+    cwd: root,
+    encoding: "utf8",
+  });
+  assert.equal(committed.status, 0, committed.stderr);
+  const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" });
+  assert.equal(head.status, 0, head.stderr);
+  return head.stdout.trim();
+}
+
 test("the committed artifact records the source-touching commit on this history", () => {
   const { source } = readCommitted();
   assert.equal(source.repo, "dyegolara/skillbook");
@@ -244,10 +258,7 @@ test("a squashed history passes: an absent recorded commit is provenance, not dr
 test("a recorded commit that exists but is not an ancestor of HEAD passes", () => {
   const root = gitRoot();
   writeInto(root, SOURCE_PATH, readFileSync(join(ROOT, SOURCE_PATH), "utf8"));
-  assert.equal(spawnSync("git", ["add", SOURCE_PATH], { cwd: root }).status, 0);
-  const first = spawnSync("git", [...identity, "commit", "-m", "source"], { cwd: root, encoding: "utf8" });
-  assert.equal(first.status, 0, first.stderr);
-  const sha = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+  const sha = commitPath(root, SOURCE_PATH, "source");
 
   // A second root commit keeps the recorded object in place but off HEAD's
   // history — the state a squash merge leaves when the old object still exists.
@@ -273,17 +284,8 @@ test("a recorded commit that carries a different source file fails", () => {
   // Commit a drifted copy, then leave this tree carrying the real source: the
   // object exists, so the source-at-commit comparison must name the file.
   writeInto(root, SOURCE_PATH, `${currentSource}\n// drifted copy\n`);
-  const added = spawnSync("git", ["add", SOURCE_PATH], { cwd: root, encoding: "utf8" });
-  assert.equal(added.status, 0, added.stderr);
-  const committed = spawnSync(
-    "git",
-    [...identity, "commit", "-m", "drifted source"],
-    { cwd: root, encoding: "utf8" }
-  );
-  assert.equal(committed.status, 0, committed.stderr);
+  const sha = commitPath(root, SOURCE_PATH, "drifted source");
   writeInto(root, SOURCE_PATH, currentSource);
-
-  const sha = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
   assert.match(sha, /^[0-9a-f]{40}$/);
   const artifact = readCommitted();
   artifact.source.commit = sha;
@@ -300,24 +302,10 @@ test("contract:emit records the last commit that touched the source file, not HE
   const root = gitRoot();
   const source = "export const SOURCE_TOUCH = 1;\n";
   writeInto(root, SOURCE_PATH, source);
-  assert.equal(spawnSync("git", ["add", SOURCE_PATH], { cwd: root }).status, 0);
-  const introduced = spawnSync(
-    "git",
-    [...identity, "commit", "-m", "introduce source"],
-    { cwd: root, encoding: "utf8" }
-  );
-  assert.equal(introduced.status, 0, introduced.stderr);
-  const sourceCommit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+  const sourceCommit = commitPath(root, SOURCE_PATH, "introduce source");
 
   writeInto(root, "README.md", "later commit\n");
-  assert.equal(spawnSync("git", ["add", "README.md"], { cwd: root }).status, 0);
-  const later = spawnSync(
-    "git",
-    [...identity, "commit", "-m", "unrelated"],
-    { cwd: root, encoding: "utf8" }
-  );
-  assert.equal(later.status, 0, later.stderr);
-  const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+  const head = commitPath(root, "README.md", "unrelated");
   assert.notEqual(head, sourceCommit);
 
   generateContract({ root });
@@ -333,13 +321,7 @@ test("contract:emit records the last commit that touched the source file, not HE
   assert.equal(artifact.source.sha256, sourceDigest(source));
 
   writeInto(root, "NOTES.md", "still later\n");
-  assert.equal(spawnSync("git", ["add", "NOTES.md"], { cwd: root }).status, 0);
-  const again = spawnSync(
-    "git",
-    [...identity, "commit", "-m", "still unrelated"],
-    { cwd: root, encoding: "utf8" }
-  );
-  assert.equal(again.status, 0, again.stderr);
+  commitPath(root, "NOTES.md", "still unrelated");
   const before = readFileSync(join(root, CONTRACT_FILE), "utf8");
   generateContract({ root });
   assert.equal(readFileSync(join(root, CONTRACT_FILE), "utf8"), before);
@@ -348,14 +330,7 @@ test("contract:emit records the last commit that touched the source file, not HE
 test("contract:emit fails when the source file has no commit and writes nothing", () => {
   const root = gitRoot();
   writeInto(root, "README.md", "no source yet\n");
-  assert.equal(spawnSync("git", ["add", "README.md"], { cwd: root }).status, 0);
-  const committed = spawnSync(
-    "git",
-    [...identity, "commit", "-m", "unrelated"],
-    { cwd: root, encoding: "utf8" }
-  );
-  assert.equal(committed.status, 0, committed.stderr);
-  const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+  const head = commitPath(root, "README.md", "unrelated");
   writeInto(root, SOURCE_PATH, "export const NEVER_COMMITTED = 1;\n");
 
   assert.throws(() => generateContract({ root }), (error) => {
@@ -370,24 +345,10 @@ test("contract:emit refuses uncommitted source changes against the commit it rec
   const root = gitRoot();
   const source = "export const COMMITTED = 1;\n";
   writeInto(root, SOURCE_PATH, source);
-  assert.equal(spawnSync("git", ["add", SOURCE_PATH], { cwd: root }).status, 0);
-  const introduced = spawnSync(
-    "git",
-    [...identity, "commit", "-m", "introduce source"],
-    { cwd: root, encoding: "utf8" }
-  );
-  assert.equal(introduced.status, 0, introduced.stderr);
-  const sourceCommit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+  const sourceCommit = commitPath(root, SOURCE_PATH, "introduce source");
 
   writeInto(root, "README.md", "later\n");
-  assert.equal(spawnSync("git", ["add", "README.md"], { cwd: root }).status, 0);
-  const later = spawnSync(
-    "git",
-    [...identity, "commit", "-m", "unrelated"],
-    { cwd: root, encoding: "utf8" }
-  );
-  assert.equal(later.status, 0, later.stderr);
-  const head = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout.trim();
+  const head = commitPath(root, "README.md", "unrelated");
   assert.notEqual(head, sourceCommit);
   writeInto(root, SOURCE_PATH, `${source}\n`);
 
@@ -404,13 +365,7 @@ test("contract:emit refuses a source change that is not in the recorded commit",
   const root = gitRoot();
   const source = readFileSync(join(ROOT, SOURCE_PATH), "utf8");
   writeInto(root, SOURCE_PATH, source);
-  assert.equal(spawnSync("git", ["add", SOURCE_PATH], { cwd: root }).status, 0);
-  const committed = spawnSync(
-    "git",
-    [...identity, "commit", "-m", "source"],
-    { cwd: root, encoding: "utf8" }
-  );
-  assert.equal(committed.status, 0, committed.stderr);
+  commitPath(root, SOURCE_PATH, "source");
   writeInto(root, SOURCE_PATH, `${source}\n`);
 
   assert.throws(
@@ -436,13 +391,7 @@ test("contract:emit reads source.repo from package.json, not from the origin rem
     })}\n`
   );
   writeInto(root, SOURCE_PATH, "export const REPO = 1;\n");
-  assert.equal(spawnSync("git", ["add", SOURCE_PATH], { cwd: root }).status, 0);
-  const committed = spawnSync(
-    "git",
-    [...identity, "commit", "-m", "source"],
-    { cwd: root, encoding: "utf8" }
-  );
-  assert.equal(committed.status, 0, committed.stderr);
+  commitPath(root, SOURCE_PATH, "source");
 
   generateContract({ root });
   const artifact = JSON.parse(readFileSync(join(root, CONTRACT_FILE), "utf8"));
@@ -453,13 +402,7 @@ test("contract:emit fails when package.json has no repository field and writes n
   const root = gitRoot();
   writeInto(root, "package.json", "{}\n");
   writeInto(root, SOURCE_PATH, "export const REPO = 1;\n");
-  assert.equal(spawnSync("git", ["add", SOURCE_PATH], { cwd: root }).status, 0);
-  const committed = spawnSync(
-    "git",
-    [...identity, "commit", "-m", "source"],
-    { cwd: root, encoding: "utf8" }
-  );
-  assert.equal(committed.status, 0, committed.stderr);
+  commitPath(root, SOURCE_PATH, "source");
 
   assert.throws(() => generateContract({ root }), /repository/);
   assert.equal(existsSync(join(root, CONTRACT_FILE)), false);
@@ -469,13 +412,7 @@ test("contract:emit fails when package.json repository is malformed and writes n
   const root = gitRoot();
   writeInto(root, "package.json", `${JSON.stringify({ repository: { type: "git" } })}\n`);
   writeInto(root, SOURCE_PATH, "export const REPO = 1;\n");
-  assert.equal(spawnSync("git", ["add", SOURCE_PATH], { cwd: root }).status, 0);
-  const committed = spawnSync(
-    "git",
-    [...identity, "commit", "-m", "source"],
-    { cwd: root, encoding: "utf8" }
-  );
-  assert.equal(committed.status, 0, committed.stderr);
+  commitPath(root, SOURCE_PATH, "source");
 
   assert.throws(() => generateContract({ root }), /repository/);
   assert.equal(existsSync(join(root, CONTRACT_FILE)), false);
