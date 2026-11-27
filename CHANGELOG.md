@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.4.1
+
+- `contract:emit` records `source.commit` as the last commit that touched
+  `skills/software-factory/scripts/env-defaults.mjs`, and reads `source.repo`
+  from `package.json`'s `repository` field. Regenerating on the same history
+  rewrites nothing. On this history the recorded commit moves to `d83ae67`
+  and `source.sha256` stays (ADR-0010, #190).
+- skillbook publishes the definition in `contracts/dev-env.contract.json`.
+  The dashboard owns the values in its database and reads that artifact
+  directly. It keeps no vendored copy, and this repo adds no cross-repo
+  drift check (ADR-0012, #191).
+- CI runs `npm run verify && npm test` on pull requests and on pushes to
+  `main`. `verify:contract` inside that gate fails a hand edit of the
+  artifact (#191).
+- The glossary defines definition and values. ADR-0006 points at the code
+  that owns provider key variables, records the #185 rename, and notes the
+  credential guard's tested trim. ADR-0010 and ADR-0011 use the numbered
+  heading form (#192).
+- `buildContract` takes one `source` object, and the check's problem
+  strings share one remediation message (#193).
+
 ## 1.4.0
 
 - The `opencode-go` Provider key is `OPENCODE_API_KEY` — the name every harness
